@@ -85,6 +85,9 @@ CREATE TABLE members (
     -- Official congressional portrait URI.
     photo_uri       TEXT,
 
+    phone           TEXT,
+    website_url     TEXT,
+
     -- SHA-256 hash of the normalized canonical identity fields:
     --   bioguide_id
     --   given_name
@@ -95,6 +98,8 @@ CREATE TABLE members (
     --   birth_year
     --   death_year
     --   photo_uri
+    --   phone
+    --   website_url
     source_hash     TEXT NOT NULL,
 
     -- Timestamp reported by the upstream source indicating when
