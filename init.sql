@@ -59,43 +59,64 @@ CREATE TABLE congresses (
 -- ============================================================
 -- Members
 --
--- One canonical identity row per person.
+-- Canonical biographical identity for a Member of Congress.
 --
--- Only an authoritative canonical member-profile source should
--- update an existing member row. Historical term imports may
--- insert a missing member, but should not overwrite an existing
--- canonical identity.
+-- One row per Bioguide ID.
+--
+-- Populated from the authoritative upstream member data source.
+--
+-- Mutable office attributes such as district, party, phone,
+-- office address, and website are intentionally stored outside
+-- this table.
 -- ============================================================
 
 CREATE TABLE members (
     bioguide_id     TEXT PRIMARY KEY,
 
     given_name      TEXT NOT NULL,
+    middle_name     TEXT,
     family_name     TEXT NOT NULL,
+    nickname        TEXT,
+    suffix          TEXT,
 
-    birth_date      DATE,
-    death_date      DATE,
+    birth_year      SMALLINT,
+    death_year      SMALLINT,
 
-    -- Hash of normalized canonical identity fields:
+    -- Official congressional portrait URI.
+    photo_uri       TEXT,
+
+    -- SHA-256 hash of the normalized canonical identity fields:
     --   bioguide_id
     --   given_name
+    --   middle_name
     --   family_name
-    --   birth_date
-    --   death_date
+    --   nickname
+    --   suffix
+    --   birth_year
+    --   death_year
+    --   photo_uri
     source_hash     TEXT NOT NULL,
 
-    -- Most recent successful synchronization with the canonical
-    -- member-profile source.
+    -- Timestamp reported by the upstream source indicating when
+    -- the source record was last updated.
+    --
+    -- Retained for auditing and diagnostics only.
+    -- source_hash remains the authoritative mechanism for
+    -- detecting normalized data changes.
+    source_updated_at TIMESTAMPTZ,
+
+    -- Most recent successful synchronization with the upstream
+    -- source.
     synced_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT members_valid_life_dates
+    CONSTRAINT members_valid_life_years
         CHECK (
-            death_date IS NULL
-            OR birth_date IS NULL
-            OR death_date >= birth_date
+            death_year IS NULL
+            OR birth_year IS NULL
+            OR death_year >= birth_year
         )
 );
 
@@ -103,21 +124,26 @@ CREATE TABLE members (
 -- ============================================================
 -- Member Terms
 --
--- One row per distinct period of service during a numbered
--- Congress.
+-- One row per member's service during a numbered Congress.
 --
--- Including term_start in the unique service key permits a
--- member to have multiple separate service periods for the
--- same seat during the same Congress.
+-- Populated from the Congress.gov member detail response.
+--
+-- Congress.gov provides startYear and endYear rather than exact
+-- service dates, so this table preserves those source values.
 --
 -- district:
 --   NULL = Senator
---   0    = At-large House representative
+--   0    = At-large House member
 --   1+   = Numbered House district
 --
--- Photos may be mirrored to S3 and referenced with photo_uri,
--- for example:
---   s3://cd-member-photos/S000033.jpg
+-- member_type preserves distinctions such as:
+--   Representative
+--   Senator
+--   Delegate
+--   Resident Commissioner
+--
+-- party stores the normalized application value.
+-- source_party_name preserves the original upstream value.
 -- ============================================================
 
 CREATE TABLE member_terms (
@@ -132,31 +158,50 @@ CREATE TABLE member_terms (
 
     chamber         chamber_type NOT NULL,
 
+    -- Kept as TEXT until all upstream memberType values have
+    -- been reviewed.
+    member_type     TEXT NOT NULL,
+
     state           CHAR(2) NOT NULL,
     district        SMALLINT,
 
     party           party_type NOT NULL,
 
-    term_start      DATE NOT NULL,
-    term_end        DATE NOT NULL,
+    -- Original party name reported by the upstream source.
+    --
+    -- Unknown values can be normalized to party = 'OTHER'
+    -- without losing the original source value.
+    source_party_name TEXT,
 
-    website_url     TEXT,
-    phone           TEXT,
-    office_address  TEXT,
-    photo_uri       TEXT,
+    -- Year values supplied by the upstream source.
+    start_year      SMALLINT NOT NULL,
+    end_year        SMALLINT,
 
-    -- Hash of normalized source fields used to populate this
-    -- specific period of service.
+    -- SHA-256 hash of the normalized source fields:
+    --   bioguide_id
+    --   congress
+    --   chamber
+    --   member_type
+    --   state
+    --   district
+    --   party
+    --   source_party_name
+    --   start_year
+    --   end_year
     source_hash     TEXT NOT NULL,
 
-    -- Most recent successful synchronization with the source.
+    -- Most recent successful synchronization with the upstream
+    -- source.
     synced_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT member_terms_valid_dates
-        CHECK (term_end > term_start),
+    CONSTRAINT member_terms_valid_years
+        CHECK (
+            end_year IS NULL
+            OR end_year >= start_year
+        ),
 
     CONSTRAINT member_terms_valid_district
         CHECK (
@@ -179,7 +224,7 @@ CREATE TABLE member_terms (
             chamber,
             state,
             district,
-            term_start
+            start_year
         )
 );
 
@@ -187,50 +232,54 @@ CREATE TABLE member_terms (
 -- ============================================================
 -- Current Member Terms
 --
--- A term is current when:
---     term_start <= CURRENT_DATE < term_end
+-- A term is current when it belongs to the Congress whose date
+-- range contains CURRENT_DATE.
+--
+-- Since Congress.gov currently provides only startYear and
+-- endYear (not exact service dates), this view determines
+-- current membership using the active Congress.
+--
+-- TODO:
+--   This may incorrectly include members who resigned, died,
+--   or were otherwise replaced during the current Congress.
+--   Investigate whether Congress.gov exposes an authoritative
+--   current-member indicator or exact service dates that can
+--   be used to make this view precise.
 -- ============================================================
 
 CREATE VIEW current_member_terms AS
-SELECT *
-FROM member_terms
-WHERE term_start <= CURRENT_DATE
-  AND CURRENT_DATE < term_end;
+SELECT mt.*
+FROM member_terms AS mt
+JOIN congresses AS c
+    ON c.congress = mt.congress
+WHERE c.start_date <= CURRENT_DATE
+  AND CURRENT_DATE < c.end_date;
 
 
 -- ============================================================
 -- Indexes
 -- ============================================================
 
--- Current representative lookup by Congress, state, and district.
+CREATE INDEX idx_members_family_name
+    ON members (family_name);
+
+-- House member lookup by Congress, state, and district.
 CREATE INDEX idx_member_terms_house_lookup
 ON member_terms (
     congress,
     state,
-    district,
-    term_start,
-    term_end
+    district
 )
 WHERE chamber = 'HOUSE';
 
 
--- Current senator lookup by Congress and state.
+-- Senate member lookup by Congress and state.
 CREATE INDEX idx_member_terms_senate_lookup
 ON member_terms (
     congress,
-    state,
-    term_start,
-    term_end
+    state
 )
 WHERE chamber = 'SENATE';
-
-
--- Synchronization auditing and stale-record detection.
-CREATE INDEX idx_members_synced_at
-ON members (synced_at);
-
-CREATE INDEX idx_member_terms_synced_at
-ON member_terms (synced_at);
 
 
 -- ============================================================
