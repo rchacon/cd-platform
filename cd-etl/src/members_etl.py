@@ -20,6 +20,49 @@ PAGE_LIMIT = 250
 DETAIL_FETCH_WORKERS = 10
 POSTGRES_CONN_ID = "congressional_postgres"
 
+MEMBERS_UPSERT_SQL = """
+    INSERT INTO members (
+        bioguide_id, given_name, middle_name, family_name,
+        nickname, suffix, birth_year, death_year, photo_uri,
+        phone, website_url, party_history, source_hash,
+        source_updated_at
+    )
+    VALUES %s
+    ON CONFLICT (bioguide_id) DO UPDATE SET
+        given_name = EXCLUDED.given_name,
+        middle_name = EXCLUDED.middle_name,
+        family_name = EXCLUDED.family_name,
+        nickname = EXCLUDED.nickname,
+        suffix = EXCLUDED.suffix,
+        birth_year = EXCLUDED.birth_year,
+        death_year = EXCLUDED.death_year,
+        photo_uri = EXCLUDED.photo_uri,
+        phone = EXCLUDED.phone,
+        website_url = EXCLUDED.website_url,
+        party_history = EXCLUDED.party_history,
+        source_hash = EXCLUDED.source_hash,
+        source_updated_at = EXCLUDED.source_updated_at,
+        synced_at = NOW(),
+        updated_at = NOW()
+    WHERE members.source_hash IS DISTINCT FROM EXCLUDED.source_hash
+"""
+
+MEMBER_TERMS_UPSERT_SQL = """
+    INSERT INTO member_terms (
+        bioguide_id, congress, chamber, member_type, state,
+        district, start_year, end_year, source_hash
+    )
+    VALUES %s
+    ON CONFLICT (bioguide_id, congress, chamber, state, district, start_year)
+    DO UPDATE SET
+        member_type = EXCLUDED.member_type,
+        end_year = EXCLUDED.end_year,
+        source_hash = EXCLUDED.source_hash,
+        synced_at = NOW(),
+        updated_at = NOW()
+    WHERE member_terms.source_hash IS DISTINCT FROM EXCLUDED.source_hash
+"""
+
 CHAMBER_MAP = {
     "House of Representatives": "HOUSE",
     "Senate": "SENATE",
@@ -344,56 +387,8 @@ def congress_members_etl():
 
         try:
             with conn.cursor() as cursor:
-                execute_values(
-                    cursor,
-                    """
-                    INSERT INTO members (
-                        bioguide_id, given_name, middle_name, family_name,
-                        nickname, suffix, birth_year, death_year, photo_uri,
-                        phone, website_url, party_history, source_hash,
-                        source_updated_at
-                    )
-                    VALUES %s
-                    ON CONFLICT (bioguide_id) DO UPDATE SET
-                        given_name = EXCLUDED.given_name,
-                        middle_name = EXCLUDED.middle_name,
-                        family_name = EXCLUDED.family_name,
-                        nickname = EXCLUDED.nickname,
-                        suffix = EXCLUDED.suffix,
-                        birth_year = EXCLUDED.birth_year,
-                        death_year = EXCLUDED.death_year,
-                        photo_uri = EXCLUDED.photo_uri,
-                        phone = EXCLUDED.phone,
-                        website_url = EXCLUDED.website_url,
-                        party_history = EXCLUDED.party_history,
-                        source_hash = EXCLUDED.source_hash,
-                        source_updated_at = EXCLUDED.source_updated_at,
-                        synced_at = NOW(),
-                        updated_at = NOW()
-                    WHERE members.source_hash IS DISTINCT FROM EXCLUDED.source_hash
-                    """,
-                    member_rows,
-                )
-
-                execute_values(
-                    cursor,
-                    """
-                    INSERT INTO member_terms (
-                        bioguide_id, congress, chamber, member_type, state,
-                        district, start_year, end_year, source_hash
-                    )
-                    VALUES %s
-                    ON CONFLICT (bioguide_id, congress, chamber, state, district, start_year)
-                    DO UPDATE SET
-                        member_type = EXCLUDED.member_type,
-                        end_year = EXCLUDED.end_year,
-                        source_hash = EXCLUDED.source_hash,
-                        synced_at = NOW(),
-                        updated_at = NOW()
-                    WHERE member_terms.source_hash IS DISTINCT FROM EXCLUDED.source_hash
-                    """,
-                    rows["terms"],
-                )
+                execute_values(cursor, MEMBERS_UPSERT_SQL, member_rows)
+                execute_values(cursor, MEMBER_TERMS_UPSERT_SQL, rows["terms"])
 
             conn.commit()
             logger.info(

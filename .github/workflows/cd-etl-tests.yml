@@ -12,6 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Start Postgres
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker compose up -d postgres
+          for i in $(seq 1 30); do
+            docker compose exec -T postgres pg_isready -U postgres && break
+            sleep 1
+          done
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
