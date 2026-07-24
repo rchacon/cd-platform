@@ -59,6 +59,25 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _derive_congress_dates(payload: dict[str, Any]) -> tuple[int, date, date]:
+    # The API's own "endYear" is a generalized label (off by one from
+    # the actual term-end date), so the real end date is derived as
+    # exactly two years after the earliest session start date -- the
+    # same convention init.sql used to seed the 119th Congress.
+    number = payload["number"]
+    start_year = int(payload["startYear"])
+    start_date = min(
+        (
+            date.fromisoformat(session["startDate"])
+            for session in payload.get("sessions", [])
+            if "startDate" in session
+        ),
+        default=date(start_year, 1, 3),
+    )
+    end_date = date(start_year + 2, 1, 3)
+    return number, start_date, end_date
+
+
 def _members_needing_sync(
     summaries: list[dict[str, Any]],
     stored_updated_at: dict[str, datetime | None],
@@ -207,22 +226,8 @@ def congress_members_etl():
 
     @task
     def sync_current_congress() -> int:
-        # The API's own "endYear" is a generalized label (off by one from
-        # the actual term-end date), so the real end date is derived as
-        # exactly two years after the earliest session start date -- the
-        # same convention init.sql used to seed the 119th Congress.
         payload = _api_get(CONGRESS_CURRENT_CONGRESS_API)["congress"]
-        number = payload["number"]
-        start_year = int(payload["startYear"])
-        start_date = min(
-            (
-                date.fromisoformat(session["startDate"])
-                for session in payload["sessions"]
-                if "startDate" in session
-            ),
-            default=date(start_year, 1, 3),
-        )
-        end_date = date(start_year + 2, 1, 3)
+        number, start_date, end_date = _derive_congress_dates(payload)
 
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         hook.run(

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from psycopg2.extras import Json
 
@@ -132,6 +132,38 @@ def test_term_rows_senate_seat_has_no_district():
     rows = etl._term_rows(member, 119)
 
     assert rows[0][:8] == ("M001244", 119, "SENATE", "Senator", "FL", None, 2025, None)
+
+
+def test_derive_congress_dates_uses_earliest_session_start_and_start_year_plus_two():
+    # Mirrors the real /congress/current shape: two sessions already
+    # underway, plus a second session pair that hasn't started yet.
+    payload = {
+        "number": 119,
+        "startYear": "2025",
+        "endYear": "2026",
+        "sessions": [
+            {"chamber": "Senate", "startDate": "2025-01-03", "endDate": "2026-01-03", "number": 1},
+            {"chamber": "House of Representatives", "startDate": "2025-01-03", "endDate": "2026-01-03", "number": 1},
+            {"chamber": "House of Representatives", "startDate": "2026-01-03", "number": 2},
+            {"chamber": "Senate", "startDate": "2026-01-03", "number": 2},
+        ],
+    }
+
+    number, start_date, end_date = etl._derive_congress_dates(payload)
+
+    assert number == 119
+    assert start_date == date(2025, 1, 3)
+    assert end_date == date(2027, 1, 3)
+
+
+def test_derive_congress_dates_falls_back_when_no_sessions_have_start_dates():
+    payload = {"number": 120, "startYear": "2027", "sessions": []}
+
+    number, start_date, end_date = etl._derive_congress_dates(payload)
+
+    assert number == 120
+    assert start_date == date(2027, 1, 3)
+    assert end_date == date(2029, 1, 3)
 
 
 def test_members_needing_sync_includes_new_members_not_in_stored_data():
