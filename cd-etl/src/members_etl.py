@@ -223,13 +223,17 @@ def congress_members_etl():
         return row[0]
 
     @task
-    def extract_member_ids(congress: int) -> list[str]:
+    def extract_member_summaries(congress: int) -> list[dict[str, Any]]:
         # currentMember=false returns the full roster of this Congress,
         # including members who have since resigned, died, or been
         # expelled -- their term already carries an endYear from the
         # source. Filtering to currentMember=true would silently miss
         # that departure and leave end_year stuck at NULL forever.
-        bioguide_ids = []
+        #
+        # updateDate is included here (list-level, no extra calls) so
+        # filter_members_needing_sync can skip the expensive per-member
+        # detail call for anyone who hasn't changed since our last sync.
+        summaries = []
         offset = 0
 
         while True:
@@ -241,14 +245,42 @@ def congress_members_etl():
             if not members:
                 break
 
-            bioguide_ids.extend(member["bioguideId"] for member in members)
+            summaries.extend(
+                {"bioguideId": member["bioguideId"], "updateDate": member.get("updateDate")}
+                for member in members
+            )
 
             if len(members) < PAGE_LIMIT:
                 break
             offset += PAGE_LIMIT
 
-        logger.info("Found %d members of the %dth Congress", len(bioguide_ids), congress)
-        return bioguide_ids
+        logger.info("Found %d members of the %dth Congress", len(summaries), congress)
+        return summaries
+
+    @task
+    def filter_members_needing_sync(summaries: list[dict[str, Any]]) -> list[str]:
+        # Only re-fetch full detail for members that are new to us or
+        # whose source record has changed since our last sync -- the
+        # detail endpoint is one call per member, so skipping unchanged
+        # members avoids hundreds of needless requests on a typical day.
+        hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+        stored_updated_at = dict(
+            hook.get_records("SELECT bioguide_id, source_updated_at FROM members")
+        )
+
+        stale_or_new = []
+        for summary in summaries:
+            bioguide_id = summary["bioguideId"]
+            last_synced = stored_updated_at.get(bioguide_id)
+            source_updated = _parse_timestamp(summary.get("updateDate"))
+
+            if last_synced is None or source_updated is None or source_updated > last_synced:
+                stale_or_new.append(bioguide_id)
+
+        logger.info(
+            "%d of %d members need a detail sync", len(stale_or_new), len(summaries),
+        )
+        return stale_or_new
 
     @task
     def fetch_member_details(bioguide_ids: list[str]) -> list[dict[str, Any]]:
@@ -307,6 +339,7 @@ def congress_members_etl():
                         source_updated_at = EXCLUDED.source_updated_at,
                         synced_at = NOW(),
                         updated_at = NOW()
+                    WHERE members.source_hash IS DISTINCT FROM EXCLUDED.source_hash
                     """,
                     rows["members"],
                 )
@@ -326,6 +359,7 @@ def congress_members_etl():
                         source_hash = EXCLUDED.source_hash,
                         synced_at = NOW(),
                         updated_at = NOW()
+                    WHERE member_terms.source_hash IS DISTINCT FROM EXCLUDED.source_hash
                     """,
                     rows["terms"],
                 )
@@ -342,7 +376,8 @@ def congress_members_etl():
             conn.close()
 
     current_congress = get_current_congress(sync_current_congress())
-    member_ids = extract_member_ids(current_congress)
+    summaries = extract_member_summaries(current_congress)
+    member_ids = filter_members_needing_sync(summaries)
     details = fetch_member_details(member_ids)
     load(transform(details, current_congress))
 
