@@ -17,16 +17,6 @@
 -- Types
 -- ============================================================
 
-CREATE TYPE party_type AS ENUM (
-    'DEMOCRATIC',
-    'REPUBLICAN',
-    'INDEPENDENT',
-    'LIBERTARIAN',
-    'GREEN',
-    'NONPARTISAN',
-    'OTHER'
-);
-
 CREATE TYPE chamber_type AS ENUM (
     'HOUSE',
     'SENATE'
@@ -65,9 +55,13 @@ CREATE TABLE congresses (
 --
 -- Populated from the authoritative upstream member data source.
 --
--- Mutable office attributes such as district, party, phone,
--- office address, and website are intentionally stored outside
--- this table.
+-- party_history stores the member's full party affiliation
+-- timeline, independent of Congress or term boundaries -- it
+-- mirrors the upstream partyHistory array directly and is not
+-- validated against party_type at the database level.
+--
+-- Mutable office attributes such as district are intentionally
+-- stored outside this table, in member_terms.
 -- ============================================================
 
 CREATE TABLE members (
@@ -88,6 +82,16 @@ CREATE TABLE members (
     phone           TEXT,
     website_url     TEXT,
 
+    -- Full party affiliation history, independent of Congress or
+    -- term boundaries. Mirrors the upstream partyHistory array:
+    --   [{"party": "REPUBLICAN", "source_party_name": "Republican",
+    --     "start_year": 2023, "end_year": 2026}, ...]
+    --
+    -- party is normalized to a small canonical set of values by
+    -- the ETL (e.g. "DEMOCRATIC", "REPUBLICAN"), but is stored
+    -- as plain text and not validated at the database level.
+    party_history   JSONB NOT NULL DEFAULT '[]'::jsonb,
+
     -- SHA-256 hash of the normalized canonical identity fields:
     --   bioguide_id
     --   given_name
@@ -100,6 +104,7 @@ CREATE TABLE members (
     --   photo_uri
     --   phone
     --   website_url
+    --   party_history
     source_hash     TEXT NOT NULL,
 
     -- Timestamp reported by the upstream source indicating when
@@ -147,8 +152,9 @@ CREATE TABLE members (
 --   Delegate
 --   Resident Commissioner
 --
--- party stores the normalized application value.
--- source_party_name preserves the original upstream value.
+-- Party is intentionally not stored here -- see
+-- members.party_history. current_member_terms derives each
+-- member's current party from that history.
 -- ============================================================
 
 CREATE TABLE member_terms (
@@ -170,14 +176,6 @@ CREATE TABLE member_terms (
     state           CHAR(2) NOT NULL,
     district        SMALLINT,
 
-    party           party_type NOT NULL,
-
-    -- Original party name reported by the upstream source.
-    --
-    -- Unknown values can be normalized to party = 'OTHER'
-    -- without losing the original source value.
-    source_party_name TEXT,
-
     -- Year values supplied by the upstream source.
     start_year      SMALLINT NOT NULL,
     end_year        SMALLINT,
@@ -189,8 +187,6 @@ CREATE TABLE member_terms (
     --   member_type
     --   state
     --   district
-    --   party
-    --   source_party_name
     --   start_year
     --   end_year
     source_hash     TEXT NOT NULL,
@@ -244,6 +240,11 @@ CREATE TABLE member_terms (
 -- endYear (not exact service dates), this view determines
 -- current membership using the active Congress.
 --
+-- party/source_party_name reflect each member's most recent
+-- members.party_history entry as of now (not as of the term's
+-- start_year), so a mid-term party switch is reflected
+-- immediately without needing to touch member_terms.
+--
 -- TODO:
 --   This may incorrectly include members who resigned, died,
 --   or were otherwise replaced during the current Congress.
@@ -253,10 +254,23 @@ CREATE TABLE member_terms (
 -- ============================================================
 
 CREATE VIEW current_member_terms AS
-SELECT mt.*
+SELECT
+    mt.*,
+    cp.party,
+    cp.source_party_name
 FROM member_terms AS mt
 JOIN congresses AS c
     ON c.congress = mt.congress
+JOIN members AS m
+    ON m.bioguide_id = mt.bioguide_id
+LEFT JOIN LATERAL (
+    SELECT
+        elem ->> 'party' AS party,
+        elem ->> 'source_party_name' AS source_party_name
+    FROM jsonb_array_elements(m.party_history) AS elem
+    ORDER BY (elem ->> 'start_year')::int DESC
+    LIMIT 1
+) AS cp ON TRUE
 WHERE c.start_date <= CURRENT_DATE
   AND CURRENT_DATE < c.end_date;
 
