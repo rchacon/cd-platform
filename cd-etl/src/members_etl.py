@@ -60,15 +60,22 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 
 
 def _party_history(party_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "party": PARTY_MAP.get(entry.get("partyName"), "OTHER"),
-            "source_party_name": entry.get("partyName"),
-            "start_year": _to_smallint(entry.get("startYear")),
-            "end_year": _to_smallint(entry.get("endYear")),
-        }
-        for entry in party_history
-    ]
+    # Sorted by start_year rather than trusting upstream array order, so
+    # source_hash is a function of the data and not of however the API
+    # happens to order its response -- the API doesn't document any
+    # ordering guarantee for this array.
+    return sorted(
+        (
+            {
+                "party": PARTY_MAP.get(entry.get("partyName"), "OTHER"),
+                "source_party_name": entry.get("partyName"),
+                "start_year": _to_smallint(entry.get("startYear")),
+                "end_year": _to_smallint(entry.get("endYear")),
+            }
+            for entry in party_history
+        ),
+        key=lambda period: period["start_year"],
+    )
 
 
 def _source_hash(*parts: Any) -> str:
