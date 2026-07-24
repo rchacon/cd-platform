@@ -17,6 +17,9 @@ dist/
 venv/
 env/
 
+# Local Airflow home (metadata db, connections, logs)
+.airflow/
+
 # Testing / coverage
 .pytest_cache/
 .coverage
