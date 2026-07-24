@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import members_etl as etl
 
 
@@ -113,6 +115,51 @@ def test_term_rows_senate_seat_has_no_district():
     rows = etl._term_rows(member, 119)
 
     assert rows[0][:8] == ("M001244", 119, "SENATE", "Senator", "FL", None, 2025, None)
+
+
+def test_members_needing_sync_includes_new_members_not_in_stored_data():
+    summaries = [{"bioguideId": "NEW001", "updateDate": "2026-01-01T00:00:00Z"}]
+
+    assert etl._members_needing_sync(summaries, stored_updated_at={}) == ["NEW001"]
+
+
+def test_members_needing_sync_skips_members_with_unchanged_update_date():
+    last_synced = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    summaries = [{"bioguideId": "SAME001", "updateDate": "2026-01-01T00:00:00Z"}]
+
+    result = etl._members_needing_sync(summaries, {"SAME001": last_synced})
+
+    assert result == []
+
+
+def test_members_needing_sync_includes_members_with_newer_update_date():
+    last_synced = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    summaries = [{"bioguideId": "CHANGED001", "updateDate": "2026-06-01T00:00:00Z"}]
+
+    result = etl._members_needing_sync(summaries, {"CHANGED001": last_synced})
+
+    assert result == ["CHANGED001"]
+
+
+def test_members_needing_sync_includes_members_missing_update_date_defensively():
+    # If the API ever omits updateDate we can't tell whether the member
+    # changed, so err on the side of re-fetching rather than risk
+    # silently skipping a real update forever.
+    last_synced = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    summaries = [{"bioguideId": "NOUPDATE001", "updateDate": None}]
+
+    result = etl._members_needing_sync(summaries, {"NOUPDATE001": last_synced})
+
+    assert result == ["NOUPDATE001"]
+
+
+def test_members_needing_sync_skips_members_with_older_update_date():
+    last_synced = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    summaries = [{"bioguideId": "OLD001", "updateDate": "2026-01-01T00:00:00Z"}]
+
+    result = etl._members_needing_sync(summaries, {"OLD001": last_synced})
+
+    assert result == []
 
 
 def test_term_rows_only_includes_the_requested_congress():
