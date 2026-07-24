@@ -147,6 +147,17 @@ def _member_row(member: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _wrap_party_history_for_insert(
+    member_rows: list[tuple[Any, ...]],
+) -> list[tuple[Any, ...]]:
+    # party_history (index 11) is wrapped in Json(...) here, right
+    # before the insert, rather than in _member_row/transform --
+    # transform's return value crosses an XCom boundary (serialized to
+    # JSON in the metadata DB), and psycopg2's Json wrapper isn't
+    # something Airflow's XCom serializer knows how to encode.
+    return [(*row[:11], Json(row[11]), *row[12:]) for row in member_rows]
+
+
 def _term_rows(member: dict[str, Any], congress: int) -> list[tuple[Any, ...]]:
     bioguide_id = member["bioguideId"]
 
@@ -324,14 +335,7 @@ def congress_members_etl():
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         conn = hook.get_conn()
 
-        # party_history is wrapped in Json(...) here, right before the
-        # insert, rather than in transform -- transform's return value
-        # crosses an XCom boundary (serialized to JSON in the metadata
-        # DB), and psycopg2's Json wrapper isn't something Airflow's
-        # XCom serializer knows how to encode.
-        member_rows = [
-            (*row[:11], Json(row[11]), *row[12:]) for row in rows["members"]
-        ]
+        member_rows = _wrap_party_history_for_insert(rows["members"])
 
         try:
             with conn.cursor() as cursor:

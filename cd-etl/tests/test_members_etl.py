@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+from psycopg2.extras import Json
+
 import members_etl as etl
 
 
@@ -73,6 +75,21 @@ def test_member_row_party_history_column_is_sorted():
     stored = row[party_history_index]
     assert isinstance(stored, list)
     assert [p["start_year"] for p in stored] == [2023, 2026]
+
+
+def test_wrap_party_history_for_insert_wraps_only_that_column():
+    # Regression test: load() reconstructs each row by index to inject
+    # Json(...) around party_history -- this pins that reconstruction
+    # so a future change to _member_row's tuple shape can't silently
+    # shift which column gets wrapped without a test failing.
+    row = etl._member_row(_kiley_member("independent_first"))
+
+    wrapped = etl._wrap_party_history_for_insert([row])[0]
+
+    assert isinstance(wrapped[11], Json)
+    assert wrapped[11].adapted == row[11]
+    assert wrapped[:11] == row[:11]
+    assert wrapped[12:] == row[12:]
 
 
 def test_term_rows_at_large_house_seat_defaults_district_to_zero():
