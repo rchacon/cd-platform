@@ -245,6 +245,14 @@ CREATE TABLE member_terms (
 -- start_year), so a mid-term party switch is reflected
 -- immediately without needing to touch member_terms.
 --
+-- Joins in the biographical/contact fields a lookup consumer
+-- needs (name, photo, phone, website) so this view alone is
+-- enough to answer "who currently represents this district."
+-- Deliberately excludes any Senior/Senator vs. Junior Senator
+-- distinction -- that's based on continuous years of Senate
+-- service, which isn't derivable from current-Congress-only
+-- term data.
+--
 -- TODO:
 --   This may incorrectly include members who resigned, died,
 --   or were otherwise replaced during the current Congress.
@@ -256,6 +264,14 @@ CREATE TABLE member_terms (
 CREATE VIEW current_member_terms AS
 SELECT
     mt.*,
+    m.given_name,
+    m.middle_name,
+    m.family_name,
+    m.nickname,
+    m.suffix,
+    m.photo_uri,
+    m.phone,
+    m.website_url,
     cp.party,
     cp.source_party_name
 FROM member_terms AS mt
