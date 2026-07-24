@@ -241,3 +241,33 @@ def test_term_rows_only_includes_the_requested_congress():
     assert len(rows) == 1
     assert rows[0][1] == 119
     assert rows[0][7] == 2025
+
+
+def test_dag_has_expected_tasks_wired_in_the_expected_order():
+    # Cheap sanity check that catches typos/wiring mistakes (a renamed
+    # task, a dropped dependency) before they ever reach a real
+    # Airflow run.
+    dag = etl.congress_members_etl()
+
+    assert dag.dag_id == "congress_members_etl"
+    assert set(dag.task_dict.keys()) == {
+        "sync_current_congress",
+        "get_current_congress",
+        "extract_member_summaries",
+        "filter_members_needing_sync",
+        "fetch_member_details",
+        "transform",
+        "load",
+    }
+
+    upstream = {
+        task_id: set(task.upstream_task_ids)
+        for task_id, task in dag.task_dict.items()
+    }
+    assert upstream["sync_current_congress"] == set()
+    assert upstream["get_current_congress"] == {"sync_current_congress"}
+    assert upstream["extract_member_summaries"] == {"get_current_congress"}
+    assert upstream["filter_members_needing_sync"] == {"extract_member_summaries"}
+    assert upstream["fetch_member_details"] == {"filter_members_needing_sync"}
+    assert upstream["transform"] == {"fetch_member_details", "get_current_congress"}
+    assert upstream["load"] == {"transform"}
