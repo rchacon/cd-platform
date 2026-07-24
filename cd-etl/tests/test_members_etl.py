@@ -62,10 +62,14 @@ def test_member_row_source_hash_is_independent_of_party_history_order():
 
 
 def test_member_row_party_history_column_is_sorted():
+    # party_history must stay a plain, JSON-serializable list here (not
+    # wrapped in psycopg2.extras.Json) since transform's output crosses
+    # an XCom boundary before load() does the actual DB write.
     row = etl._member_row(_kiley_member("independent_first"))
 
     party_history_index = 11
-    stored = row[party_history_index].adapted
+    stored = row[party_history_index]
+    assert isinstance(stored, list)
     assert [p["start_year"] for p in stored] == [2023, 2026]
 
 

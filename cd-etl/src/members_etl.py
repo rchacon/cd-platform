@@ -113,7 +113,7 @@ def _member_row(member: dict[str, Any]) -> tuple[Any, ...]:
         photo_uri,
         phone,
         website_url,
-        Json(party_history),
+        party_history,
         _source_hash(
             bioguide_id, given_name, middle_name, family_name, nickname,
             suffix, birth_year, death_year, photo_uri, phone, website_url,
@@ -311,6 +311,15 @@ def congress_members_etl():
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         conn = hook.get_conn()
 
+        # party_history is wrapped in Json(...) here, right before the
+        # insert, rather than in transform -- transform's return value
+        # crosses an XCom boundary (serialized to JSON in the metadata
+        # DB), and psycopg2's Json wrapper isn't something Airflow's
+        # XCom serializer knows how to encode.
+        member_rows = [
+            (*row[:11], Json(row[11]), *row[12:]) for row in rows["members"]
+        ]
+
         try:
             with conn.cursor() as cursor:
                 execute_values(
@@ -341,7 +350,7 @@ def congress_members_etl():
                         updated_at = NOW()
                     WHERE members.source_hash IS DISTINCT FROM EXCLUDED.source_hash
                     """,
-                    rows["members"],
+                    member_rows,
                 )
 
                 execute_values(
