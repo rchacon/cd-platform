@@ -362,10 +362,26 @@ def congress_members_etl():
         def fetch_one(bioguide_id: str) -> dict[str, Any]:
             return _api_get(f"{CONGRESS_MEMBERS_API}{bioguide_id}")["member"]
 
+        details = []
         with ThreadPoolExecutor(max_workers=DETAIL_FETCH_WORKERS) as executor:
-            details = list(executor.map(fetch_one, bioguide_ids))
+            futures = {
+                executor.submit(fetch_one, bioguide_id): bioguide_id
+                for bioguide_id in bioguide_ids
+            }
+            for future in futures:
+                try:
+                    details.append(future.result())
+                except Exception as exc:
+                    # One member's detail fetch failing (404, rate
+                    # limit, transient 5xx) shouldn't discard every
+                    # other already-fetched member in this batch.
+                    logger.error(
+                        "Failed to fetch detail for %s: %s", futures[future], exc,
+                    )
 
-        logger.info("Fetched details for %d members", len(details))
+        logger.info(
+            "Fetched details for %d of %d members", len(details), len(bioguide_ids),
+        )
         return details
 
     @task

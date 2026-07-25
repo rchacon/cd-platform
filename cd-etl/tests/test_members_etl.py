@@ -255,6 +255,26 @@ def test_term_rows_only_includes_the_requested_congress():
     assert rows[0][7] == 2025
 
 
+def test_fetch_member_details_skips_failed_fetches_without_failing_the_batch(monkeypatch):
+    # Regression test: ThreadPoolExecutor.map + list(...) previously
+    # re-raised the first exception, discarding every other
+    # already-fetched member's details when even one fetch failed.
+    def fake_api_get(url, params=None):
+        bioguide_id = url.rsplit("/", 1)[-1]
+        if bioguide_id == "BAD001":
+            raise RuntimeError("simulated API failure")
+        return {"member": {"bioguideId": bioguide_id}}
+
+    monkeypatch.setattr(etl, "_api_get", fake_api_get)
+
+    dag = etl.congress_members_etl()
+    fetch_member_details = dag.task_dict["fetch_member_details"].python_callable
+
+    result = fetch_member_details(["GOOD001", "BAD001", "GOOD002"])
+
+    assert sorted(m["bioguideId"] for m in result) == ["GOOD001", "GOOD002"]
+
+
 def test_transform_skips_malformed_member_without_failing_the_batch():
     # Regression test: _term_rows previously indexed term["chamber"] etc.
     # unguarded, so one member with an unrecognized chamber value raised
