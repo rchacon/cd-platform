@@ -107,6 +107,7 @@ PARTY_MAP = {
     "Republican": "REPUBLICAN",
     "Independent": "INDEPENDENT",
     "Independent Democrat": "DEMOCRATIC",
+    "Independent Republican": "REPUBLICAN",
     "Libertarian": "LIBERTARIAN",
     "Green": "GREEN",
 }

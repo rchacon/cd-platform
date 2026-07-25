@@ -77,6 +77,18 @@ def test_party_history_normalizes_known_and_unknown_parties():
     assert result[1]["source_party_name"] == "Republican"
 
 
+def test_party_history_normalizes_independent_republican_symmetrically_with_democrat():
+    # PARTY_MAP had "Independent Democrat" -> DEMOCRATIC but no
+    # "Independent Republican" entry, so the latter fell through to
+    # OTHER instead of REPUBLICAN.
+    result = etl._party_history([
+        {"partyName": "Independent Republican", "startYear": 2020},
+    ])
+
+    assert result[0]["party"] == "REPUBLICAN"
+    assert result[0]["source_party_name"] == "Independent Republican"
+
+
 def test_member_row_source_hash_is_independent_of_party_history_order():
     # Regression test: source_hash must not change just because the
     # upstream API happens to return partyHistory in a different order
