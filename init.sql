@@ -238,10 +238,29 @@ CREATE TABLE member_terms (
 
 
 -- ============================================================
+-- Current Congress
+--
+-- The single source of truth for "which Congress is current."
+-- Both the ETL (which needs a congress number to sync against)
+-- and current_member_terms below call this function rather than
+-- each independently typing the same start_date/end_date
+-- predicate -- two copies of that logic could silently drift if
+-- the definition of "current" ever changes (e.g. a grace period).
+-- ============================================================
+
+CREATE FUNCTION current_congress() RETURNS SMALLINT AS $$
+    SELECT congress FROM congresses
+    WHERE start_date <= CURRENT_DATE AND CURRENT_DATE < end_date
+    ORDER BY congress DESC
+    LIMIT 1
+$$ LANGUAGE sql STABLE;
+
+
+-- ============================================================
 -- Current Member Terms
 --
--- A term is current when it belongs to the Congress whose date
--- range contains CURRENT_DATE.
+-- A term is current when it belongs to the Congress that
+-- current_congress() returns.
 --
 -- Since Congress.gov currently provides only startYear and
 -- endYear (not exact service dates), this view determines
@@ -282,8 +301,6 @@ SELECT
     cp.party,
     cp.source_party_name
 FROM member_terms AS mt
-JOIN congresses AS c
-    ON c.congress = mt.congress
 JOIN members AS m
     ON m.bioguide_id = mt.bioguide_id
 LEFT JOIN LATERAL (
@@ -294,8 +311,7 @@ LEFT JOIN LATERAL (
     ORDER BY (elem ->> 'start_year')::int DESC
     LIMIT 1
 ) AS cp ON TRUE
-WHERE c.start_date <= CURRENT_DATE
-  AND CURRENT_DATE < c.end_date;
+WHERE mt.congress = current_congress();
 
 
 -- ============================================================

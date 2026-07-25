@@ -329,19 +329,14 @@ def congress_members_etl():
 
     @task
     def get_current_congress(_synced_congress: int) -> int:
-        # Determine "current" from our own congresses table rather than
-        # the API's notion of current, so this ETL and the
-        # current_member_terms view share a single definition.
+        # Determine "current" via the Postgres current_congress()
+        # function (see init.sql) rather than the API's notion of
+        # current, or re-typing the date-range predicate here -- that
+        # function is the single place this ETL and the
+        # current_member_terms view both derive "current" from.
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-        row = hook.get_first(
-            """
-            SELECT congress FROM congresses
-            WHERE start_date <= CURRENT_DATE AND CURRENT_DATE < end_date
-            ORDER BY congress DESC
-            LIMIT 1
-            """
-        )
-        if row is None:
+        row = hook.get_first("SELECT current_congress()")
+        if row is None or row[0] is None:
             raise ValueError("No current congress found in congresses table")
         return row[0]
 
