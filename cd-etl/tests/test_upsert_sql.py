@@ -124,3 +124,36 @@ def test_members_upsert_advances_source_updated_at_without_hash_change(pg_conn, 
     assert first_source_updated_at == t1
     assert second_source_updated_at == t2
     assert second_updated_at == first_updated_at
+
+
+def test_members_needing_sync_works_with_real_postgres_driver_datetimes(
+    pg_conn, test_bioguide_id
+):
+    # Regression/coverage test: _members_needing_sync's unit tests only
+    # ever pass hand-built, already-timezone-aware datetimes. This
+    # exercises the real producer path -- a TIMESTAMPTZ column read
+    # back via psycopg2 -- feeding directly into the same comparison,
+    # so a future driver/column-type change that started returning
+    # naive datetimes (which would raise TypeError comparing against
+    # _parse_timestamp's aware output) would fail this test.
+    stored_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with pg_conn.cursor() as cursor:
+        execute_values(
+            cursor, etl.MEMBERS_UPSERT_SQL,
+            [_member_row(test_bioguide_id, "hash-a", stored_at)],
+        )
+    pg_conn.commit()
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute("SELECT bioguide_id, source_updated_at FROM members")
+        stored_updated_at = dict(cursor.fetchall())
+
+    unchanged_summary = [{"bioguideId": test_bioguide_id, "updateDate": "2026-01-01T00:00:00Z"}]
+    changed_summary = [{"bioguideId": test_bioguide_id, "updateDate": "2026-06-01T00:00:00Z"}]
+
+    assert etl._members_needing_sync(
+        unchanged_summary, stored_updated_at, bioguide_ids_with_current_term={test_bioguide_id},
+    ) == []
+    assert etl._members_needing_sync(
+        changed_summary, stored_updated_at, bioguide_ids_with_current_term={test_bioguide_id},
+    ) == [test_bioguide_id]
