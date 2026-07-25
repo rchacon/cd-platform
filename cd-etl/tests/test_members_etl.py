@@ -181,14 +181,20 @@ def test_derive_congress_dates_falls_back_when_no_sessions_have_start_dates():
 def test_members_needing_sync_includes_new_members_not_in_stored_data():
     summaries = [{"bioguideId": "NEW001", "updateDate": "2026-01-01T00:00:00Z"}]
 
-    assert etl._members_needing_sync(summaries, stored_updated_at={}) == ["NEW001"]
+    result = etl._members_needing_sync(
+        summaries, stored_updated_at={}, bioguide_ids_with_current_term=set(),
+    )
+
+    assert result == ["NEW001"]
 
 
 def test_members_needing_sync_skips_members_with_unchanged_update_date():
     last_synced = datetime(2026, 1, 1, tzinfo=timezone.utc)
     summaries = [{"bioguideId": "SAME001", "updateDate": "2026-01-01T00:00:00Z"}]
 
-    result = etl._members_needing_sync(summaries, {"SAME001": last_synced})
+    result = etl._members_needing_sync(
+        summaries, {"SAME001": last_synced}, bioguide_ids_with_current_term={"SAME001"},
+    )
 
     assert result == []
 
@@ -197,7 +203,9 @@ def test_members_needing_sync_includes_members_with_newer_update_date():
     last_synced = datetime(2026, 1, 1, tzinfo=timezone.utc)
     summaries = [{"bioguideId": "CHANGED001", "updateDate": "2026-06-01T00:00:00Z"}]
 
-    result = etl._members_needing_sync(summaries, {"CHANGED001": last_synced})
+    result = etl._members_needing_sync(
+        summaries, {"CHANGED001": last_synced}, bioguide_ids_with_current_term={"CHANGED001"},
+    )
 
     assert result == ["CHANGED001"]
 
@@ -209,7 +217,9 @@ def test_members_needing_sync_includes_members_missing_update_date_defensively()
     last_synced = datetime(2026, 1, 1, tzinfo=timezone.utc)
     summaries = [{"bioguideId": "NOUPDATE001", "updateDate": None}]
 
-    result = etl._members_needing_sync(summaries, {"NOUPDATE001": last_synced})
+    result = etl._members_needing_sync(
+        summaries, {"NOUPDATE001": last_synced}, bioguide_ids_with_current_term={"NOUPDATE001"},
+    )
 
     assert result == ["NOUPDATE001"]
 
@@ -218,9 +228,27 @@ def test_members_needing_sync_skips_members_with_older_update_date():
     last_synced = datetime(2026, 6, 1, tzinfo=timezone.utc)
     summaries = [{"bioguideId": "OLD001", "updateDate": "2026-01-01T00:00:00Z"}]
 
-    result = etl._members_needing_sync(summaries, {"OLD001": last_synced})
+    result = etl._members_needing_sync(
+        summaries, {"OLD001": last_synced}, bioguide_ids_with_current_term={"OLD001"},
+    )
 
     assert result == []
+
+
+def test_members_needing_sync_includes_returning_member_missing_current_congress_term():
+    # Regression test (Congress rollover): a returning incumbent whose
+    # bio-level updateDate is unchanged must still be re-synced if they
+    # don't yet have a member_terms row for the current Congress --
+    # otherwise they'd silently never get one, since skipping the
+    # detail fetch also skips _term_rows for the new Congress.
+    last_synced = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    summaries = [{"bioguideId": "RETURNING001", "updateDate": "2026-01-01T00:00:00Z"}]
+
+    result = etl._members_needing_sync(
+        summaries, {"RETURNING001": last_synced}, bioguide_ids_with_current_term=set(),
+    )
+
+    assert result == ["RETURNING001"]
 
 
 def test_term_rows_only_includes_the_requested_congress():
@@ -339,7 +367,9 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
     assert upstream["sync_current_congress"] == set()
     assert upstream["get_current_congress"] == {"sync_current_congress"}
     assert upstream["extract_member_summaries"] == {"get_current_congress"}
-    assert upstream["filter_members_needing_sync"] == {"extract_member_summaries"}
+    assert upstream["filter_members_needing_sync"] == {
+        "extract_member_summaries", "get_current_congress",
+    }
     assert upstream["fetch_member_details"] == {"filter_members_needing_sync"}
     assert upstream["transform"] == {"fetch_member_details", "get_current_congress"}
     assert upstream["load"] == {"transform"}

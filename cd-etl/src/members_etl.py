@@ -133,9 +133,11 @@ def _derive_congress_dates(payload: dict[str, Any]) -> tuple[int, date, date]:
 def _members_needing_sync(
     summaries: list[dict[str, Any]],
     stored_updated_at: dict[str, datetime | None],
+    bioguide_ids_with_current_term: set[str],
 ) -> list[str]:
-    # Only re-fetch full detail for members that are new to us or whose
-    # source record has changed since our last sync -- the detail
+    # Only re-fetch full detail for members that are new to us, whose
+    # source record has changed since our last sync, or who don't yet
+    # have a member_terms row for the current Congress -- the detail
     # endpoint is one call per member, so skipping unchanged members
     # avoids hundreds of needless requests on a typical day.
     stale_or_new = []
@@ -144,11 +146,25 @@ def _members_needing_sync(
         last_synced = stored_updated_at.get(bioguide_id)
         source_updated = _parse_timestamp(summary.get("updateDate"))
 
+        # A returning incumbent's bio-level updateDate may not change
+        # just because a new Congress started -- relying on that alone
+        # would silently skip creating their member_terms row for the
+        # new Congress forever. Checking membership in
+        # bioguide_ids_with_current_term directly, rather than assuming
+        # anything about how/whether the source's updateDate reflects
+        # term-only changes, is what actually guarantees a member isn't
+        # missed on a Congress rollover.
+        needs_term_sync = bioguide_id not in bioguide_ids_with_current_term
+
         # source_updated is None if the API ever omits/malforms
         # updateDate for a member -- never observed in practice, but if
         # it happens we can't tell whether they changed, so re-fetch
         # rather than risk silently skipping a real update forever.
-        if last_synced is None or source_updated is None or source_updated > last_synced:
+        needs_bio_sync = (
+            last_synced is None or source_updated is None or source_updated > last_synced
+        )
+
+        if needs_bio_sync or needs_term_sync:
             stale_or_new.append(bioguide_id)
 
     return stale_or_new
@@ -353,13 +369,24 @@ def congress_members_etl():
         return summaries
 
     @task
-    def filter_members_needing_sync(summaries: list[dict[str, Any]]) -> list[str]:
+    def filter_members_needing_sync(
+        summaries: list[dict[str, Any]], congress: int
+    ) -> list[str]:
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         stored_updated_at = dict(
             hook.get_records("SELECT bioguide_id, source_updated_at FROM members")
         )
+        bioguide_ids_with_current_term = {
+            row[0]
+            for row in hook.get_records(
+                "SELECT DISTINCT bioguide_id FROM member_terms WHERE congress = %s",
+                parameters=(congress,),
+            )
+        }
 
-        stale_or_new = _members_needing_sync(summaries, stored_updated_at)
+        stale_or_new = _members_needing_sync(
+            summaries, stored_updated_at, bioguide_ids_with_current_term,
+        )
 
         logger.info(
             "%d of %d members need a detail sync", len(stale_or_new), len(summaries),
@@ -448,7 +475,7 @@ def congress_members_etl():
 
     current_congress = get_current_congress(sync_current_congress())
     summaries = extract_member_summaries(current_congress)
-    member_ids = filter_members_needing_sync(summaries)
+    member_ids = filter_members_needing_sync(summaries, current_congress)
     details = fetch_member_details(member_ids)
     load(transform(details, current_congress))
 
