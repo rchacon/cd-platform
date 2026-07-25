@@ -79,6 +79,11 @@ CREATE TABLE members (
     -- Official congressional portrait URI.
     photo_uri       TEXT,
 
+    -- office_address (from the upstream addressInformation object) is
+    -- deliberately not stored -- not called for by any current
+    -- consumer (cd-lookup's UI only needs name/party/phone/website/
+    -- photo). Add it if/when a consumer actually needs it, rather
+    -- than storing it speculatively.
     phone           TEXT,
     website_url     TEXT,
 
