@@ -43,8 +43,17 @@ MEMBERS_UPSERT_SQL = """
         source_hash = EXCLUDED.source_hash,
         source_updated_at = EXCLUDED.source_updated_at,
         synced_at = NOW(),
-        updated_at = NOW()
+        -- updated_at reflects a real content change (source_hash),
+        -- not just a fresh source_updated_at -- otherwise it would
+        -- bump every time the source's timestamp ticks even when
+        -- nothing we store actually changed.
+        updated_at = CASE
+            WHEN members.source_hash IS DISTINCT FROM EXCLUDED.source_hash
+            THEN NOW()
+            ELSE members.updated_at
+        END
     WHERE members.source_hash IS DISTINCT FROM EXCLUDED.source_hash
+       OR members.source_updated_at IS DISTINCT FROM EXCLUDED.source_updated_at
 """
 
 MEMBER_TERMS_UPSERT_SQL = """

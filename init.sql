@@ -108,11 +108,18 @@ CREATE TABLE members (
     source_hash     TEXT NOT NULL,
 
     -- Timestamp reported by the upstream source indicating when
-    -- the source record was last updated.
+    -- the source record was last updated. Always reflects the
+    -- source's current value on every sync, regardless of
+    -- whether source_hash changed -- source_hash covers only a
+    -- subset of fields (see above), so gating this column on it
+    -- would let it lag behind the source and, since the ETL
+    -- compares this value to decide whether a member needs a
+    -- detail re-fetch, could cause the same member to be
+    -- re-fetched forever.
     --
-    -- Retained for auditing and diagnostics only.
     -- source_hash remains the authoritative mechanism for
-    -- detecting normalized data changes.
+    -- detecting normalized data changes; this column is not a
+    -- substitute for it.
     source_updated_at TIMESTAMPTZ,
 
     -- Most recent successful synchronization with the upstream

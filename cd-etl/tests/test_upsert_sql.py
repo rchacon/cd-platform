@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 
 import psycopg2
 import pytest
@@ -30,10 +31,10 @@ def pg_conn():
     conn.close()
 
 
-def _member_row(bioguide_id: str, source_hash: str) -> tuple:
+def _member_row(bioguide_id: str, source_hash: str, source_updated_at=None) -> tuple:
     return (
         bioguide_id, "Test", None, "Member", None, None,
-        1970, None, None, None, None, Json([]), source_hash, None,
+        1970, None, None, None, None, Json([]), source_hash, source_updated_at,
     )
 
 
@@ -43,6 +44,15 @@ def _get_updated_at(pg_conn, bioguide_id: str):
             "SELECT updated_at FROM members WHERE bioguide_id = %s", (bioguide_id,)
         )
         return cursor.fetchone()[0]
+
+
+def _get_row(pg_conn, bioguide_id: str):
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT source_updated_at, updated_at FROM members WHERE bioguide_id = %s",
+            (bioguide_id,),
+        )
+        return cursor.fetchone()
 
 
 @pytest.fixture
@@ -82,3 +92,35 @@ def test_members_upsert_bumps_update_when_source_hash_changed(pg_conn, test_biog
     second_updated_at = _get_updated_at(pg_conn, test_bioguide_id)
 
     assert second_updated_at > first_updated_at
+
+
+def test_members_upsert_advances_source_updated_at_without_hash_change(pg_conn, test_bioguide_id):
+    # Regression test: source_updated_at previously only advanced when
+    # source_hash changed too, so it could permanently lag behind the
+    # source and cause a member to be re-fetched forever (source_hash
+    # doesn't cover every field the source's updateDate can reflect).
+    # It should always mirror the source's reported value, while
+    # updated_at stays frozen unless real content (source_hash) changed.
+    t1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    t2 = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    with pg_conn.cursor() as cursor:
+        execute_values(
+            cursor, etl.MEMBERS_UPSERT_SQL,
+            [_member_row(test_bioguide_id, "hash-a", t1)],
+        )
+    pg_conn.commit()
+    first_source_updated_at, first_updated_at = _get_row(pg_conn, test_bioguide_id)
+
+    time.sleep(0.01)
+    with pg_conn.cursor() as cursor:
+        execute_values(
+            cursor, etl.MEMBERS_UPSERT_SQL,
+            [_member_row(test_bioguide_id, "hash-a", t2)],  # same hash, newer timestamp
+        )
+    pg_conn.commit()
+    second_source_updated_at, second_updated_at = _get_row(pg_conn, test_bioguide_id)
+
+    assert first_source_updated_at == t1
+    assert second_source_updated_at == t2
+    assert second_updated_at == first_updated_at
