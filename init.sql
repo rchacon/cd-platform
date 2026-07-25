@@ -57,8 +57,9 @@ CREATE TABLE congresses (
 --
 -- party_history stores the member's full party affiliation
 -- timeline, independent of Congress or term boundaries -- it
--- mirrors the upstream partyHistory array directly and is not
--- validated against party_type at the database level.
+-- mirrors the upstream partyHistory array directly. Party values
+-- are not constrained by a database enum; normalization happens
+-- entirely in the ETL (see PARTY_MAP in members_etl.py).
 --
 -- Mutable office attributes such as district are intentionally
 -- stored outside this table, in member_terms.
