@@ -11,6 +11,8 @@ import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 from psycopg2.extras import Json, execute_values
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 CONGRESS_API_KEY = os.environ["CONGRESS_API_KEY"]
 CONGRESS_MEMBERS_API = "https://api.congress.gov/v3/member/"
@@ -19,6 +21,27 @@ CONGRESS_CURRENT_CONGRESS_API = "https://api.congress.gov/v3/congress/current"
 PAGE_LIMIT = 250
 DETAIL_FETCH_WORKERS = 10
 POSTGRES_CONN_ID = "congressional_postgres"
+
+# Shared across all API calls (including the DETAIL_FETCH_WORKERS-way
+# thread pool in fetch_member_details) so requests reuse pooled
+# connections instead of paying a fresh TCP+TLS handshake every call,
+# and transient failures (rate limits, 5xxs) retry with backoff instead
+# of failing the whole call on the first hiccup. The underlying
+# urllib3 connection pool is thread-safe, so one shared Session is the
+# standard pattern for this. Only GET is used against this API.
+_API_SESSION = requests.Session()
+_API_SESSION.mount(
+    "https://",
+    HTTPAdapter(
+        max_retries=Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset(["GET"]),
+        ),
+        pool_maxsize=DETAIL_FETCH_WORKERS,
+    ),
+)
 
 MEMBERS_UPSERT_SQL = """
     INSERT INTO members (
@@ -92,7 +115,7 @@ logger = logging.getLogger(__name__)
 
 
 def _api_get(url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    response = requests.get(
+    response = _API_SESSION.get(
         url,
         params={**(params or {}), "api_key": CONGRESS_API_KEY, "format": "json"},
         timeout=30,

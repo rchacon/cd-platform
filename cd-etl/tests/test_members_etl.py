@@ -384,3 +384,16 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
     assert upstream["fetch_member_details"] == {"filter_members_needing_sync"}
     assert upstream["transform"] == {"fetch_member_details", "get_current_congress"}
     assert upstream["load"] == {"transform"}
+
+
+def test_api_session_reuses_connections_and_retries_transient_failures():
+    # Regression test: _api_get previously used the module-level
+    # requests.get(), which opens and tears down a fresh Session (and
+    # connection) on every call and has no retry/backoff -- across
+    # ~500+ per-member detail calls that meant no connection reuse and
+    # a single transient 5xx/timeout failing the whole task.
+    adapter = etl._API_SESSION.get_adapter("https://api.congress.gov")
+
+    assert adapter.max_retries.total == 3
+    assert "GET" in adapter.max_retries.allowed_methods
+    assert 500 in adapter.max_retries.status_forcelist
