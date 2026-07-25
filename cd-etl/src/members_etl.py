@@ -372,8 +372,25 @@ def congress_members_etl():
     def transform(
         members: list[dict[str, Any]], congress: int
     ) -> dict[str, list[tuple[Any, ...]]]:
-        member_rows = [_member_row(member) for member in members]
-        term_rows = [row for member in members for row in _term_rows(member, congress)]
+        member_rows = []
+        term_rows = []
+
+        for member in members:
+            try:
+                member_row = _member_row(member)
+                member_term_rows = _term_rows(member, congress)
+            except (KeyError, TypeError) as exc:
+                # One member with unexpected/missing API fields (e.g. an
+                # unrecognized chamber value) shouldn't abort the whole
+                # batch -- log it and continue with everyone else.
+                logger.error(
+                    "Skipping member %s: malformed API data (%s)",
+                    member.get("bioguideId", "<unknown>"), exc,
+                )
+                continue
+
+            member_rows.append(member_row)
+            term_rows.extend(member_term_rows)
 
         logger.info(
             "Transformed %d members into %d term rows",

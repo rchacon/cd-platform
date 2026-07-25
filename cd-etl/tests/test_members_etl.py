@@ -255,6 +255,46 @@ def test_term_rows_only_includes_the_requested_congress():
     assert rows[0][7] == 2025
 
 
+def test_transform_skips_malformed_member_without_failing_the_batch():
+    # Regression test: _term_rows previously indexed term["chamber"] etc.
+    # unguarded, so one member with an unrecognized chamber value raised
+    # an uncaught KeyError that aborted transform() for the whole batch.
+    dag = etl.congress_members_etl()
+    transform = dag.task_dict["transform"].python_callable
+
+    good_member = {
+        "bioguideId": "GOOD001",
+        "firstName": "Jane",
+        "lastName": "Doe",
+        "terms": [{
+            "chamber": "House of Representatives",
+            "congress": 119,
+            "memberType": "Representative",
+            "startYear": 2025,
+            "stateCode": "CA",
+            "district": 1,
+        }],
+    }
+    bad_member = {
+        "bioguideId": "BAD001",
+        "firstName": "Bad",
+        "lastName": "Data",
+        "terms": [{
+            "chamber": "Unrecognized Chamber",
+            "congress": 119,
+            "memberType": "Representative",
+            "startYear": 2025,
+            "stateCode": "CA",
+            "district": 1,
+        }],
+    }
+
+    result = transform([good_member, bad_member], 119)
+
+    assert [row[0] for row in result["members"]] == ["GOOD001"]
+    assert [row[0] for row in result["terms"]] == ["GOOD001"]
+
+
 def test_dag_has_expected_tasks_wired_in_the_expected_order():
     # Cheap sanity check that catches typos/wiring mistakes (a renamed
     # task, a dropped dependency) before they ever reach a real
