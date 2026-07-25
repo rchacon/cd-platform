@@ -268,8 +268,12 @@ def _term_rows(member: dict[str, Any], congress: int) -> list[tuple[Any, ...]]:
         member_type = term["memberType"]
         state = term["stateCode"]
         # The item-level API omits "district" entirely for at-large
-        # seats (unlike the list endpoint, which returns 0), so a
-        # missing value for a House seat means at-large, not Senate.
+        # seats (unlike the list endpoint, which returns 0) -- confirmed
+        # directly against the live API (e.g. M001238/McBride, at-large
+        # DE: item-level omits district, list-level shows district: 0;
+        # same pattern for DC/territory delegates). This is a
+        # deliberate, verified API convention, not a guess, so a
+        # missing value for a House seat is treated as at-large.
         district = (term.get("district") or 0) if chamber == "HOUSE" else None
         start_year = _to_smallint(term.get("startYear"))
         end_year = _to_smallint(term.get("endYear"))
