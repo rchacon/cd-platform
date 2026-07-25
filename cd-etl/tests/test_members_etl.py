@@ -42,6 +42,18 @@ def test_party_history_sorts_by_start_year_regardless_of_input_order():
     assert [p["start_year"] for p in reversed_order] == [2023, 2026]
 
 
+def test_party_history_does_not_crash_on_missing_start_year():
+    # Regression test: sorted() previously compared start_year values
+    # directly, raising TypeError when one entry's start_year was None
+    # (missing/malformed startYear from the API) and another was an int.
+    result = etl._party_history([
+        {"partyName": "Republican", "startYear": 2023},
+        {"partyName": "Independent"},  # no startYear
+    ])
+
+    assert [p["start_year"] for p in result] == [None, 2023]
+
+
 def test_party_history_normalizes_known_and_unknown_parties():
     result = etl._party_history([
         {"partyName": "Republican", "startYear": 2023},

@@ -160,7 +160,10 @@ def _party_history(party_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
             for entry in party_history
         ),
-        key=lambda period: period["start_year"],
+        # A missing/null start_year sorts first (treated as earliest) via
+        # substitute key values, rather than comparing None to an int (or
+        # to another None) directly, which raises TypeError.
+        key=lambda period: (period["start_year"] is not None, period["start_year"] or 0),
     )
 
 
