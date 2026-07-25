@@ -42,16 +42,27 @@ def test_party_history_sorts_by_start_year_regardless_of_input_order():
     assert [p["start_year"] for p in reversed_order] == [2023, 2026]
 
 
-def test_party_history_does_not_crash_on_missing_start_year():
-    # Regression test: sorted() previously compared start_year values
-    # directly, raising TypeError when one entry's start_year was None
-    # (missing/malformed startYear from the API) and another was an int.
+def test_party_history_drops_entries_with_missing_start_year():
+    # An entry with no startYear can't be placed chronologically, so it
+    # can never correctly answer "which is the most recent party" --
+    # it's dropped rather than stored (also incidentally means sorted()
+    # never has to compare a None start_year against anything).
     result = etl._party_history([
         {"partyName": "Republican", "startYear": 2023},
         {"partyName": "Independent"},  # no startYear
     ])
 
-    assert [p["start_year"] for p in result] == [None, 2023]
+    assert [p["start_year"] for p in result] == [2023]
+
+
+def test_count_missing_start_year_counts_entries_without_a_start_year():
+    party_history = [
+        {"partyName": "Republican", "startYear": 2023},
+        {"partyName": "Independent"},
+        {"partyName": "Democratic", "startYear": None},
+    ]
+
+    assert etl._count_missing_start_year(party_history) == 2
 
 
 def test_party_history_normalizes_known_and_unknown_parties():

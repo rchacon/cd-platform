@@ -170,7 +170,17 @@ def _members_needing_sync(
     return stale_or_new
 
 
+def _count_missing_start_year(party_history: list[dict[str, Any]]) -> int:
+    return sum(1 for entry in party_history if entry.get("startYear") is None)
+
+
 def _party_history(party_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # An entry with no startYear can't be placed chronologically, so it
+    # can never correctly answer "which is the most recent party" --
+    # that's unusable data, not just imprecise data, so it's dropped
+    # rather than stored. Dropped-entry counts are surfaced via
+    # transform()'s summary log line.
+    #
     # Sorted by start_year rather than trusting upstream array order, so
     # source_hash is a function of the data and not of however the API
     # happens to order its response -- the API doesn't document any
@@ -184,11 +194,9 @@ def _party_history(party_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "end_year": _to_smallint(entry.get("endYear")),
             }
             for entry in party_history
+            if entry.get("startYear") is not None
         ),
-        # A missing/null start_year sorts first (treated as earliest) via
-        # substitute key values, rather than comparing None to an int (or
-        # to another None) directly, which raises TypeError.
-        key=lambda period: (period["start_year"] is not None, period["start_year"] or 0),
+        key=lambda period: period["start_year"],
     )
 
 
@@ -426,6 +434,7 @@ def congress_members_etl():
     ) -> dict[str, list[tuple[Any, ...]]]:
         member_rows = []
         term_rows = []
+        dropped_party_history_count = 0
 
         for member in members:
             try:
@@ -441,12 +450,16 @@ def congress_members_etl():
                 )
                 continue
 
+            dropped_party_history_count += _count_missing_start_year(
+                member.get("partyHistory", [])
+            )
             member_rows.append(member_row)
             term_rows.extend(member_term_rows)
 
         logger.info(
-            "Transformed %d members into %d term rows",
-            len(member_rows), len(term_rows),
+            "Transformed %d members into %d term rows "
+            "(%d party_history entries dropped for missing start_year)",
+            len(member_rows), len(term_rows), dropped_party_history_count,
         )
         return {"members": member_rows, "terms": term_rows}
 
