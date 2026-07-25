@@ -503,10 +503,13 @@ def congress_members_etl():
                 "Loaded %d members and %d terms",
                 len(rows["members"]), len(rows["terms"]),
             )
-        except Exception:
-            conn.rollback()
-            raise
         finally:
+            # No explicit rollback needed on the exception path: conn is
+            # a fresh, never-reused connection (hook.get_conn() opens a
+            # new one each call), and psycopg2 performs an implicit
+            # rollback when a connection is closed without a prior
+            # commit -- so close() here already discards any
+            # uncommitted work.
             conn.close()
 
     current_congress = get_current_congress(sync_current_congress())
