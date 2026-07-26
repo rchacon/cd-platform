@@ -15,6 +15,9 @@ PG_DSN = {
 
 
 def get_connection() -> psycopg2.extensions.connection:
+    # TODO: opens a plain connection per call -- fine locally, but Lambda's
+    # concurrency model can exhaust RDS's max_connections in production.
+    # Front this with RDS Proxy (or a pooler) once running on AWS (see #4).
     return psycopg2.connect(cursor_factory=psycopg2.extras.RealDictCursor, **PG_DSN)
 
 
