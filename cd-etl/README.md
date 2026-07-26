@@ -11,7 +11,7 @@ tables defined in `../init.sql`.
 1. `sync_current_congress` — fetches `/congress/current` and upserts the
    `congresses` table (so the app never relies on a hardcoded Congress number).
 2. `get_current_congress` — reads "current" back from `congresses` (date range
-   containing today), so this ETL and the `current_member_terms` view share
+   containing today), so this ETL and the `current_members` view share
    one definition of "current."
 3. `extract_member_summaries` — pages through the full roster of the current
    Congress (including members who've since resigned, died, or been expelled).
