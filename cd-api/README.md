@@ -2,7 +2,7 @@
 
 REST API that `cd-lookup` (the WordPress plugin) consumes for representative
 lookups, replacing its current GovTrack HTML scrape. Exposes the
-`current_member_terms` view (defined in `../init.sql`) over HTTP as JSON.
+`current_members` view (defined in `../init.sql`) over HTTP as JSON.
 
 ## What it does
 
@@ -18,7 +18,7 @@ Each person has `full_name`, `role` (`"Senator"`/`"Representative"`), `party`,
 no representative for the given district (bad district number) returns `200`
 with an empty `representatives` list.
 
-`src/db.py` queries `current_member_terms` directly with `psycopg2` -- no
+`src/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
 issue #4). `src/transform.py` holds the pure row -> JSON-shape functions.
 

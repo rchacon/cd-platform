@@ -8,7 +8,7 @@
 --   • members stores one canonical identity row per person.
 --   • member_terms stores each distinct period of congressional
 --     service.
---   • current_member_terms derives current officeholders from
+--   • current_members derives current officeholders from
 --     service dates.
 -- ============================================================
 
@@ -166,7 +166,7 @@ CREATE TABLE members (
 --   Resident Commissioner
 --
 -- Party is intentionally not stored here -- see
--- members.party_history. current_member_terms derives each
+-- members.party_history. current_members derives each
 -- member's current party from that history.
 -- ============================================================
 
@@ -248,7 +248,7 @@ CREATE TABLE member_terms (
 --
 -- The single source of truth for "which Congress is current."
 -- Both the ETL (which needs a congress number to sync against)
--- and current_member_terms below call this function rather than
+-- and current_members below call this function rather than
 -- each independently typing the same start_date/end_date
 -- predicate -- two copies of that logic could silently drift if
 -- the definition of "current" ever changes (e.g. a grace period).
@@ -263,7 +263,7 @@ $$ LANGUAGE sql STABLE;
 
 
 -- ============================================================
--- Current Member Terms
+-- Current Members
 --
 -- A term is current when it belongs to the Congress that
 -- current_congress() returns.
@@ -293,7 +293,7 @@ $$ LANGUAGE sql STABLE;
 --   be used to make this view precise.
 -- ============================================================
 
-CREATE VIEW current_member_terms AS
+CREATE VIEW current_members AS
 SELECT
     mt.*,
     m.given_name,

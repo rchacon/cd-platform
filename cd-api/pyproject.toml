@@ -1,7 +1,7 @@
 [project]
 name = "cd-api"
 version = "0.1.0"
-description = "REST API for cd-lookup, backed by current_member_terms"
+description = "REST API for cd-lookup, backed by current_members"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
