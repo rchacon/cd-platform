@@ -82,6 +82,11 @@ wrappers cannot survive that — `_wrap_party_history_for_insert` applies the
 `Json(...)` wrapper to `party_history` only inside `load`, right before the
 actual `execute_values` call, never earlier.
 
+## Git conventions
+
+PRs are merged with a merge commit (`gh pr merge --merge`), not squash or
+rebase — preserves the individual commit history from the PR branch.
+
 ## Commands
 
 All commands run from `cd-etl/` unless noted otherwise.
