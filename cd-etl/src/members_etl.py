@@ -285,6 +285,11 @@ def _term_rows(member: dict[str, Any], congress: int) -> list[tuple[Any, ...]]:
 
     rows = []
     for term in member.get("terms", []):
+        # The API returns a member's full term history, but cd-lookup only
+        # needs "who currently represents this district" -- so only the
+        # current Congress's term is kept. This is why current_member_terms
+        # can't derive Senior/Junior Senator status (see issue #3): that
+        # requires continuous-service history this deliberately discards.
         if term.get("congress") != congress:
             continue
 
