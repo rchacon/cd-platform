@@ -157,3 +157,72 @@ def test_members_needing_sync_works_with_real_postgres_driver_datetimes(
     assert etl._members_needing_sync(
         changed_summary, stored_updated_at, bioguide_ids_with_current_term={test_bioguide_id},
     ) == [test_bioguide_id]
+
+
+@pytest.fixture
+def current_congress_number(pg_conn):
+    with pg_conn.cursor() as cursor:
+        cursor.execute("SELECT current_congress()")
+        return cursor.fetchone()[0]
+
+
+@pytest.fixture
+def current_year(pg_conn):
+    with pg_conn.cursor() as cursor:
+        cursor.execute("SELECT EXTRACT(YEAR FROM CURRENT_DATE)::int")
+        return cursor.fetchone()[0]
+
+
+def _insert_member_term(pg_conn, bioguide_id: str, congress: int, end_year) -> None:
+    with pg_conn.cursor() as cursor:
+        execute_values(
+            cursor, etl.MEMBERS_UPSERT_SQL,
+            [_member_row(bioguide_id, f"hash-{bioguide_id}")],
+        )
+        # member_terms rows cascade-delete via members' ON DELETE CASCADE,
+        # so the test_bioguide_id fixture's cleanup covers both tables.
+        cursor.execute(
+            """
+            INSERT INTO member_terms (
+                bioguide_id, congress, chamber, member_type, state, district,
+                start_year, end_year, source_hash
+            ) VALUES (%s, %s, 'SENATE', 'Senator', 'ZZ', NULL, 2023, %s, %s)
+            """,
+            (bioguide_id, congress, end_year, f"hash-term-{bioguide_id}"),
+        )
+
+
+def test_current_members_excludes_prior_year_end_year(
+    pg_conn, test_bioguide_id, current_congress_number, current_year
+):
+    _insert_member_term(pg_conn, test_bioguide_id, current_congress_number, current_year - 1)
+    pg_conn.commit()
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM current_members WHERE bioguide_id = %s", (test_bioguide_id,))
+        assert cursor.fetchone() is None
+
+
+def test_current_members_includes_null_end_year(pg_conn, test_bioguide_id, current_congress_number):
+    _insert_member_term(pg_conn, test_bioguide_id, current_congress_number, None)
+    pg_conn.commit()
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM current_members WHERE bioguide_id = %s", (test_bioguide_id,))
+        assert cursor.fetchone() is not None
+
+
+def test_current_members_includes_current_year_end_year(
+    pg_conn, test_bioguide_id, current_congress_number, current_year
+):
+    # Pins the known, tracked limitation (issue #14): year-only precision
+    # can't distinguish "departed earlier this year" from "still serving
+    # the rest of this year," so a same-year departure is still included.
+    # Not a bug -- this test exists so a future accidental tightening of
+    # the filter doesn't silently change this documented behavior.
+    _insert_member_term(pg_conn, test_bioguide_id, current_congress_number, current_year)
+    pg_conn.commit()
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute("SELECT 1 FROM current_members WHERE bioguide_id = %s", (test_bioguide_id,))
+        assert cursor.fetchone() is not None
