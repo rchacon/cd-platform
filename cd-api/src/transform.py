@@ -4,6 +4,8 @@ from typing import Any
 
 
 def _full_name(row: dict[str, Any]) -> str:
+    if row.get("nickname"):
+        return f"{row['nickname']} {row['family_name']}"
     parts = [row.get("given_name"), row.get("middle_name"), row.get("family_name")]
     name = " ".join(part for part in parts if part)
     return f"{name} {row['suffix']}" if row.get("suffix") else name

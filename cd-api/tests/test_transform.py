@@ -29,6 +29,14 @@ def test_full_name_includes_suffix_when_present():
     assert _full_name(_row(suffix="III")) == "Maria Cantwell III"
 
 
+def test_full_name_uses_nickname_over_given_and_middle_name_when_present():
+    assert _full_name(_row(given_name="Maria", nickname="Cindy")) == "Cindy Cantwell"
+
+
+def test_full_name_nickname_takes_precedence_over_suffix():
+    assert _full_name(_row(nickname="Cindy", suffix="III")) == "Cindy Cantwell"
+
+
 def test_person_role_senate():
     result = group_representatives([_row(chamber="SENATE")])
     assert result["senators"][0]["role"] == "Senator"
