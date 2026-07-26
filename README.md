@@ -4,9 +4,10 @@ Backend for `cd-lookup` WordPress Plugin
 
 ## Architecture
 
-```
-┌──────────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
-│     Congress API     │ ──▶ │        cd-etl        │ ──▶ │      PostgreSQL      │ ──▶ │        cd-api        │
-│  (api.congress.gov)  │     │   (Apache Airflow)   │     │                      │     │  (FastAPI + Mangum)  │
-└──────────────────────┘     └──────────────────────┘     └──────────────────────┘     └──────────────────────┘
+```mermaid
+graph LR
+    A["Congress API<br/>(api.congress.gov)"] --> B["cd-etl<br/>(Apache Airflow)"]
+    B --> C[("PostgreSQL")]
+    C --> D["cd-api<br/>(FastAPI + Mangum)"]
+    D --> E["cd-lookup<br/>(WordPress Plugin)"]
 ```
