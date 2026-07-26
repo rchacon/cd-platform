@@ -31,7 +31,11 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
 2. `get_current_congress` — reads "current" back out of the `congresses`
    table (the row whose date range contains today) rather than trusting the
    API's notion of current, so this ETL and the `current_members` view
-   share one definition of "current."
+   share one definition of *which Congress* is current. `current_members`
+   additionally filters on `member_terms.end_year`, a second, ETL-independent
+   currency check the ETL side has no counterpart for -- see the view's own
+   comment in `init.sql` for why (issue #14: year-only precision can't
+   resolve same-year departures).
 3. `extract_member_summaries` — pages through the **full roster** of the
    Congress using `currentMember=false`, not `currentMember=true`. Using
    `true` would silently drop members who resigned, died, or were expelled
