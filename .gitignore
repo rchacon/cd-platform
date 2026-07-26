@@ -1,6 +1,10 @@
 # Environment variables
 .env
 
+# Local-only Postgres seed data (see docker-compose.override.yml.sample)
+docker-compose.override.yml
+local_seed.sql
+
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]

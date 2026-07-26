@@ -18,6 +18,11 @@ current Congress from api.congress.gov into a Postgres schema (`init.sql`).
 `init.sql` via the Postgres image's `docker-entrypoint-initdb.d` mechanism
 (only on first container creation with an empty volume — schema changes
 require recreating the volume, not just restarting the container).
+A gitignored `docker-compose.override.yml` (see
+`docker-compose.override.yml.sample`) can seed that fresh volume with a
+real `pg_dump` snapshot of `members`/`member_terms` instead of re-running
+the DAG — only needs regenerating when a schema change alters those two
+tables' own columns, not for unrelated schema changes.
 
 ### DAG pipeline (`congress_members_etl`)
 
