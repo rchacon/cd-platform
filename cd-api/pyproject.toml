@@ -1,0 +1,20 @@
+[project]
+name = "cd-api"
+version = "0.1.0"
+description = "REST API for cd-lookup, backed by current_member_terms"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "mangum>=0.19.0",
+    "psycopg2-binary>=2.9.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "httpx>=0.28.0",
+    "uvicorn>=0.34.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
