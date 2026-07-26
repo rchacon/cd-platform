@@ -1,6 +1,6 @@
 # CD-Platform
 
-A civic data platform built with Apache Airflow and FastAPI.
+A civic data platform built with Apache Airflow, PostgreSQL and FastAPI.
 
 ## Architecture
 
