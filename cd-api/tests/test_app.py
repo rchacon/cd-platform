@@ -32,7 +32,11 @@ def _insert_member(pg_conn, bioguide_id: str, given_name: str, family_name: str)
         )
 
 
-def _insert_term(pg_conn, bioguide_id: str, chamber: str, district: int | None) -> None:
+def _insert_term(
+    pg_conn, bioguide_id: str, chamber: str, district: int | None, member_type: str | None = None
+) -> None:
+    if member_type is None:
+        member_type = "Senator" if chamber == "SENATE" else "Representative"
     with pg_conn.cursor() as cur:
         cur.execute(
             """
@@ -41,12 +45,7 @@ def _insert_term(pg_conn, bioguide_id: str, chamber: str, district: int | None) 
                 start_year, source_hash
             ) VALUES (%s, 119, %s, %s, %s, %s, 2023, %s)
             """,
-            (
-                bioguide_id, chamber,
-                "Senator" if chamber == "SENATE" else "Representative",
-                STATE, district,
-                f"hash-term-{bioguide_id}",
-            ),
+            (bioguide_id, chamber, member_type, STATE, district, f"hash-term-{bioguide_id}"),
         )
 
 
@@ -83,6 +82,30 @@ def test_get_members_returns_senators_and_representative(seeded_state):
     assert [p["full_name"] for p in body["representatives"]] == ["Carol Clark"]
     assert body["senators"][0]["role"] == "Senator"
     assert body["representatives"][0]["role"] == "Representative"
+
+
+def test_get_members_returns_member_type_as_role_for_delegate(pg_conn):
+    # Regression test: the seeded_state fixture always sets member_type to
+    # exactly what the old chamber-only role derivation would have produced
+    # anyway ("Representative" for HOUSE), so it can't distinguish that bug
+    # from the fix. This seeds a HOUSE row with a member_type that actually
+    # differs from "Representative" to prove role comes from member_type.
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id, "Eleanor", "Norton")
+    _insert_term(pg_conn, bioguide_id, "HOUSE", 0, member_type="Delegate")
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        response = client.get("/members", params={"state": STATE, "district": 0})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["representatives"][0]["role"] == "Delegate"
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
 
 
 def test_get_members_unknown_state_returns_404(pg_conn):
@@ -160,19 +183,16 @@ def test_get_members_unhandled_exception_returns_500_problem_detail(monkeypatch,
     assert "db exploded" in caplog.text
 
 
-def test_get_members_bad_district_returns_empty_representatives(seeded_state):
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param({"state": STATE, "district": 99}, id="non-matching-district"),
+        pytest.param({"state": STATE}, id="omitted-district"),
+    ],
+)
+def test_get_members_returns_senators_only_without_a_matching_district(seeded_state, params):
     client = TestClient(app)
-    response = client.get("/members", params={"state": STATE, "district": 99})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["representatives"] == []
-    assert len(body["senators"]) == 2
-
-
-def test_get_members_omitted_district_returns_senators_only(seeded_state):
-    client = TestClient(app)
-    response = client.get("/members", params={"state": STATE})
+    response = client.get("/members", params=params)
 
     assert response.status_code == 200
     body = response.json()

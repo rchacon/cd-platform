@@ -57,6 +57,11 @@ def test_person_role_uses_member_type_for_delegate():
     assert result["representatives"][0]["role"] == "Delegate"
 
 
+def test_person_role_uses_member_type_for_resident_commissioner():
+    result = group_representatives([_row(chamber="HOUSE", member_type="Resident Commissioner")])
+    assert result["representatives"][0]["role"] == "Resident Commissioner"
+
+
 def test_group_representatives_splits_by_chamber():
     rows = [
         _row(chamber="SENATE", family_name="Cantwell"),

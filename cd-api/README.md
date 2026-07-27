@@ -20,7 +20,9 @@ GET /members?state=GA
 in it), so omitting `district` returns senators only; a representative is
 only included when `district` is given and matches.
 
-Each person has `full_name`, `role` (`"Senator"`/`"Representative"`), `party`,
+Each person has `full_name`, `role` (whatever Congress.gov's `member_type`
+records for that seat -- `"Senator"`, `"Representative"`, `"Delegate"`, or
+`"Resident Commissioner"` for DC/territory non-voting seats), `party`,
 `phone`, `website`, `photo_url`. An unknown state returns `404`; a known state
 with no representative for the given district (bad district number) returns
 `200` with an empty `representatives` list.
