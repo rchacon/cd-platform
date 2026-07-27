@@ -98,6 +98,33 @@ def test_get_members_unknown_state_returns_404(pg_conn):
     assert body["detail"] == "No data found for state QQ"
 
 
+def test_unmatched_route_returns_problem_detail():
+    # Regression test: the exception handler used to be registered on
+    # fastapi.HTTPException, a subclass, which Starlette's own router
+    # never raises for its own 404s/405s -- only app-raised exceptions
+    # hit the handler. Registering on the Starlette base class instead
+    # covers framework-raised errors too.
+    client = TestClient(app)
+    response = client.get("/nonexistent")
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["type"] == "about:blank"
+    assert body["status"] == 404
+
+
+def test_disallowed_method_returns_problem_detail():
+    client = TestClient(app)
+    response = client.post("/members")
+
+    assert response.status_code == 405
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["type"] == "about:blank"
+    assert body["status"] == 405
+
+
 def test_get_members_invalid_state_returns_422_problem_detail():
     client = TestClient(app)
     response = client.get("/members", params={"state": "California", "district": 1})
