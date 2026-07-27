@@ -1,6 +1,6 @@
 # One-time bootstrap: creates the S3 bucket + DynamoDB table that hold
 # Terraform's OWN state for every other terraform/ directory in this repo
-# (networking/, and eventually rds/, mwaa/, cd-api/). Applied once, with
+# (networking/, and eventually rds/, airflow/, cd-api/). Applied once, with
 # local state -- there's nothing else yet to store this config's own state
 # in. Not touched again as part of normal day-to-day workflow once it exists.
 

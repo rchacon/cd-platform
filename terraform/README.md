@@ -2,7 +2,7 @@
 
 AWS infrastructure for this repo, provisioned incrementally by component:
 `bootstrap/` (state backend, one-time), `networking/` (this issue, #19),
-and eventually `rds/` (#20), `mwaa/` (#21), `cd-api/` (#22).
+and eventually `rds/` (#20), `airflow/` (#21), `cd-api/` (#22).
 
 ## Prerequisites
 
@@ -31,8 +31,8 @@ isn't touched again as part of normal workflow once it's applied.
 
 ## `networking/` -- VPC, subnets, security groups
 
-The shared network layer RDS (#20), MWAA (#21), and cd-api's Lambda (#22)
-all provision into.
+The shared network layer RDS (#20), the Airflow EC2 instance (#21), and
+cd-api's Lambda (#22) all provision into.
 
 Backend config is intentionally left empty in `versions.tf` (a bucket name
 containing your AWS account ID shouldn't be hardcoded into version-controlled
@@ -56,7 +56,7 @@ terraform apply
 Defaults: `us-west-2`, VPC CIDR `10.0.0.0/16`, 2 AZs, one shared NAT gateway
 (cheaper than one per AZ, at the cost of a single point of failure if that
 AZ has an outage -- see `variables.tf` for how to change this). Future
-`rds/`/`mwaa/`/`cd-api/` directories will read this state's outputs
+`rds/`/`airflow/`/`cd-api/` directories will read this state's outputs
 (`vpc_id`, subnet IDs, security group IDs) via `terraform_remote_state`,
 using the same `backend.hcl` pattern with a different `key`.
 

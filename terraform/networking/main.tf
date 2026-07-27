@@ -6,8 +6,8 @@ module "vpc" {
   cidr = var.vpc_cidr
 
   azs = var.azs
-  # Private subnets host RDS, MWAA, and cd-api's Lambda. Public subnets
-  # only host the NAT gateway(s) -- nothing else runs in them.
+  # Private subnets host RDS, the Airflow EC2 instance, and cd-api's Lambda.
+  # Public subnets only host the NAT gateway(s) -- nothing else runs in them.
   private_subnets = [for i, az in var.azs : cidrsubnet(var.vpc_cidr, 8, i)]
   public_subnets  = [for i, az in var.azs : cidrsubnet(var.vpc_cidr, 8, i + 100)]
 
@@ -26,15 +26,15 @@ module "vpc" {
 
 resource "aws_security_group" "rds" {
   name        = "cd-platform-rds"
-  description = "Allow Postgres from MWAA and cd-api's Lambda only"
+  description = "Allow Postgres from the Airflow EC2 instance and cd-api's Lambda only"
   vpc_id      = module.vpc.vpc_id
 
   ingress {
-    description     = "Postgres from MWAA"
+    description     = "Postgres from the Airflow EC2 instance"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.mwaa.id]
+    security_groups = [aws_security_group.airflow.id]
   }
 
   ingress {
@@ -57,9 +57,9 @@ resource "aws_security_group" "rds" {
   }
 }
 
-resource "aws_security_group" "mwaa" {
-  name        = "cd-platform-mwaa"
-  description = "cd-etl's MWAA environment -- reaches RDS, S3, and api.congress.gov"
+resource "aws_security_group" "airflow" {
+  name        = "cd-platform-airflow"
+  description = "cd-etl's self-hosted Airflow EC2 instance -- reaches RDS, S3, and api.congress.gov"
   vpc_id      = module.vpc.vpc_id
 
   egress {

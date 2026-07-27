@@ -11,7 +11,7 @@ variable "vpc_cidr" {
 }
 
 variable "azs" {
-  description = "Availability zones to spread subnets across. RDS Multi-AZ and MWAA both require at least 2."
+  description = "Availability zones to spread subnets across. RDS Multi-AZ requires at least 2."
   type        = list(string)
   default     = ["us-west-2a", "us-west-2b"]
 }

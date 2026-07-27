@@ -1,10 +1,10 @@
 output "vpc_id" {
-  description = "VPC ID. Consumed by #20 (RDS), #21 (MWAA), #22 (cd-api Lambda)."
+  description = "VPC ID. Consumed by #20 (RDS), #21 (Airflow on EC2), #22 (cd-api Lambda)."
   value       = module.vpc.vpc_id
 }
 
 output "private_subnet_ids" {
-  description = "Private subnet IDs -- RDS, MWAA, and cd-api's Lambda all live here."
+  description = "Private subnet IDs -- RDS, the Airflow EC2 instance, and cd-api's Lambda all live here."
   value       = module.vpc.private_subnets
 }
 
@@ -18,9 +18,9 @@ output "rds_security_group_id" {
   value       = aws_security_group.rds.id
 }
 
-output "mwaa_security_group_id" {
-  description = "Security group to attach to the MWAA environment (#21)."
-  value       = aws_security_group.mwaa.id
+output "airflow_security_group_id" {
+  description = "Security group to attach to the Airflow EC2 instance (#21)."
+  value       = aws_security_group.airflow.id
 }
 
 output "lambda_security_group_id" {
