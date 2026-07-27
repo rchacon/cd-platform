@@ -14,10 +14,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is the backend for the `cd-lookup` WordPress plugin. `cd-etl` is an Airflow
 DAG (`cd-etl/src/members_etl.py`) that syncs House and Senate members of the
 current Congress from api.congress.gov into a Postgres schema (`init.sql`).
+`cd-api` is a FastAPI app (`cd-api/src/app.py`) that exposes the
+`current_members` view over HTTP for `cd-lookup` to consume, replacing its
+current GovTrack HTML scrape -- see `cd-api/README.md`.
 `docker-compose.yml` at the repo root runs Postgres locally, applying
 `init.sql` via the Postgres image's `docker-entrypoint-initdb.d` mechanism
 (only on first container creation with an empty volume — schema changes
 require recreating the volume, not just restarting the container).
+A gitignored `docker-compose.override.yml` (see
+`docker-compose.override.yml.sample`) can seed that fresh volume with a
+real `pg_dump` snapshot of `members`/`member_terms` instead of re-running
+the DAG — only needs regenerating when a schema change alters those two
+tables' own columns, not for unrelated schema changes.
 
 ### DAG pipeline (`congress_members_etl`)
 
@@ -93,7 +101,9 @@ rebase — preserves the individual commit history from the PR branch.
 
 ## Commands
 
-All commands run from `cd-etl/` unless noted otherwise.
+All commands run from `cd-etl/` unless noted otherwise. `cd-api/` has its own
+independent command set (`uv sync`, `uv run uvicorn`, `uv run pytest`) run
+from `cd-api/` instead -- see `cd-api/README.md`.
 
 ```bash
 # One-time setup
@@ -124,3 +134,4 @@ CI (`.github/workflows/cd-etl-tests.yml`) runs on every PR: it brings up the
 same `docker-compose.yml` Postgres service (reusing `init.sql` as the single
 source of truth for schema, rather than a separate CI-only schema
 definition), then runs the full test suite via `uv sync --locked`.
+`.github/workflows/cd-api-tests.yml` runs an analogous pipeline for `cd-api/`.

@@ -1,0 +1,17 @@
+import psycopg2
+import pytest
+
+from db import PG_DSN
+
+
+@pytest.fixture
+def pg_conn():
+    try:
+        conn = psycopg2.connect(connect_timeout=3, **PG_DSN)
+    except psycopg2.OperationalError as exc:
+        pytest.skip(
+            f"Postgres not reachable at {PG_DSN['host']}:{PG_DSN['port']} "
+            f"(run `docker compose up -d postgres` to enable this test): {exc}"
+        )
+    yield conn
+    conn.close()

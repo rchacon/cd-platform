@@ -1,0 +1,17 @@
+# Copy to docker-compose.override.yml (gitignored, auto-merged by Compose) to
+# seed a fresh Postgres volume with real data instead of re-running the DAG.
+#
+# Generate local_seed.sql once (also gitignored):
+#
+#   docker compose exec -T postgres pg_dump -U postgres -d congressional_app \
+#     --data-only -t members -t member_terms > local_seed.sql
+#
+# Excludes `congresses` deliberately -- init.sql already seeds that table, and
+# including it here would conflict on the primary key.
+#
+# Only needs regenerating if a schema change alters members/member_terms's own
+# columns, not for unrelated schema changes.
+services:
+  postgres:
+    volumes:
+      - ./local_seed.sql:/docker-entrypoint-initdb.d/seed.sql
