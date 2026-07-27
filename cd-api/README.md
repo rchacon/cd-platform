@@ -9,7 +9,7 @@ lookups, replacing its current GovTrack HTML scrape. Exposes the
 `src/app.py` defines a FastAPI app with one route:
 
 ```
-GET /representatives?state=GA&district=5
+GET /members?state=GA&district=5
 -> { "senators": [...], "representatives": [...] }
 ```
 
@@ -53,7 +53,7 @@ it's untouched for local development.
    Then, e.g.:
 
    ```bash
-   curl 'http://localhost:8000/representatives?state=GA&district=5'
+   curl 'http://localhost:8000/members?state=GA&district=5'
    ```
 
 ## Testing

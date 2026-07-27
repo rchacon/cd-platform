@@ -9,8 +9,8 @@ from transform import group_representatives
 app = FastAPI()
 
 
-@app.get("/representatives")
-def get_representatives(
+@app.get("/members")
+def get_members(
     state: str = Query(..., min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
     district: int = Query(..., ge=0),
 ) -> dict:

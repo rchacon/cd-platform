@@ -73,9 +73,9 @@ def seeded_state(pg_conn):
     pg_conn.commit()
 
 
-def test_get_representatives_returns_senators_and_representative(seeded_state):
+def test_get_members_returns_senators_and_representative(seeded_state):
     client = TestClient(app)
-    response = client.get("/representatives", params={"state": STATE, "district": DISTRICT})
+    response = client.get("/members", params={"state": STATE, "district": DISTRICT})
 
     assert response.status_code == 200
     body = response.json()
@@ -85,15 +85,15 @@ def test_get_representatives_returns_senators_and_representative(seeded_state):
     assert body["representatives"][0]["role"] == "Representative"
 
 
-def test_get_representatives_unknown_state_returns_404(pg_conn):
+def test_get_members_unknown_state_returns_404(pg_conn):
     client = TestClient(app)
-    response = client.get("/representatives", params={"state": "QQ", "district": 1})
+    response = client.get("/members", params={"state": "QQ", "district": 1})
     assert response.status_code == 404
 
 
-def test_get_representatives_bad_district_returns_empty_representatives(seeded_state):
+def test_get_members_bad_district_returns_empty_representatives(seeded_state):
     client = TestClient(app)
-    response = client.get("/representatives", params={"state": STATE, "district": 99})
+    response = client.get("/members", params={"state": STATE, "district": 99})
 
     assert response.status_code == 200
     body = response.json()
