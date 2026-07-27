@@ -14,7 +14,7 @@ def _full_name(row: dict[str, Any]) -> str:
 def _person(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "full_name": _full_name(row),
-        "role": "Senator" if row["chamber"] == "SENATE" else "Representative",
+        "role": row["member_type"],
         "party": row.get("party"),
         "phone": row.get("phone"),
         "website": row.get("website_url"),

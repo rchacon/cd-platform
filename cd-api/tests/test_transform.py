@@ -4,6 +4,7 @@ from transform import _full_name, group_representatives
 def _row(**overrides) -> dict:
     row = {
         "chamber": "SENATE",
+        "member_type": "Senator",
         "given_name": "Maria",
         "middle_name": None,
         "family_name": "Cantwell",
@@ -38,13 +39,22 @@ def test_full_name_nickname_takes_precedence_over_suffix():
 
 
 def test_person_role_senate():
-    result = group_representatives([_row(chamber="SENATE")])
+    result = group_representatives([_row(chamber="SENATE", member_type="Senator")])
     assert result["senators"][0]["role"] == "Senator"
 
 
 def test_person_role_house():
-    result = group_representatives([_row(chamber="HOUSE")])
+    result = group_representatives([_row(chamber="HOUSE", member_type="Representative")])
     assert result["representatives"][0]["role"] == "Representative"
+
+
+def test_person_role_uses_member_type_for_delegate():
+    # Regression test: role used to be derived from chamber alone, which
+    # mislabeled DC's Delegate / Puerto Rico's Resident Commissioner as
+    # a plain "Representative". member_type already carries the correct
+    # distinction, so role should just pass it through.
+    result = group_representatives([_row(chamber="HOUSE", member_type="Delegate")])
+    assert result["representatives"][0]["role"] == "Delegate"
 
 
 def test_group_representatives_splits_by_chamber():
