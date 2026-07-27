@@ -22,16 +22,22 @@ def get_connection() -> psycopg2.extensions.connection:
 
 
 def fetch_current_members(state: str, district: int | None) -> list[dict]:
-    # district=None omits the HOUSE branch entirely: `district = NULL` is
-    # never true in SQL (three-valued logic), so a NULL parameter here
-    # naturally yields senators only, with no special-casing needed.
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT * FROM current_members
-            WHERE state = %(state)s
-              AND (chamber = 'SENATE' OR (chamber = 'HOUSE' AND district = %(district)s))
-            """,
-            {"state": state, "district": district},
-        )
-        return list(cur.fetchall())
+    # district=None omits any district match: `district = NULL` is never
+    # true in SQL (three-valued logic), so a NULL parameter here naturally
+    # yields senators only, with no special-casing needed. The HOUSE check
+    # is redundant given chamber_type is a strict two-value enum -- once
+    # chamber != 'SENATE' it's necessarily 'HOUSE'.
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM current_members
+                WHERE state = %(state)s
+                  AND (chamber = 'SENATE' OR district = %(district)s)
+                """,
+                {"state": state, "district": district},
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
