@@ -21,7 +21,10 @@ def get_connection() -> psycopg2.extensions.connection:
     return psycopg2.connect(cursor_factory=psycopg2.extras.RealDictCursor, **PG_DSN)
 
 
-def fetch_current_members(state: str, district: int) -> list[dict]:
+def fetch_current_members(state: str, district: int | None) -> list[dict]:
+    # district=None omits the HOUSE branch entirely: `district = NULL` is
+    # never true in SQL (three-valued logic), so a NULL parameter here
+    # naturally yields senators only, with no special-casing needed.
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """

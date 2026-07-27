@@ -99,3 +99,13 @@ def test_get_members_bad_district_returns_empty_representatives(seeded_state):
     body = response.json()
     assert body["representatives"] == []
     assert len(body["senators"]) == 2
+
+
+def test_get_members_omitted_district_returns_senators_only(seeded_state):
+    client = TestClient(app)
+    response = client.get("/members", params={"state": STATE})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["representatives"] == []
+    assert len(body["senators"]) == 2

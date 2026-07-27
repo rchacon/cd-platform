@@ -12,7 +12,7 @@ app = FastAPI()
 @app.get("/members")
 def get_members(
     state: str = Query(..., min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
-    district: int = Query(..., ge=0),
+    district: int | None = Query(None, ge=0),
 ) -> dict:
     rows = fetch_current_members(state.upper(), district)
     if not rows:

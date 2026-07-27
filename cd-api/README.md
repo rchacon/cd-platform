@@ -11,12 +11,19 @@ lookups, replacing its current GovTrack HTML scrape. Exposes the
 ```
 GET /members?state=GA&district=5
 -> { "senators": [...], "representatives": [...] }
+
+GET /members?state=GA
+-> { "senators": [...], "representatives": [] }
 ```
 
+`district` is optional -- senators represent the whole state (every district
+in it), so omitting `district` returns senators only; a representative is
+only included when `district` is given and matches.
+
 Each person has `full_name`, `role` (`"Senator"`/`"Representative"`), `party`,
-`phone`, `website`, `photo_url`. An unknown state returns `404`; a state with
-no representative for the given district (bad district number) returns `200`
-with an empty `representatives` list.
+`phone`, `website`, `photo_url`. An unknown state returns `404`; a known state
+with no representative for the given district (bad district number) returns
+`200` with an empty `representatives` list.
 
 `src/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
