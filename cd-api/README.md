@@ -25,6 +25,14 @@ Each person has `full_name`, `role` (`"Senator"`/`"Representative"`), `party`,
 with no representative for the given district (bad district number) returns
 `200` with an empty `representatives` list.
 
+Errors follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem
+Details for HTTP APIs") -- `Content-Type: application/problem+json`, body
+shaped `{"type", "title", "status", "detail", ...}`. Handled uniformly for
+unknown states (`404`), request validation failures like a malformed `state`
+(`422`, with a JSON-serialized `errors` list), and any unhandled server error
+(`500`), via `src/problem.py`'s `problem_response` and the exception handlers
+registered in `src/app.py`.
+
 `src/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
 issue #4). `src/transform.py` holds the pure row -> JSON-shape functions.

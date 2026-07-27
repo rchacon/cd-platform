@@ -88,7 +88,42 @@ def test_get_members_returns_senators_and_representative(seeded_state):
 def test_get_members_unknown_state_returns_404(pg_conn):
     client = TestClient(app)
     response = client.get("/members", params={"state": "QQ", "district": 1})
+
     assert response.status_code == 404
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["type"] == "about:blank"
+    assert body["title"] == "Not Found"
+    assert body["status"] == 404
+    assert body["detail"] == "No data found for state QQ"
+
+
+def test_get_members_invalid_state_returns_422_problem_detail():
+    client = TestClient(app)
+    response = client.get("/members", params={"state": "California", "district": 1})
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["type"] == "about:blank"
+    assert body["status"] == 422
+    assert "errors" in body
+
+
+def test_get_members_unhandled_exception_returns_500_problem_detail(monkeypatch):
+    def _boom(state, district):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr("app.fetch_current_members", _boom)
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/members", params={"state": "ZZ", "district": 1})
+
+    assert response.status_code == 500
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["type"] == "about:blank"
+    assert body["title"] == "Internal Server Error"
+    assert body["status"] == 500
 
 
 def test_get_members_bad_district_returns_empty_representatives(seeded_state):

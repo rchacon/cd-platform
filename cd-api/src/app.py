@@ -1,12 +1,43 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Query
+from http import HTTPStatus
+
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from db import fetch_current_members
+from problem import problem_response
 from transform import group_representatives
 
 app = FastAPI()
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    return problem_response(
+        status=exc.status_code, title=HTTPStatus(exc.status_code).phrase, detail=exc.detail
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return problem_response(
+        status=422,
+        title=HTTPStatus(422).phrase,
+        detail="Request parameters failed validation.",
+        errors=exc.errors(),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    return problem_response(
+        status=500, title=HTTPStatus(500).phrase, detail="An unexpected error occurred."
+    )
 
 
 @app.get("/members")
