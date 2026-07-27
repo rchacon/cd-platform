@@ -30,8 +30,12 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
    actual term-end date).
 2. `get_current_congress` — reads "current" back out of the `congresses`
    table (the row whose date range contains today) rather than trusting the
-   API's notion of current, so this ETL and the `current_member_terms` view
-   share one definition of "current."
+   API's notion of current, so this ETL and the `current_members` view
+   share one definition of *which Congress* is current. `current_members`
+   additionally filters on `member_terms.end_year`, a second, ETL-independent
+   currency check the ETL side has no counterpart for -- see the view's own
+   comment in `init.sql` for why (issue #14: year-only precision can't
+   resolve same-year departures).
 3. `extract_member_summaries` — pages through the **full roster** of the
    Congress using `currentMember=false`, not `currentMember=true`. Using
    `true` would silently drop members who resigned, died, or were expelled
@@ -59,7 +63,7 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
 - `members.party_history` is a JSONB array mirroring the API's `partyHistory`
   (`[{"party", "source_party_name", "start_year", "end_year"}, ...]`),
   independent of Congress/term boundaries. Party is deliberately **not**
-  stored per-term; `current_member_terms` derives each member's current party
+  stored per-term; `current_members` derives each member's current party
   via a `LEFT JOIN LATERAL` picking the entry with the greatest `start_year`.
   This is what lets a mid-Congress party switch show up immediately without
   touching `member_terms`.
@@ -70,7 +74,7 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
 - There is no `party_type` enum — party values are normalized by the ETL
   (`PARTY_MAP`) to a small canonical set but stored as plain text, since
   Postgres can't validate values inside JSONB anyway.
-- Known gap, tracked in issue #3: `current_member_terms` has no Senior/Junior
+- Known gap, tracked in issue #3: `current_members` has no Senior/Junior
   Senator distinction, since that's based on continuous years of Senate
   service and isn't derivable from current-Congress-only term data.
 

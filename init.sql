@@ -8,7 +8,7 @@
 --   • members stores one canonical identity row per person.
 --   • member_terms stores each distinct period of congressional
 --     service.
---   • current_member_terms derives current officeholders from
+--   • current_members derives current officeholders from
 --     service dates.
 -- ============================================================
 
@@ -166,7 +166,7 @@ CREATE TABLE members (
 --   Resident Commissioner
 --
 -- Party is intentionally not stored here -- see
--- members.party_history. current_member_terms derives each
+-- members.party_history. current_members derives each
 -- member's current party from that history.
 -- ============================================================
 
@@ -248,7 +248,7 @@ CREATE TABLE member_terms (
 --
 -- The single source of truth for "which Congress is current."
 -- Both the ETL (which needs a congress number to sync against)
--- and current_member_terms below call this function rather than
+-- and current_members below call this function rather than
 -- each independently typing the same start_date/end_date
 -- predicate -- two copies of that logic could silently drift if
 -- the definition of "current" ever changes (e.g. a grace period).
@@ -263,14 +263,17 @@ $$ LANGUAGE sql STABLE;
 
 
 -- ============================================================
--- Current Member Terms
+-- Current Members
 --
 -- A term is current when it belongs to the Congress that
 -- current_congress() returns.
 --
 -- Since Congress.gov currently provides only startYear and
 -- endYear (not exact service dates), this view determines
--- current membership using the active Congress.
+-- current membership using the active Congress, additionally
+-- excluding any term whose end_year is strictly before the
+-- current year -- see the TODO below for exactly what this does
+-- and doesn't cover.
 --
 -- party/source_party_name reflect each member's most recent
 -- members.party_history entry as of now (not as of the term's
@@ -285,15 +288,28 @@ $$ LANGUAGE sql STABLE;
 -- service, which isn't derivable from current-Congress-only
 -- term data.
 --
--- TODO:
---   This may incorrectly include members who resigned, died,
---   or were otherwise replaced during the current Congress.
---   Investigate whether Congress.gov exposes an authoritative
---   current-member indicator or exact service dates that can
---   be used to make this view precise.
+-- TODO (see issue #14):
+--   A term whose end_year is the *current* year is still
+--   included, since year-only precision can't tell "departed
+--   earlier this year" from "still serving the rest of this
+--   year." A prior-year end_year is already excluded below.
+--
+--   end_year is trusted as proof of departure purely by
+--   convention (cd-etl/src/members_etl.py's ETL only ever sees
+--   it populated for early departures in practice) -- nothing in
+--   this schema enforces that meaning, so a future upstream
+--   change to what end_year represents could silently start
+--   excluding still-serving members.
+--
+--   The current-year comparison uses EXTRACT(YEAR FROM
+--   CURRENT_DATE), which resolves in the Postgres server's
+--   timezone (UTC by default here) rather than the US Eastern
+--   time Congress actually operates on -- a narrow edge case
+--   right at the Dec 31/Jan 1 boundary, consistent with
+--   current_congress()'s existing use of the same pattern above.
 -- ============================================================
 
-CREATE VIEW current_member_terms AS
+CREATE VIEW current_members AS
 SELECT
     mt.*,
     m.given_name,
@@ -317,7 +333,8 @@ LEFT JOIN LATERAL (
     ORDER BY (elem ->> 'start_year')::int DESC
     LIMIT 1
 ) AS cp ON TRUE
-WHERE mt.congress = current_congress();
+WHERE mt.congress = current_congress()
+  AND (mt.end_year IS NULL OR mt.end_year >= EXTRACT(YEAR FROM CURRENT_DATE)::smallint);
 
 
 -- ============================================================

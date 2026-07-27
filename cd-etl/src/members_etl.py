@@ -287,7 +287,7 @@ def _term_rows(member: dict[str, Any], congress: int) -> list[tuple[Any, ...]]:
     for term in member.get("terms", []):
         # The API returns a member's full term history, but cd-lookup only
         # needs "who currently represents this district" -- so only the
-        # current Congress's term is kept. This is why current_member_terms
+        # current Congress's term is kept. This is why current_members
         # can't derive Senior/Junior Senator status (see issue #3): that
         # requires continuous-service history this deliberately discards.
         if term.get("congress") != congress:
@@ -362,7 +362,7 @@ def congress_members_etl():
         # function (see init.sql) rather than the API's notion of
         # current, or re-typing the date-range predicate here -- that
         # function is the single place this ETL and the
-        # current_member_terms view both derive "current" from.
+        # current_members view both derive "current" from.
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         row = hook.get_first("SELECT current_congress()")
         if row is None or row[0] is None:
