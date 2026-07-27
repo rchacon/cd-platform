@@ -1,15 +1,7 @@
-import os
-
 import psycopg2
 import pytest
 
-PG_DSN = {
-    "host": os.environ.get("PGHOST", "localhost"),
-    "port": os.environ.get("PGPORT", "5432"),
-    "dbname": os.environ.get("PGDATABASE", "congressional_app"),
-    "user": os.environ.get("PGUSER", "postgres"),
-    "password": os.environ.get("PGPASSWORD", "postgres"),
-}
+from db import PG_DSN
 
 
 @pytest.fixture
