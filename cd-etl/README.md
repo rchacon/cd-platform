@@ -2,7 +2,7 @@
 
 Airflow ETL that syncs House and Senate members of the current Congress from
 [api.congress.gov](https://api.congress.gov) into the `members`/`member_terms`
-tables defined in `../init.sql`.
+tables defined in `migrations/versions/0001_initial_schema.py`.
 
 ## What it does
 
@@ -52,7 +52,13 @@ tables defined in `../init.sql`.
    uv sync
    ```
 
-4. Initialize Airflow (one-time) and add the Postgres connection:
+4. Apply the schema:
+
+   ```bash
+   uv run alembic upgrade head
+   ```
+
+5. Initialize Airflow (one-time) and add the Postgres connection:
 
    ```bash
    set -a && source ../.env && set +a
@@ -66,7 +72,7 @@ tables defined in `../init.sql`.
      --conn-password postgres
    ```
 
-5. Run it:
+6. Run it:
 
    ```bash
    uv run airflow standalone

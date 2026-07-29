@@ -13,18 +13,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the backend for the `cd-lookup` WordPress plugin. `cd-etl` is an Airflow
 DAG (`cd-etl/src/members_etl.py`) that syncs House and Senate members of the
-current Congress from api.congress.gov into a Postgres schema (`init.sql`).
-`cd-api` is a FastAPI app (`cd-api/src/app.py`) that exposes the
-`current_members` view over HTTP for `cd-lookup` to consume, replacing its
-current GovTrack HTML scrape -- see `cd-api/README.md`.
-`docker-compose.yml` at the repo root runs Postgres locally, applying
-`init.sql` via the Postgres image's `docker-entrypoint-initdb.d` mechanism
-(only on first container creation with an empty volume — schema changes
-require recreating the volume, not just restarting the container).
-A gitignored `docker-compose.override.yml` (see
-`docker-compose.override.yml.sample`) can seed that fresh volume with a
-real `pg_dump` snapshot of `members`/`member_terms` instead of re-running
-the DAG — only needs regenerating when a schema change alters those two
+current Congress from api.congress.gov into a Postgres schema managed by
+Alembic migrations (`cd-etl/migrations/`). `cd-api` is a FastAPI app
+(`cd-api/src/app.py`) that exposes the `current_members` view over HTTP for
+`cd-lookup` to consume, replacing its current GovTrack HTML scrape -- see
+`cd-api/README.md`.
+`docker-compose.yml` at the repo root runs Postgres locally, starting from an
+empty database -- `cd cd-etl && uv run alembic upgrade head` applies the
+schema (see Commands below), and re-running it after pulling a new migration
+applies just what's changed, without needing to recreate the volume.
+A gitignored `local_seed.sql` (a `pg_dump --data-only` snapshot of
+`members`/`member_terms`) can be loaded after migrations to seed real data
+instead of re-running the DAG:
+
+```bash
+docker compose exec -T postgres psql -U postgres -d congressional_app -f - < local_seed.sql
+```
+
+Regenerate it with `docker compose exec -T postgres pg_dump -U postgres -d
+congressional_app --data-only -t members -t member_terms >
+local_seed.sql` -- only needed when a schema change alters those two
 tables' own columns, not for unrelated schema changes.
 
 ### DAG pipeline (`congress_members_etl`)
@@ -42,8 +50,8 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
    share one definition of *which Congress* is current. `current_members`
    additionally filters on `member_terms.end_year`, a second, ETL-independent
    currency check the ETL side has no counterpart for -- see the view's own
-   comment in `init.sql` for why (issue #14: year-only precision can't
-   resolve same-year departures).
+   comment in `cd-etl/migrations/versions/0001_initial_schema.py` for why
+   (issue #14: year-only precision can't resolve same-year departures).
 3. `extract_member_summaries` — pages through the **full roster** of the
    Congress using `currentMember=false`, not `currentMember=true`. Using
    `true` would silently drop members who resigned, died, or were expelled
@@ -60,7 +68,7 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
    `WHERE source_hash IS DISTINCT FROM EXCLUDED.source_hash`, so `updated_at`
    only changes on rows that actually changed.
 
-### Data model notes (`init.sql`)
+### Data model notes (`cd-etl/migrations/versions/0001_initial_schema.py`)
 
 - `member_terms` currently only stores rows for the **current** Congress —
   historical terms aren't retained. `district`: `NULL` = Senator, `0` =
@@ -110,11 +118,16 @@ from `cd-api/` instead -- see `cd-api/README.md`.
 cp .env.sample .env              # fill in CONGRESS_API_KEY and AIRFLOW_HOME
 cd .. && docker compose up -d postgres && cd cd-etl
 uv sync
+uv run alembic upgrade head       # applies the schema (see migrations/)
 set -a && source ../.env && set +a
 uv run airflow db migrate
 uv run airflow connections add congressional_postgres \
   --conn-type postgres --conn-host localhost --conn-port 5432 \
   --conn-schema congressional_app --conn-login postgres --conn-password postgres
+
+# Optionally seed real data instead of running the DAG
+docker compose exec -T postgres psql -U postgres -d congressional_app \
+  -f - < ../local_seed.sql
 
 # Run the DAG
 uv run airflow standalone         # UI at http://localhost:8080
@@ -131,7 +144,8 @@ other test is a pure unit test with no external dependencies.
 reads it at import time) can be imported without a real key.
 
 CI (`.github/workflows/cd-etl-tests.yml`) runs on every PR: it brings up the
-same `docker-compose.yml` Postgres service (reusing `init.sql` as the single
-source of truth for schema, rather than a separate CI-only schema
-definition), then runs the full test suite via `uv sync --locked`.
+same `docker-compose.yml` Postgres service, applies migrations
+(`uv run alembic upgrade head` from `cd-etl/`, the same source of truth for
+schema local dev uses -- rather than a separate CI-only schema definition),
+then runs the full test suite via `uv sync --locked`.
 `.github/workflows/cd-api-tests.yml` runs an analogous pipeline for `cd-api/`.

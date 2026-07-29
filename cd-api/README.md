@@ -2,7 +2,8 @@
 
 REST API that `cd-lookup` (the WordPress plugin) consumes for representative
 lookups, replacing its current GovTrack HTML scrape. Exposes the
-`current_members` view (defined in `../init.sql`) over HTTP as JSON.
+`current_members` view (defined in
+`../cd-etl/migrations/versions/0001_initial_schema.py`) over HTTP as JSON.
 
 ## What it does
 
@@ -49,10 +50,12 @@ it's untouched for local development.
 
 ## Setup
 
-1. Start Postgres:
+1. Start Postgres and apply the schema (owned by `cd-etl`, see
+   `../cd-etl/README.md`):
 
    ```bash
    cd .. && docker compose up -d postgres
+   cd cd-etl && uv run alembic upgrade head && cd ../cd-api
    ```
 
 2. Install dependencies:
