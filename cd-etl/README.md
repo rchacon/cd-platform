@@ -2,7 +2,7 @@
 
 Airflow ETL that syncs House and Senate members of the current Congress from
 [api.congress.gov](https://api.congress.gov) into the `members`/`member_terms`
-tables defined in `../init.sql`.
+tables defined in `migrations/versions/0001_initial_schema.py`.
 
 ## What it does
 
@@ -52,7 +52,34 @@ tables defined in `../init.sql`.
    uv sync
    ```
 
-4. Initialize Airflow (one-time) and add the Postgres connection:
+4. Apply the schema:
+
+   ```bash
+   uv run alembic upgrade head
+   ```
+
+   If you already have a `local_seed.sql` (gitignored, not tracked in git
+   -- from a previous run of your own, or one a teammate shared with you
+   directly), you can load it now to seed real data instead of running the
+   DAG:
+
+   ```bash
+   docker compose exec -T postgres psql -U postgres -d congressional_app \
+     -f - < ../local_seed.sql
+   ```
+
+   Otherwise, there's nothing to load yet -- continue through step 5 and
+   run the DAG once (step 6) to populate real data. Once it has, generate
+   `local_seed.sql` for next time (only needed when a schema change alters
+   `members`/`member_terms`'s own columns, not for unrelated schema
+   changes):
+
+   ```bash
+   docker compose exec -T postgres pg_dump -U postgres -d congressional_app \
+     --data-only -t members -t member_terms > ../local_seed.sql
+   ```
+
+5. Initialize Airflow (one-time) and add the Postgres connection:
 
    ```bash
    set -a && source ../.env && set +a
@@ -66,7 +93,7 @@ tables defined in `../init.sql`.
      --conn-password postgres
    ```
 
-5. Run it:
+6. Run it:
 
    ```bash
    uv run airflow standalone
