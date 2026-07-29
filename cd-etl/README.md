@@ -58,6 +58,25 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
    uv run alembic upgrade head
    ```
 
+   Optionally, seed real data instead of running the DAG, from a gitignored
+   `local_seed.sql` (a `pg_dump --data-only` snapshot of `members`/
+   `member_terms`):
+
+   ```bash
+   docker compose exec -T postgres psql -U postgres -d congressional_app \
+     -f - < ../local_seed.sql
+   ```
+
+   Regenerate `local_seed.sql` with:
+
+   ```bash
+   docker compose exec -T postgres pg_dump -U postgres -d congressional_app \
+     --data-only -t members -t member_terms > ../local_seed.sql
+   ```
+
+   Only needed when a schema change alters those two tables' own columns,
+   not for unrelated schema changes.
+
 5. Initialize Airflow (one-time) and add the Postgres connection:
 
    ```bash
