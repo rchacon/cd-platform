@@ -24,16 +24,19 @@ schema (see Commands below), and re-running it after pulling a new migration
 applies just what's changed, without needing to recreate the volume.
 A gitignored `local_seed.sql` (a `pg_dump --data-only` snapshot of
 `members`/`member_terms`) can be loaded after migrations to seed real data
-instead of re-running the DAG:
+instead of re-running the DAG. Generate it with (only needed when a schema
+change alters those two tables' own columns, not for unrelated schema
+changes):
+
+```bash
+docker compose exec -T postgres pg_dump -U postgres -d congressional_app --data-only -t members -t member_terms > local_seed.sql
+```
+
+Then load it:
 
 ```bash
 docker compose exec -T postgres psql -U postgres -d congressional_app -f - < local_seed.sql
 ```
-
-Regenerate it with `docker compose exec -T postgres pg_dump -U postgres -d
-congressional_app --data-only -t members -t member_terms >
-local_seed.sql` -- only needed when a schema change alters those two
-tables' own columns, not for unrelated schema changes.
 
 ### DAG pipeline (`congress_members_etl`)
 
