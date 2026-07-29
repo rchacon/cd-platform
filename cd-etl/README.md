@@ -68,8 +68,8 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
      -f - < ../local_seed.sql
    ```
 
-   Otherwise, there's nothing to load yet -- continue to step 6 and run
-   the DAG once to populate real data. Once it has, generate
+   Otherwise, there's nothing to load yet -- continue through step 5 and
+   run the DAG once (step 6) to populate real data. Once it has, generate
    `local_seed.sql` for next time (only needed when a schema change alters
    `members`/`member_terms`'s own columns, not for unrelated schema
    changes):
