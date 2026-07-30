@@ -28,6 +28,10 @@ services:
       - ./cd-etl/docker/init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh
 
   cd-etl:
+    # Explicit tag (rather than Compose's default project-derived name) so
+    # CI can pre-build this exact image with GHA layer caching and have
+    # this service reuse it without rebuilding.
+    image: cd-etl:dev
     build:
       context: ./cd-etl
       dockerfile: docker/Dockerfile

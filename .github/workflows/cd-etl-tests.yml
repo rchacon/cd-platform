@@ -12,6 +12,20 @@ jobs:
       - name: Start Postgres
         run: docker compose up -d postgres
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build development image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: cd-etl
+          file: cd-etl/docker/Dockerfile
+          target: development
+          tags: cd-etl:dev
+          load: true
+          cache-from: type=gha,scope=cd-etl-development
+          cache-to: type=gha,mode=max,scope=cd-etl-development
+
       - name: Run tests
         run: make test-etl
 
@@ -28,8 +42,19 @@ jobs:
             sleep 1
           done
 
-      - name: Build production image
-        run: docker build -f cd-etl/docker/Dockerfile --target production -t cd-etl:production cd-etl
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: cd-etl
+          file: cd-etl/docker/Dockerfile
+          target: production
+          tags: cd-etl:production
+          load: true
+          cache-from: type=gha,scope=cd-etl-production
+          cache-to: type=gha,mode=max,scope=cd-etl-production
 
       - name: Smoke test production image
         run: |
