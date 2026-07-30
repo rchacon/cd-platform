@@ -62,8 +62,8 @@ def get_members(
     # both cases fall through to the same 200 + empty representatives list
     # below, since current_members' query includes the state's senators
     # regardless of whether any representative matches the district.
-    if district is not None and not is_valid_district(state, district):
-        seats = max_valid_district(state)
+    seats = max_valid_district(state)
+    if district is not None and not is_valid_district(state, district, seats=seats):
         raise HTTPException(
             status_code=404,
             detail=(
