@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from apportionment import is_valid_district, max_valid_district
 from db import fetch_current_members
 from problem import problem_response
 from transform import group_representatives
@@ -56,6 +57,21 @@ def get_members(
     state: str = Query(..., min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
     district: int | None = Query(None, ge=0),
 ) -> dict:
+    # Distinguishes "this district doesn't exist" from "this district
+    # exists but is currently vacant" (see cd-platform#12) -- without this,
+    # both cases fall through to the same 200 + empty representatives list
+    # below, since current_members' query includes the state's senators
+    # regardless of whether any representative matches the district.
+    if district is not None and not is_valid_district(state, district):
+        seats = max_valid_district(state)
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"District {district} does not exist for state {state.upper()} "
+                f"({seats} district{'s' if seats != 1 else ''})."
+            ),
+        )
+
     rows = fetch_current_members(state.upper(), district)
     if not rows:
         raise HTTPException(status_code=404, detail=f"No data found for state {state.upper()}")

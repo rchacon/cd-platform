@@ -33,7 +33,12 @@ def _insert_member(pg_conn, bioguide_id: str, given_name: str, family_name: str)
 
 
 def _insert_term(
-    pg_conn, bioguide_id: str, chamber: str, district: int | None, member_type: str | None = None
+    pg_conn,
+    bioguide_id: str,
+    chamber: str,
+    district: int | None,
+    member_type: str | None = None,
+    state: str = STATE,
 ) -> None:
     if member_type is None:
         member_type = "Senator" if chamber == "SENATE" else "Representative"
@@ -45,7 +50,7 @@ def _insert_term(
                 start_year, source_hash
             ) VALUES (%s, 119, %s, %s, %s, %s, 2023, %s)
             """,
-            (bioguide_id, chamber, member_type, STATE, district, f"hash-term-{bioguide_id}"),
+            (bioguide_id, chamber, member_type, state, district, f"hash-term-{bioguide_id}"),
         )
 
 
@@ -198,3 +203,62 @@ def test_get_members_returns_senators_only_without_a_matching_district(seeded_st
     body = response.json()
     assert body["representatives"] == []
     assert len(body["senators"]) == 2
+
+
+def test_get_members_out_of_range_district_returns_404():
+    # cd-platform#12: GA has 14 districts (see apportionment.SEATS_PER_STATE)
+    # -- 99 is out of range regardless of what's seeded, so this needs no
+    # fixture at all; the check happens before any DB query.
+    client = TestClient(app)
+    response = client.get("/members", params={"state": "GA", "district": 99})
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] == "application/problem+json"
+    body = response.json()
+    assert body["status"] == 404
+    assert "District 99 does not exist for state GA" in body["detail"]
+    assert "14 districts" in body["detail"]
+
+
+def test_get_members_district_one_invalid_for_at_large_state_returns_404():
+    # cd-platform#12: WY has exactly 1 seat, which uses district=0 (at-large)
+    # per this project's own NULL/0/1+ convention -- district=1 sounds like
+    # a reasonable request but is actually invalid for a 1-seat state, not
+    # "the first of 1 districts."
+    client = TestClient(app)
+    response = client.get("/members", params={"state": "WY", "district": 1})
+
+    assert response.status_code == 404
+    body = response.json()
+    assert "District 1 does not exist for state WY" in body["detail"]
+    assert "1 district)" in body["detail"]
+
+
+def test_get_members_valid_but_vacant_district_still_returns_200(pg_conn):
+    # cd-platform#12's actual regression concern: a real, in-range district
+    # with no current representative (a genuine vacancy) must NOT be
+    # confused with an out-of-range one -- still 200 + empty
+    # representatives, only senators returned. Uses GA (14 districts);
+    # district 5 is in-range but nothing is seeded for it below.
+    senator_a, senator_b = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
+    _insert_member(pg_conn, senator_a, "Dana", "Diaz")
+    _insert_member(pg_conn, senator_b, "Eli", "Evans")
+    _insert_term(pg_conn, senator_a, "SENATE", None, state="GA")
+    _insert_term(pg_conn, senator_b, "SENATE", None, state="GA")
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        response = client.get("/members", params={"state": "GA", "district": 5})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["representatives"] == []
+        assert len(body["senators"]) == 2
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM members WHERE bioguide_id = ANY(%s)",
+                ([senator_a, senator_b],),
+            )
+        pg_conn.commit()
