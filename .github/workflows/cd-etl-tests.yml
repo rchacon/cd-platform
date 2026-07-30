@@ -38,6 +38,7 @@ jobs:
             --network container:$POSTGRES_CID \
             -e CONGRESS_API_KEY=smoke-test \
             -e AIRFLOW_CONN_CONGRESSIONAL_POSTGRES=postgresql://postgres:postgres@localhost:5432/congressional_app \
+            -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@localhost:5432/airflow_metadata \
             cd-etl:production
 
           for i in $(seq 1 30); do
