@@ -24,9 +24,12 @@ only included when `district` is given and matches.
 Each person has `full_name`, `role` (whatever Congress.gov's `member_type`
 records for that seat -- `"Senator"`, `"Representative"`, `"Delegate"`, or
 `"Resident Commissioner"` for DC/territory non-voting seats), `party`,
-`phone`, `website`, `photo_url`. An unknown state returns `404`; a known state
-with no representative for the given district (bad district number) returns
-`200` with an empty `representatives` list.
+`phone`, `website`, `photo_url`. An unknown state returns `404`. A `district`
+that doesn't exist for that state (validated against real House
+apportionment, see `src/apportionment.py`) also returns `404` -- e.g.
+`district=99` for a 14-district state. A `district` that *does* exist but
+currently has no representative (a genuine vacancy) still returns `200` with
+an empty `representatives` list, distinct from the `404` above.
 
 Errors follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem
 Details for HTTP APIs") -- `Content-Type: application/problem+json`, body
