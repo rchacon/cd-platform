@@ -128,6 +128,13 @@ hash that addressed it (e.g. "Fixed in `abc1234`.") -- keeps the review
 thread traceable to the exact change that resolved it, rather than a
 generic "addressed" reply pointing at the whole PR.
 
+When *submitting* a code review on a PR, post each finding as its own
+separate inline review comment (anchored to the specific file/line via
+`gh api repos/{owner}/{repo}/pulls/{number}/comments`, not a single bundled
+`gh pr comment`) -- a combined comment listing every finding only supports
+one flat reply thread, making it impossible to reply to (or resolve)
+individual findings separately later.
+
 ## Commands
 
 Run from the repo root unless noted otherwise. `cd-api/` has its own
