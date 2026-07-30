@@ -117,6 +117,8 @@ actual `execute_values` call, never earlier.
 
 PRs are merged with a merge commit (`gh pr merge --merge`), not squash or
 rebase — preserves the individual commit history from the PR branch.
+After merging, delete the branch both locally and remotely
+(`gh pr merge --merge --delete-branch` does both in one step).
 
 When addressing review comments on an open PR, break the fixes up into
 separate commits along logical lines (one commit per distinct issue/fix,
