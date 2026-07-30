@@ -86,3 +86,12 @@ uv run pytest tests/
 `tests/test_app.py` seeds real rows and exercises the endpoint end to end
 against Postgres, and skips itself if `docker compose up -d postgres` hasn't
 been run.
+
+Tests target a dedicated `congressional_app_test` database (`cd-platform#16`),
+not the real dev database -- `tests/conftest.py` sets this before `db`/`app`
+are first imported, so both the fixture's own seeding and the app code under
+test (via `TestClient`) consistently hit the same isolated database. That
+database's schema is owned by `cd-etl` (see `../cd-etl/README.md`), so run
+`make test-etl` from the repo root at least once first -- otherwise these
+tests fail with "relation does not exist" rather than skipping, since the
+database itself already exists (just without the schema yet).

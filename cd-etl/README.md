@@ -94,3 +94,9 @@ so this also doesn't need `uv`/Python on the host. The entrypoint applies
 both Airflow's own and this project's own migrations before every run, so
 the schema is always current -- there's no "forgot to migrate" failure mode
 to worry about here.
+
+`make test-etl` runs against a dedicated `congressional_app_test` database
+(a sibling of `congressional_app` in the same Postgres container, created
+by `docker/init-test-db.sh`) -- isolated from both the real dev-seeded data
+and from `make start-etl`'s long-running service, so the two can run
+concurrently without racing each other's migrations (cd-platform#16).

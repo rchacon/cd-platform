@@ -137,7 +137,7 @@ docker compose exec -T postgres psql -U postgres -d congressional_app \
   -f - < local_seed.sql
 
 # Tests (tests/ is bind-mounted, so this doesn't need uv/Python on the host)
-make test-etl                                  # docker compose run --rm cd-etl uv run pytest tests/
+make test-etl                                  # docker compose run --rm -e PGDATABASE=congressional_app_test cd-etl uv run pytest tests/
 make test-etl TEST=test_members_etl.py::test_name
 ```
 
@@ -146,6 +146,16 @@ isn't reachable; every other test is a pure unit test with no external
 dependencies. `tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so
 the module (which reads it at import time) can be imported without a real
 key.
+
+`make test-etl` targets a dedicated `congressional_app_test` database (a
+sibling of `congressional_app` and `airflow_metadata` in the same Postgres
+container, created by `cd-etl/docker/init-test-db.sh`) rather than the
+real dev database -- isolates tests from real dev-seeded data and from
+`make start-etl`'s long-running service, so the two no longer race each
+other's migrations (`cd-platform#16`). `cd-api`'s tests share this same
+database (see `cd-api/README.md`) -- its schema is only ever applied by
+`cd-etl`'s side, so `cd-api`'s tests need `make test-etl` to have run at
+least once first.
 
 `cd-etl/docker/Dockerfile` is multi-stage: `production` (what ships to GHCR) has
 no test dependencies at all -- its `base` stage's `uv sync --locked
@@ -156,9 +166,8 @@ otherwise does on every invocation, regardless of what flags the original
 both build) layers a second, full `uv sync --locked` and `tests/` on top.
 
 CI (`.github/workflows/cd-etl-tests.yml`) runs on every PR: the `test` job
-runs the suite through the same `cd-etl` Docker service local dev uses
-(`docker compose run --rm cd-etl uv run pytest tests/`) -- one less thing
-that can drift between CI and local dev. The `docker-build` job builds the
+runs `make test-etl` -- the exact same command local dev uses, one less
+thing that can drift between the two. The `docker-build` job builds the
 `production` target specifically and smoke-tests it (health endpoint +
 `congress_members_etl` actually discovered), catching a broken production
 image before a `cd-etl-v*` release tag ever gets cut -- a plain `docker

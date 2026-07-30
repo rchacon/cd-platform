@@ -18,7 +18,7 @@ jobs:
           done
 
       - name: Run tests
-        run: docker compose run --rm cd-etl uv run pytest tests/ -v
+        run: make test-etl
 
   docker-build:
     runs-on: ubuntu-latest

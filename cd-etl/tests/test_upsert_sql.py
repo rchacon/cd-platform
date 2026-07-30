@@ -12,7 +12,11 @@ import members_etl as etl
 PG_DSN = {
     "host": os.environ.get("PGHOST", "localhost"),
     "port": os.environ.get("PGPORT", "5432"),
-    "dbname": os.environ.get("PGDATABASE", "congressional_app"),
+    # Dedicated test database (cd-platform#16) -- kept as the default even
+    # outside `make test-etl` (which sets PGDATABASE explicitly), so a
+    # stray bare pytest invocation still lands on the safe, isolated
+    # database rather than real dev-seeded data.
+    "dbname": os.environ.get("PGDATABASE", "congressional_app_test"),
     "user": os.environ.get("PGUSER", "postgres"),
     "password": os.environ.get("PGPASSWORD", "postgres"),
 }

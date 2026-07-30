@@ -16,6 +16,11 @@ services:
       # uses below (matches how production's RDS instance is designed:
       # a sibling database on the same instance, not a separate one).
       - ./cd-etl/docker/init-airflow-metadata-db.sh:/docker-entrypoint-initdb.d/init-airflow-metadata-db.sh
+      # Dedicated database `make test-etl` points at (see the Makefile) --
+      # isolates tests from the real dev-seeded data and from `make
+      # start-etl`'s long-running service, rather than racing the same
+      # database (cd-platform#16).
+      - ./cd-etl/docker/init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh
 
   cd-etl:
     build:

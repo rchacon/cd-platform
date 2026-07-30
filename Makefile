@@ -5,4 +5,4 @@ start-etl:
 	docker compose up --build cd-etl
 
 test-etl:
-	docker compose run --rm cd-etl uv run pytest tests/$(TEST)
+	docker compose run --rm -e PGDATABASE=congressional_app_test cd-etl uv run pytest tests/$(TEST)
