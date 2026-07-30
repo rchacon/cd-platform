@@ -11,5 +11,36 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  cd-etl:
+    build:
+      context: ./cd-etl
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      CONGRESS_API_KEY: ${CONGRESS_API_KEY}
+      # Compose's internal DNS resolves service names -- "postgres" here,
+      # not "localhost" -- since cd-etl now runs in its own container on
+      # the same compose network rather than on the host.
+      AIRFLOW_CONN_CONGRESSIONAL_POSTGRES: postgresql://postgres:postgres@postgres:5432/congressional_app
+      # tests/test_upsert_sql.py's PG_DSN defaults to PGHOST=localhost,
+      # which inside this container means itself, not the postgres
+      # service -- only PGHOST needs overriding, every other PG_DSN
+      # default already matches the postgres service's own config above.
+      PGHOST: postgres
+    ports:
+      - "8080:8080"
+    volumes:
+      # Bind-mounted so DAG/test edits show up without rebuilding the
+      # image. tests/ isn't copied into the image itself (kept out of the
+      # shipped artifact -- it's dev-only), so this is the only way to run
+      # the suite via `docker compose run`.
+      - ./cd-etl/src:/app/src
+      - ./cd-etl/tests:/app/tests
+      # Named volume so Airflow's own (SQLite) metadata/logs persist
+      # across restarts.
+      - cd_etl_airflow_home:/app/.airflow
+
 volumes:
   postgres_data:
+  cd_etl_airflow_home:

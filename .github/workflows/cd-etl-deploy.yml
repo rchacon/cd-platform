@@ -1,0 +1,35 @@
+name: cd-etl deploy
+
+on:
+  push:
+    tags:
+      - 'cd-etl-v*'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#cd-etl-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: cd-etl
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cd-etl:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/cd-etl:latest

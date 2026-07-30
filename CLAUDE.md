@@ -18,15 +18,20 @@ Alembic migrations (`cd-etl/migrations/`). `cd-api` is a FastAPI app
 (`cd-api/src/app.py`) that exposes the `current_members` view over HTTP for
 `cd-lookup` to consume, replacing its current GovTrack HTML scrape -- see
 `cd-api/README.md`.
-`docker-compose.yml` at the repo root runs Postgres locally, starting from an
-empty database -- `cd cd-etl && uv run alembic upgrade head` applies the
-schema (see Commands below), and re-running it after pulling a new migration
-applies just what's changed, without needing to recreate the volume.
+`docker-compose.yml` at the repo root runs Postgres, plus a `cd-etl` service
+built from `cd-etl/Dockerfile` -- the same image also pushed to GHCR (see
+`cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev
+and deployment run identically rather than two commands that could drift.
+Docker is the only local dependency for `cd-etl` -- no `uv`/Python needed on
+the host. The container's entrypoint applies both Airflow's own metadata
+migrations and this project's own schema migrations (`cd-etl/migrations/`)
+on every start, so there's no separate manual migration step and no
+"forgot to migrate" failure mode.
 A gitignored `local_seed.sql` (a `pg_dump --data-only` snapshot of
-`members`/`member_terms`) can be loaded after migrations to seed real data
-instead of re-running the DAG. Generate it with (only needed when a schema
-change alters those two tables' own columns, not for unrelated schema
-changes):
+`members`/`member_terms`) can be loaded after the schema exists to seed real
+data instead of re-running the DAG. Generate it with (only needed when a
+schema change alters those two tables' own columns, not for unrelated
+schema changes):
 
 ```bash
 docker compose exec -T postgres pg_dump -U postgres -d congressional_app --data-only -t members -t member_terms > local_seed.sql
@@ -112,43 +117,43 @@ rebase — preserves the individual commit history from the PR branch.
 
 ## Commands
 
-All commands run from `cd-etl/` unless noted otherwise. `cd-api/` has its own
-independent command set (`uv sync`, `uv run uvicorn`, `uv run pytest`) run
-from `cd-api/` instead -- see `cd-api/README.md`.
+Run from the repo root unless noted otherwise. `cd-api/` has its own
+independent, non-Docker command set (`uv sync`, `uv run uvicorn`,
+`uv run pytest`) run from `cd-api/` instead -- see `cd-api/README.md`.
 
 ```bash
 # One-time setup
-cp .env.sample .env              # fill in CONGRESS_API_KEY and AIRFLOW_HOME
-cd .. && docker compose up -d postgres && cd cd-etl
-uv sync
-uv run alembic upgrade head       # applies the schema (see migrations/)
-set -a && source ../.env && set +a
-uv run airflow db migrate
-uv run airflow connections add congressional_postgres \
-  --conn-type postgres --conn-host localhost --conn-port 5432 \
-  --conn-schema congressional_app --conn-login postgres --conn-password postgres
+cp .env.sample .env              # fill in CONGRESS_API_KEY
+docker compose up -d postgres
+docker compose up --build cd-etl # builds the image, applies both Airflow's
+                                  # own and this project's migrations, starts
+                                  # the DAG -- UI at http://localhost:8080
 
 # Optionally seed real data instead of running the DAG
 docker compose exec -T postgres psql -U postgres -d congressional_app \
-  -f - < ../local_seed.sql
+  -f - < local_seed.sql
 
-# Run the DAG
-uv run airflow standalone         # UI at http://localhost:8080
-
-# Tests
-uv run pytest tests/              # full suite
-uv run pytest tests/test_members_etl.py::test_name   # single test
+# Tests (tests/ is bind-mounted, so this doesn't need uv/Python on the host)
+docker compose run --rm cd-etl uv run pytest tests/
+docker compose run --rm cd-etl uv run pytest tests/test_members_etl.py::test_name
 ```
 
-`tests/test_upsert_sql.py` needs a live Postgres (`docker compose up -d
-postgres`) and skips itself if one isn't reachable at `localhost:5432`; every
-other test is a pure unit test with no external dependencies.
-`tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so the module (which
-reads it at import time) can be imported without a real key.
+`tests/test_upsert_sql.py` needs a live Postgres and skips itself if one
+isn't reachable; every other test is a pure unit test with no external
+dependencies. `tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so
+the module (which reads it at import time) can be imported without a real
+key.
 
-CI (`.github/workflows/cd-etl-tests.yml`) runs on every PR: it brings up the
-same `docker-compose.yml` Postgres service, applies migrations
-(`uv run alembic upgrade head` from `cd-etl/`, the same source of truth for
-schema local dev uses -- rather than a separate CI-only schema definition),
-then runs the full test suite via `uv sync --locked`.
-`.github/workflows/cd-api-tests.yml` runs an analogous pipeline for `cd-api/`.
+CI (`.github/workflows/cd-etl-tests.yml`) runs on every PR: one job brings
+up the same `docker-compose.yml` Postgres service and runs the test suite
+directly via `uv` (not through the `cd-etl` Docker service, unlike local
+dev -- faster on a CI runner, and still exercises the same
+`alembic upgrade head` schema that's the single source of truth either way);
+a second job does a plain `docker build` of `cd-etl/` so a broken
+`Dockerfile` fails PR CI before a `cd-etl-v*` release tag ever gets cut.
+`.github/workflows/cd-etl-deploy.yml` builds and pushes `cd-etl/`'s image to
+GHCR (`ghcr.io/<owner>/cd-etl`, tagged with the version and `latest`) on a
+`cd-etl-v*` tag push -- no AWS credentials involved; the EC2 side polls for
+new images via Watchtower rather than CI pushing to it directly.
+`.github/workflows/cd-api-tests.yml` runs an analogous (non-Docker) pipeline
+for `cd-api/`.
