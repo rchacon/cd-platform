@@ -27,9 +27,9 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
 - Docker -- the only local dependency. No `uv`/Python install needed;
   everything (dependencies, Airflow's own metadata migrations, this
   project's own schema migrations) runs inside the `cd-etl` container
-  defined in `../docker-compose.yml`, built from this directory's
-  `Dockerfile` -- the same image (also pushed to GHCR on a `cd-etl-v*` tag,
-  see below) local dev and deployment both run.
+  defined in `../docker-compose.yml`, built from `docker/Dockerfile` -- the
+  same image (also pushed to GHCR on a `cd-etl-v*` tag, see below) local
+  dev and deployment both run.
 - A free API key from [api.congress.gov](https://api.congress.gov)
 
 ## Setup
@@ -74,7 +74,7 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
 ## Releasing
 
 Pushing a tag matching `cd-etl-v*` (e.g. `cd-etl-v1.0.0`) triggers
-`.github/workflows/cd-etl-deploy.yml`, which builds this same `Dockerfile`'s
+`.github/workflows/cd-etl-deploy.yml`, which builds this same `docker/Dockerfile`'s
 `production` target and pushes it to GHCR as `ghcr.io/<owner>/cd-etl`. The
 `cd-etl-v` prefix is dropped from the pushed version tag -- tag
 `cd-etl-v1.0.0` produces image tags `1.0.0` and `latest`, not
@@ -87,7 +87,7 @@ make test-etl
 make test-etl TEST=test_members_etl.py::test_name
 ```
 
-`Dockerfile` is multi-stage: `production` (what actually ships, built above)
+`docker/Dockerfile` is multi-stage: `production` (what actually ships, built above)
 has no test dependencies at all, while `development` (what `make start-etl`/
 `test-etl` build) additionally installs `pytest` and copies `tests/` in --
 so this also doesn't need `uv`/Python on the host. The entrypoint applies

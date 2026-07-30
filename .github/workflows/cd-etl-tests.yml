@@ -34,7 +34,7 @@ jobs:
           done
 
       - name: Build production image
-        run: docker build --target production -t cd-etl:production cd-etl
+        run: docker build -f cd-etl/docker/Dockerfile --target production -t cd-etl:production cd-etl
 
       - name: Smoke test production image
         run: |

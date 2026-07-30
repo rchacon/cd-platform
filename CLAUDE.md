@@ -19,7 +19,7 @@ Alembic migrations (`cd-etl/migrations/`). `cd-api` is a FastAPI app
 `cd-lookup` to consume, replacing its current GovTrack HTML scrape -- see
 `cd-api/README.md`.
 `docker-compose.yml` at the repo root runs Postgres, plus a `cd-etl` service
-built from `cd-etl/Dockerfile` -- the same image also pushed to GHCR (see
+built from `cd-etl/docker/Dockerfile` -- the same image also pushed to GHCR (see
 `cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev
 and deployment run identically rather than two commands that could drift.
 Docker is the only local dependency for `cd-etl` -- no `uv`/Python needed on
@@ -147,7 +147,7 @@ dependencies. `tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so
 the module (which reads it at import time) can be imported without a real
 key.
 
-`cd-etl/Dockerfile` is multi-stage: `production` (what ships to GHCR) has
+`cd-etl/docker/Dockerfile` is multi-stage: `production` (what ships to GHCR) has
 no test dependencies at all -- its `base` stage's `uv sync --locked
 --no-dev` never installs `pytest`, and `UV_NO_SYNC=1` stops `uv run` from
 silently re-syncing the full lockfile back in at runtime (which it
