@@ -6,14 +6,35 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cd-etl
     steps:
       - uses: actions/checkout@v4
 
       - name: Start Postgres
-        working-directory: ${{ github.workspace }}
+        run: docker compose up -d postgres
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build development image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: cd-etl
+          file: cd-etl/docker/Dockerfile
+          target: development
+          tags: cd-etl:dev
+          load: true
+          cache-from: type=gha,scope=cd-etl-development
+          cache-to: type=gha,mode=max,scope=cd-etl-development
+
+      - name: Run tests
+        run: make test-etl
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Postgres
         run: |
           docker compose up -d postgres
           for i in $(seq 1 30); do
@@ -21,16 +42,38 @@ jobs:
             sleep 1
           done
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image (cached)
+        uses: docker/build-push-action@v6
         with:
-          enable-cache: true
+          context: cd-etl
+          file: cd-etl/docker/Dockerfile
+          target: production
+          tags: cd-etl:production
+          load: true
+          cache-from: type=gha,scope=cd-etl-production
+          cache-to: type=gha,mode=max,scope=cd-etl-production
 
-      - name: Install dependencies
-        run: uv sync --locked
+      - name: Smoke test production image
+        run: |
+          POSTGRES_CID=$(docker compose ps -q postgres)
+          docker run --rm -d --name cd-etl-smoke \
+            --network container:$POSTGRES_CID \
+            -e CONGRESS_API_KEY=smoke-test \
+            -e AIRFLOW_CONN_CONGRESSIONAL_POSTGRES=postgresql://postgres:postgres@localhost:5432/congressional_app \
+            -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@localhost:5432/airflow_metadata \
+            cd-etl:production
 
-      - name: Apply migrations
-        run: uv run alembic upgrade head
+          for i in $(seq 1 30); do
+            docker exec cd-etl-smoke uv run python -c \
+              "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health')" \
+              && break
+            sleep 2
+          done
 
-      - name: Run tests
-        run: uv run pytest tests/ -v
+          docker exec cd-etl-smoke uv run airflow dags list | grep -q congress_members_etl
+
+          docker logs cd-etl-smoke
+          docker rm -f cd-etl-smoke

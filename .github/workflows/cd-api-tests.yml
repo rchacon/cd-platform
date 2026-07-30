@@ -28,6 +28,11 @@ jobs:
 
       - name: Apply migrations
         working-directory: cd-etl
+        env:
+          # cd-api's tests target the dedicated test database
+          # (cd-platform#16, see cd-api/tests/conftest.py) -- apply
+          # migrations there, not the real dev database.
+          PGDATABASE: congressional_app_test
         run: |
           uv sync --locked
           uv run alembic upgrade head

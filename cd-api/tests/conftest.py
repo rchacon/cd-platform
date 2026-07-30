@@ -1,3 +1,13 @@
+import os
+
+# Dedicated test database (cd-platform#16) -- must be set before `db` (or
+# anything importing it, e.g. `app`) is first imported: db.py's PG_DSN is
+# built from this env var at import time and used by the real app code
+# under test too (via TestClient), not just this fixture's own direct
+# seeding -- setting it only here, after import, would leave the app
+# querying the real dev database while tests seed the test one.
+os.environ.setdefault("PGDATABASE", "congressional_app_test")
+
 import psycopg2
 import pytest
 
