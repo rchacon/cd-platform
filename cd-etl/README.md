@@ -40,12 +40,10 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
    cp ../.env.sample ../.env
    ```
 
-2. Start everything:
+2. Start everything (from the repo root):
 
    ```bash
-   cd ..
-   docker compose up -d postgres
-   docker compose up --build cd-etl
+   make start-etl
    ```
 
    This builds the image, applies both Airflow's own metadata migrations
@@ -76,18 +74,23 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
 ## Releasing
 
 Pushing a tag matching `cd-etl-v*` (e.g. `cd-etl-v1.0.0`) triggers
-`.github/workflows/cd-etl-deploy.yml`, which builds this same `Dockerfile`
-and pushes it to GHCR as `ghcr.io/<owner>/cd-etl`, tagged with both the
-version and `latest`.
+`.github/workflows/cd-etl-deploy.yml`, which builds this same `Dockerfile`'s
+`production` target and pushes it to GHCR as `ghcr.io/<owner>/cd-etl`. The
+`cd-etl-v` prefix is dropped from the pushed version tag -- tag
+`cd-etl-v1.0.0` produces image tags `1.0.0` and `latest`, not
+`cd-etl-v1.0.0`.
 
 ## Testing
 
 ```bash
-docker compose run --rm cd-etl uv run pytest tests/
+make test-etl
+make test-etl TEST=test_members_etl.py::test_name
 ```
 
-`cd-etl/tests` is bind-mounted into the container (not baked into the
-image -- kept out of the shipped artifact), so this also doesn't need
-`uv`/Python on the host. The entrypoint applies both Airflow's own and this
-project's own migrations before every run, so the schema is always current
--- there's no "forgot to migrate" failure mode to worry about here.
+`Dockerfile` is multi-stage: `production` (what actually ships, built above)
+has no test dependencies at all, while `development` (what `make start-etl`/
+`test-etl` build) additionally installs `pytest` and copies `tests/` in --
+so this also doesn't need `uv`/Python on the host. The entrypoint applies
+both Airflow's own and this project's own migrations before every run, so
+the schema is always current -- there's no "forgot to migrate" failure mode
+to worry about here.

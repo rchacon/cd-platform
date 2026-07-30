@@ -10,10 +10,17 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Only runs on first container creation with an empty volume, same
+      # caveat as this project's old init.sql mechanism -- creates the
+      # separate airflow_metadata database Airflow's own metadata backend
+      # uses below (matches how production's RDS instance is designed:
+      # a sibling database on the same instance, not a separate one).
+      - ./cd-etl/docker/init-airflow-metadata-db.sh:/docker-entrypoint-initdb.d/init-airflow-metadata-db.sh
 
   cd-etl:
     build:
       context: ./cd-etl
+      target: development
     restart: unless-stopped
     depends_on:
       - postgres
@@ -23,6 +30,9 @@ services:
       # not "localhost" -- since cd-etl now runs in its own container on
       # the same compose network rather than on the host.
       AIRFLOW_CONN_CONGRESSIONAL_POSTGRES: postgresql://postgres:postgres@postgres:5432/congressional_app
+      # Matches production's design (RDS hosts a separate airflow_metadata
+      # database) rather than Airflow's own SQLite default.
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
       # tests/test_upsert_sql.py's PG_DSN defaults to PGHOST=localhost,
       # which inside this container means itself, not the postgres
       # service -- only PGHOST needs overriding, every other PG_DSN
@@ -32,13 +42,12 @@ services:
       - "8080:8080"
     volumes:
       # Bind-mounted so DAG/test edits show up without rebuilding the
-      # image. tests/ isn't copied into the image itself (kept out of the
-      # shipped artifact -- it's dev-only), so this is the only way to run
-      # the suite via `docker compose run`.
+      # image, even though both are already baked into the `development`
+      # target build above.
       - ./cd-etl/src:/app/src
       - ./cd-etl/tests:/app/tests
-      # Named volume so Airflow's own (SQLite) metadata/logs persist
-      # across restarts.
+      # Named volume so Airflow's own logs (and anything else under
+      # AIRFLOW_HOME not living in Postgres) persist across restarts.
       - cd_etl_airflow_home:/app/.airflow
 
 volumes:

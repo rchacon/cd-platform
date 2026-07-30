@@ -6,14 +6,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: cd-etl
     steps:
       - uses: actions/checkout@v4
 
       - name: Start Postgres
-        working-directory: ${{ github.workspace }}
         run: |
           docker compose up -d postgres
           for i in $(seq 1 30); do
@@ -21,24 +17,42 @@ jobs:
             sleep 1
           done
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Apply migrations
-        run: uv run alembic upgrade head
-
       - name: Run tests
-        run: uv run pytest tests/ -v
+        run: docker compose run --rm cd-etl uv run pytest tests/ -v
 
   docker-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image
-        run: docker build cd-etl
+      - name: Start Postgres
+        run: |
+          docker compose up -d postgres
+          for i in $(seq 1 30); do
+            docker compose exec -T postgres pg_isready -U postgres && break
+            sleep 1
+          done
+
+      - name: Build production image
+        run: docker build --target production -t cd-etl:production cd-etl
+
+      - name: Smoke test production image
+        run: |
+          POSTGRES_CID=$(docker compose ps -q postgres)
+          docker run --rm -d --name cd-etl-smoke \
+            --network container:$POSTGRES_CID \
+            -e CONGRESS_API_KEY=smoke-test \
+            -e AIRFLOW_CONN_CONGRESSIONAL_POSTGRES=postgresql://postgres:postgres@localhost:5432/congressional_app \
+            cd-etl:production
+
+          for i in $(seq 1 30); do
+            docker exec cd-etl-smoke uv run python -c \
+              "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health')" \
+              && break
+            sleep 2
+          done
+
+          docker exec cd-etl-smoke uv run airflow dags list | grep -q congress_members_etl
+
+          docker logs cd-etl-smoke
+          docker rm -f cd-etl-smoke

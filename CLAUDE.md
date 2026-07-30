@@ -23,10 +23,13 @@ built from `cd-etl/Dockerfile` -- the same image also pushed to GHCR (see
 `cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev
 and deployment run identically rather than two commands that could drift.
 Docker is the only local dependency for `cd-etl` -- no `uv`/Python needed on
-the host. The container's entrypoint applies both Airflow's own metadata
-migrations and this project's own schema migrations (`cd-etl/migrations/`)
-on every start, so there's no separate manual migration step and no
-"forgot to migrate" failure mode.
+the host (see the root `Makefile`'s `start-etl`/`test-etl` targets). The
+container's entrypoint applies both Airflow's own metadata migrations and
+this project's own schema migrations (`cd-etl/migrations/`) on every start,
+so there's no separate manual migration step and no "forgot to migrate"
+failure mode. Airflow's own metadata lives in a separate `airflow_metadata`
+database on the same Postgres instance (not its SQLite default), matching
+how production's RDS instance is designed.
 A gitignored `local_seed.sql` (a `pg_dump --data-only` snapshot of
 `members`/`member_terms`) can be loaded after the schema exists to seed real
 data instead of re-running the DAG. Generate it with (only needed when a
@@ -123,19 +126,19 @@ independent, non-Docker command set (`uv sync`, `uv run uvicorn`,
 
 ```bash
 # One-time setup
-cp .env.sample .env              # fill in CONGRESS_API_KEY
-docker compose up -d postgres
-docker compose up --build cd-etl # builds the image, applies both Airflow's
-                                  # own and this project's migrations, starts
-                                  # the DAG -- UI at http://localhost:8080
+cp .env.sample .env   # fill in CONGRESS_API_KEY
+make start-etl        # docker compose up -d postgres && docker compose up
+                       # --build cd-etl -- builds the image, applies both
+                       # Airflow's own and this project's migrations, starts
+                       # the DAG -- UI at http://localhost:8080
 
 # Optionally seed real data instead of running the DAG
 docker compose exec -T postgres psql -U postgres -d congressional_app \
   -f - < local_seed.sql
 
 # Tests (tests/ is bind-mounted, so this doesn't need uv/Python on the host)
-docker compose run --rm cd-etl uv run pytest tests/
-docker compose run --rm cd-etl uv run pytest tests/test_members_etl.py::test_name
+make test-etl                                  # docker compose run --rm cd-etl uv run pytest tests/
+make test-etl TEST=test_members_etl.py::test_name
 ```
 
 `tests/test_upsert_sql.py` needs a live Postgres and skips itself if one
@@ -144,16 +147,27 @@ dependencies. `tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so
 the module (which reads it at import time) can be imported without a real
 key.
 
-CI (`.github/workflows/cd-etl-tests.yml`) runs on every PR: one job brings
-up the same `docker-compose.yml` Postgres service and runs the test suite
-directly via `uv` (not through the `cd-etl` Docker service, unlike local
-dev -- faster on a CI runner, and still exercises the same
-`alembic upgrade head` schema that's the single source of truth either way);
-a second job does a plain `docker build` of `cd-etl/` so a broken
-`Dockerfile` fails PR CI before a `cd-etl-v*` release tag ever gets cut.
-`.github/workflows/cd-etl-deploy.yml` builds and pushes `cd-etl/`'s image to
-GHCR (`ghcr.io/<owner>/cd-etl`, tagged with the version and `latest`) on a
-`cd-etl-v*` tag push -- no AWS credentials involved; the EC2 side polls for
-new images via Watchtower rather than CI pushing to it directly.
+`cd-etl/Dockerfile` is multi-stage: `production` (what ships to GHCR) has
+no test dependencies at all -- its `base` stage's `uv sync --locked
+--no-dev` never installs `pytest`, and `UV_NO_SYNC=1` stops `uv run` from
+silently re-syncing the full lockfile back in at runtime (which it
+otherwise does on every invocation, regardless of what flags the original
+`uv sync` used). `development` (what `make start-etl`/`test-etl` and CI
+both build) layers a second, full `uv sync --locked` and `tests/` on top.
+
+CI (`.github/workflows/cd-etl-tests.yml`) runs on every PR: the `test` job
+runs the suite through the same `cd-etl` Docker service local dev uses
+(`docker compose run --rm cd-etl uv run pytest tests/`) -- one less thing
+that can drift between CI and local dev. The `docker-build` job builds the
+`production` target specifically and smoke-tests it (health endpoint +
+`congress_members_etl` actually discovered), catching a broken production
+image before a `cd-etl-v*` release tag ever gets cut -- a plain `docker
+build` alone wouldn't catch a container that builds fine but fails to
+actually run.
+`.github/workflows/cd-etl-deploy.yml` builds (`--target production`) and
+pushes `cd-etl/`'s image to GHCR (`ghcr.io/<owner>/cd-etl`, tagged with the
+version and `latest`) on a `cd-etl-v*` tag push -- no AWS credentials
+involved; the EC2 side polls for new images via Watchtower rather than CI
+pushing to it directly.
 `.github/workflows/cd-api-tests.yml` runs an analogous (non-Docker) pipeline
 for `cd-api/`.
