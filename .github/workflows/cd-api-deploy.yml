@@ -33,8 +33,8 @@ jobs:
             --python-platform x86_64-unknown-linux-gnu \
             --python-version 3.12 \
             -r requirements.txt
-          cp -r src package/src
-          echo "${GITHUB_REF_NAME#cd-api-v}" > package/src/VERSION
+          cp src/*.py package/
+          echo "${GITHUB_REF_NAME#cd-api-v}" > package/VERSION
           cd package && zip -qr ../lambda.zip .
 
       - name: Check package size against Lambda's 50MB direct-upload limit
