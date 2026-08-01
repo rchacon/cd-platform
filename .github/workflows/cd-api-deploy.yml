@@ -37,6 +37,11 @@ jobs:
           echo "${GITHUB_REF_NAME#cd-api-v}" > package/VERSION
           cd package && zip -qr ../lambda.zip .
 
+      - name: Sanity-check the built package imports cleanly
+        run: |
+          cd package
+          python3 -c "from app import handler; print('Imported handler OK:', handler)"
+
       - name: Check package size against Lambda's 50MB direct-upload limit
         run: |
           size=$(stat -c%s lambda.zip)
