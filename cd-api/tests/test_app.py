@@ -77,6 +77,29 @@ def seeded_state(pg_conn):
     pg_conn.commit()
 
 
+def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path):
+    # cd-platform#29: local dev/CI never has a VERSION file -- only the
+    # deploy workflow writes one into the Lambda zip -- so this is the
+    # default a developer actually sees.
+    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    client = TestClient(app)
+    response = client.get("/version")
+
+    assert response.status_code == 200
+    assert response.json() == {"version": "dev"}
+
+
+def test_get_version_returns_file_contents_when_present(monkeypatch, tmp_path):
+    version_file = tmp_path / "VERSION"
+    version_file.write_text("0.1.0\n")
+    monkeypatch.setattr("app.VERSION_FILE", version_file)
+    client = TestClient(app)
+    response = client.get("/version")
+
+    assert response.status_code == 200
+    assert response.json() == {"version": "0.1.0"}
+
+
 def test_get_members_returns_senators_and_representative(seeded_state):
     client = TestClient(app)
     response = client.get("/members", params={"state": STATE, "district": DISTRICT})

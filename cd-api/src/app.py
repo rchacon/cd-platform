@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -17,6 +18,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+VERSION_FILE = Path(__file__).parent / "VERSION"
 
 
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
@@ -50,6 +53,18 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     # (CloudWatch on Lambda, stderr locally), since nothing upstream logs.
     logger.exception("Unhandled exception for %s %s", request.method, request.url.path)
     return problem_response(status=500, detail="An unexpected error occurred.")
+
+
+def _read_version() -> str:
+    try:
+        return VERSION_FILE.read_text().strip()
+    except FileNotFoundError:
+        return "dev"
+
+
+@app.get("/version")
+def get_version() -> dict:
+    return {"version": _read_version()}
 
 
 @app.get("/members")
