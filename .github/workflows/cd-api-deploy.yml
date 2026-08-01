@@ -1,0 +1,65 @@
+name: cd-api deploy
+
+on:
+  push:
+    tags:
+      - 'cd-api-v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cd-api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Export production dependencies
+        run: uv export --no-dev --no-hashes --locked -o requirements.txt
+
+      - name: Build Lambda package
+        run: |
+          mkdir -p package
+          uv pip install \
+            --target package \
+            --python-platform x86_64-unknown-linux-gnu \
+            --python-version 3.12 \
+            -r requirements.txt
+          cp src/*.py package/
+          echo "${GITHUB_REF_NAME#cd-api-v}" > package/VERSION
+          cd package && zip -qr ../lambda.zip .
+
+      - name: Sanity-check the built package imports cleanly
+        run: |
+          cd package
+          python3 -c "from app import handler; print('Imported handler OK:', handler)"
+
+      - name: Check package size against Lambda's 50MB direct-upload limit
+        run: |
+          size=$(stat -c%s lambda.zip)
+          echo "lambda.zip: $size bytes"
+          if [ "$size" -gt 52428800 ]; then
+            echo "::error::lambda.zip exceeds Lambda's 50MB direct-upload limit ($size bytes). This needs an S3-upload path (and matching s3:PutObject permission on cd-platform-cd-api-deploy in cd-infra), not yet implemented."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.CD_API_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name cd-platform-cd-api \
+            --zip-file fileb://lambda.zip
+          aws lambda wait function-updated \
+            --function-name cd-platform-cd-api
