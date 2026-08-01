@@ -48,7 +48,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.CD_API_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ vars.CD_API_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Deploy to Lambda
