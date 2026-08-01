@@ -23,7 +23,7 @@ jobs:
           enable-cache: true
 
       - name: Export production dependencies
-        run: uv export --no-dev --no-hashes -o requirements.txt
+        run: uv export --no-dev --no-hashes --locked -o requirements.txt
 
       - name: Build Lambda package
         run: |
