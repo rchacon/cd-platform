@@ -46,6 +46,11 @@ issue #4). `src/transform.py` holds the pure row -> JSON-shape functions.
 `handler = Mangum(app)` in `app.py` is what an AWS Lambda config points to;
 it's untouched for local development.
 
+`GET /version` returns `{"version": ...}`, read from a `VERSION` file next
+to `app.py` -- only present in a deployed Lambda zip (written by
+`cd-api-deploy.yml`, see Releasing below), so it always reads `"dev"`
+locally.
+
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/)
@@ -98,3 +103,21 @@ database's schema is owned by `cd-etl` (see `../cd-etl/README.md`), so run
 `make test-etl` from the repo root at least once first -- otherwise these
 tests fail with "relation does not exist" rather than skipping, since the
 database itself already exists (just without the schema yet).
+
+## Releasing
+
+Pushing a tag matching `cd-api-v*` (e.g. `cd-api-v0.1.0`) triggers
+`.github/workflows/cd-api-deploy.yml`, which builds a Lambda zip package
+(production dependencies via `uv export`, cross-installed for Lambda's
+x86_64/Python 3.12 runtime, at the zip root; `src/` copied in as-is
+alongside them) and ships it directly to the `cd-platform-cd-api` Lambda
+function via `aws lambda update-function-code`. The build also writes a
+`VERSION` file (the tag with its `cd-api-v` prefix stripped, e.g. `0.1.0`)
+into `src/`, which `GET /version` reads back -- the simplest way to confirm
+what's actually live behind Lambda's mutable `$LATEST`, without needing
+Lambda's own PublishVersion/alias machinery. Authenticates via GitHub OIDC
+to a scoped IAM role (`cd-platform-cd-api-deploy`, provisioned in
+`cd-infra`'s `terraform/cd-api/`) -- no static AWS credentials stored in
+this repo. Environment variables (DB connection info) are owned by
+Terraform, not this workflow. As with `cd-etl`, the tag's version should
+match `pyproject.toml`'s own `version`.
