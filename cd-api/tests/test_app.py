@@ -106,8 +106,13 @@ def test_get_members_returns_senators_and_representative(seeded_state):
 
     assert response.status_code == 200
     body = response.json()
-    assert {p["full_name"] for p in body["senators"]} == {"Alice Anderson", "Bob Baker"}
-    assert [p["full_name"] for p in body["representatives"]] == ["Carol Clark"]
+    assert {(p["first_name"], p["last_name"]) for p in body["senators"]} == {
+        ("Alice", "Anderson"),
+        ("Bob", "Baker"),
+    }
+    assert [(p["first_name"], p["last_name"]) for p in body["representatives"]] == [
+        ("Carol", "Clark")
+    ]
     assert body["senators"][0]["role"] == "Senator"
     assert body["representatives"][0]["role"] == "Representative"
 
