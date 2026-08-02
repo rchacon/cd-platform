@@ -3,17 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
-def _full_name(row: dict[str, Any]) -> str:
-    if row.get("nickname"):
-        return f"{row['nickname']} {row['family_name']}"
-    parts = [row.get("given_name"), row.get("middle_name"), row.get("family_name")]
-    name = " ".join(part for part in parts if part)
-    return f"{name} {row['suffix']}" if row.get("suffix") else name
-
-
 def _person(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "full_name": _full_name(row),
+        "first_name": row.get("given_name"),
+        "middle_name": row.get("middle_name"),
+        "last_name": row.get("family_name"),
+        "nickname": row.get("nickname"),
+        "suffix": row.get("suffix"),
         "role": row["member_type"],
         "party": row.get("party"),
         "phone": row.get("phone"),
