@@ -25,6 +25,10 @@ jobs:
       - name: Export production dependencies
         run: uv export --no-dev --no-hashes --locked -o requirements.txt
 
+      - name: Check tag version matches pyproject.toml
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-tag-version.sh "$GITHUB_REF_NAME" cd-api-v cd-api/pyproject.toml
+
       - name: Build Lambda package
         run: |
           mkdir -p package
