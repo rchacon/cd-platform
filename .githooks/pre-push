@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Blocks pushing a cd-etl-v*/cd-api-v* tag whose version doesn't match the
+# corresponding pyproject.toml, catching the mismatch before the deploy
+# workflow does. Enable with: git config core.hooksPath .githooks
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  tag_name="${local_ref#refs/tags/}"
+  case "$local_ref" in
+    refs/tags/cd-etl-v*)
+      "$repo_root/scripts/check-tag-version.sh" "$tag_name" cd-etl-v cd-etl/pyproject.toml "$local_sha"
+      ;;
+    refs/tags/cd-api-v*)
+      "$repo_root/scripts/check-tag-version.sh" "$tag_name" cd-api-v cd-api/pyproject.toml "$local_sha"
+      ;;
+  esac
+done
