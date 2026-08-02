@@ -25,6 +25,9 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#cd-etl-v}" >> "$GITHUB_OUTPUT"
 
+      - name: Check tag version matches pyproject.toml
+        run: scripts/check-tag-version.sh "$GITHUB_REF_NAME" cd-etl-v cd-etl/pyproject.toml
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
