@@ -122,5 +122,8 @@ Lambda's own PublishVersion/alias machinery. Authenticates via GitHub OIDC
 to a scoped IAM role (`cd-platform-cd-api-deploy`, provisioned in
 `cd-infra`'s `terraform/cd-api/`) -- no static AWS credentials stored in
 this repo. Environment variables (DB connection info) are owned by
-Terraform, not this workflow. As with `cd-etl`, the tag's version should
-match `pyproject.toml`'s own `version`.
+Terraform, not this workflow. As with `cd-etl`, the workflow's first step
+(`../scripts/check-tag-version.sh`) hard-fails the deploy if the tag's
+version doesn't match `pyproject.toml`'s own `version`; an optional local
+`pre-push` git hook runs the same check before the tag is even pushed
+(`git config core.hooksPath .githooks`, see the root `CLAUDE.md`).

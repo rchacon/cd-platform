@@ -14,16 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check tag version matches pyproject.toml
+        id: version
+        run: scripts/check-tag-version.sh "$GITHUB_REF_NAME" cd-etl-v cd-etl/pyproject.toml
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#cd-etl-v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
