@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg2.extras import Json
 
-from app import app
+from app import app, handler
 
 STATE = "ZZ"
 DISTRICT = 1
@@ -98,6 +98,46 @@ def test_get_version_returns_file_contents_when_present(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"version": "0.1.0"}
+
+
+def _api_gateway_event(path: str) -> dict:
+    return {
+        "resource": "/{proxy+}",
+        "path": path,
+        "httpMethod": "GET",
+        "headers": {},
+        "multiValueQueryStringParameters": {},
+        "requestContext": {"identity": {"sourceIp": "127.0.0.1"}},
+        "body": None,
+        "isBase64Encoded": False,
+    }
+
+
+def test_handler_strips_v1_base_path(monkeypatch, tmp_path):
+    # Regression test for cd-infra#19: api.civicdog.com's custom-domain
+    # base_path_mapping ("v1") is used by API Gateway to select which
+    # API/stage a request routes to, but is NOT stripped from the path
+    # forwarded to the Lambda -- confirmed empirically against the real
+    # domain, which 404'd before api_gateway_base_path was added to the
+    # Mangum() call below. A TestClient-based test against `app` directly
+    # (like the two above) would never catch this class of bug, since it
+    # never goes through Mangum's event handling at all.
+    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    response = handler(_api_gateway_event("/v1/version"), None)
+
+    assert response["statusCode"] == 200
+    assert response["body"] == '{"version":"dev"}'
+
+
+def test_handler_leaves_unprefixed_path_unchanged(monkeypatch, tmp_path):
+    # The existing execute-api URL never had a /v1 segment (its stage
+    # segment is excluded from event["path"] entirely by API Gateway
+    # itself) -- api_gateway_base_path must not affect that request shape.
+    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    response = handler(_api_gateway_event("/version"), None)
+
+    assert response["statusCode"] == 200
+    assert response["body"] == '{"version":"dev"}'
 
 
 def test_get_members_returns_senators_and_representative(seeded_state):
