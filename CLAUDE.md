@@ -144,7 +144,12 @@ independent, non-Docker command set (`uv sync`, `uv run uvicorn`,
 ```bash
 # One-time setup
 cp .env.sample .env   # fill in CONGRESS_API_KEY
-git config core.hooksPath .githooks  # enables the tag-version pre-push check
+git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/cd-api-v*
+                                      # tag/pyproject.toml version mismatch
+                                      # before CI does. Repoints ALL git hooks
+                                      # to .githooks, so skip this if you use
+                                      # another hooks framework (husky,
+                                      # lefthook, pre-commit, etc.)
 make start-etl        # docker compose up -d postgres && docker compose up
                        # --build cd-etl -- builds the image, applies both
                        # Airflow's own and this project's migrations, starts
