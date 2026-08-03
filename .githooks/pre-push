@@ -6,14 +6,19 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# tag-prefix:pyproject-path pairs -- add a new package's deploy tag here.
+packages=(
+  "cd-etl-v:cd-etl/pyproject.toml"
+  "cd-api-v:cd-api/pyproject.toml"
+)
+
 while read -r local_ref local_sha _remote_ref _remote_sha; do
   tag_name="${local_ref#refs/tags/}"
-  case "$local_ref" in
-    refs/tags/cd-etl-v*)
-      "$repo_root/scripts/check-tag-version.sh" "$tag_name" cd-etl-v cd-etl/pyproject.toml "$local_sha"
-      ;;
-    refs/tags/cd-api-v*)
-      "$repo_root/scripts/check-tag-version.sh" "$tag_name" cd-api-v cd-api/pyproject.toml "$local_sha"
-      ;;
-  esac
+  for package in "${packages[@]}"; do
+    prefix="${package%%:*}"
+    pyproject_path="${package#*:}"
+    if [[ "$local_ref" == "refs/tags/${prefix}"* ]]; then
+      "$repo_root/scripts/check-tag-version.sh" "$tag_name" "$prefix" "$pyproject_path" "$local_sha"
+    fi
+  done
 done
