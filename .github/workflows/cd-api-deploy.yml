@@ -18,16 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check tag version matches pyproject.toml
+        id: version
+        working-directory: ${{ github.workspace }}
+        run: scripts/check-tag-version.sh "$GITHUB_REF_NAME" cd-api-v cd-api/pyproject.toml
+
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
 
       - name: Export production dependencies
         run: uv export --no-dev --no-hashes --locked -o requirements.txt
-
-      - name: Check tag version matches pyproject.toml
-        working-directory: ${{ github.workspace }}
-        run: scripts/check-tag-version.sh "$GITHUB_REF_NAME" cd-api-v cd-api/pyproject.toml
 
       - name: Build Lambda package
         run: |
@@ -38,7 +39,7 @@ jobs:
             --python-version 3.12 \
             -r requirements.txt
           cp src/*.py package/
-          echo "${GITHUB_REF_NAME#cd-api-v}" > package/VERSION
+          echo "${{ steps.version.outputs.version }}" > package/VERSION
           cd package && zip -qr ../lambda.zip .
 
       - name: Sanity-check the built package imports cleanly
