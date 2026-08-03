@@ -4,7 +4,9 @@
 # Fails if the version implied by <tag-name> (after stripping <tag-prefix>)
 # doesn't match the `version` field in <pyproject-path> as of [git-ref]
 # (defaults to HEAD). Shared by the deploy workflows and the local
-# pre-push hook so the check logic lives in one place.
+# pre-push hook so the check logic lives in one place. When run as a
+# GitHub Actions step, also emits `version=<tag-derived version>` to
+# $GITHUB_OUTPUT so callers don't need to re-derive it themselves.
 set -euo pipefail
 
 tag_name="$1"
@@ -21,3 +23,7 @@ if [ "$tag_version" != "$pyproject_version" ]; then
 fi
 
 echo "OK: tag '${tag_name}' matches ${pyproject_path}'s version '${pyproject_version}'"
+
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  echo "version=${tag_version}" >> "$GITHUB_OUTPUT"
+fi
