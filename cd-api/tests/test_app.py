@@ -77,6 +77,19 @@ def seeded_state(pg_conn):
     pg_conn.commit()
 
 
+def test_openapi_json_has_expected_title_and_version():
+    # app.version is read from VERSION_FILE once at import time (cd-website#1:
+    # the exported spec needs a real title/version, not FastAPI's placeholder
+    # "FastAPI"/"0.1.0") -- no VERSION file exists in tests, so it's "dev".
+    client = TestClient(app)
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+    schema = response.json()
+    assert schema["info"]["title"] == "cd-api"
+    assert schema["info"]["version"] == "dev"
+
+
 def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path):
     # cd-platform#29: local dev/CI never has a VERSION file -- only the
     # deploy workflow writes one into the Lambda zip -- so this is the

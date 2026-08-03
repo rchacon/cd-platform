@@ -127,3 +127,17 @@ Terraform, not this workflow. As with `cd-etl`, the workflow's first step
 version doesn't match `pyproject.toml`'s own `version`; an optional local
 `pre-push` git hook runs the same check before the tag is even pushed
 (`git config core.hooksPath .githooks`, see the root `CLAUDE.md`).
+
+After the Lambda deploy succeeds, the workflow also exports `app.openapi()`
+to `openapi.json` (reusing the same installed `package/` dependencies -- no
+second dependency install) and publishes it via `aws s3 cp` to a public S3
+bucket (`cd-platform-openapi-spec-<account-id>`, provisioned in
+`cd-infra`#18, name supplied via the `OPENAPI_SPEC_BUCKET` repo variable) at
+a fixed `openapi.json` key, with `Content-Type: application/json` and
+`Cache-Control: no-cache`. This exists because API Gateway requires an API
+key on every route including `/openapi.json`, so the live spec can't be
+fetched client-side by the `cd-website` docs viewer (`cd-website`#1) -- the
+public S3 copy sidesteps that. `app.py`'s `FastAPI(title="cd-api",
+version=...)` reuses the same `VERSION`-file convention as `GET /version`,
+so the exported spec's `info.version` reflects the actual deployed tag
+rather than FastAPI's default placeholder.
