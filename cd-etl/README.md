@@ -78,7 +78,11 @@ Pushing a tag matching `cd-etl-v*` (e.g. `cd-etl-v1.0.0`) triggers
 `production` target and pushes it to GHCR as `ghcr.io/<owner>/cd-etl`. The
 `cd-etl-v` prefix is dropped from the pushed version tag -- tag
 `cd-etl-v1.0.0` produces image tags `1.0.0` and `latest`, not
-`cd-etl-v1.0.0`.
+`cd-etl-v1.0.0`. The workflow's first step (`../scripts/check-tag-version.sh`)
+hard-fails the deploy if the tag's version doesn't match `pyproject.toml`'s
+own `version`; an optional local `pre-push` git hook runs the same check
+before the tag is even pushed (`git config core.hooksPath .githooks`, see
+the root `CLAUDE.md`).
 
 ## Testing
 
