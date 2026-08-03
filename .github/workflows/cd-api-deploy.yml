@@ -47,6 +47,11 @@ jobs:
           cd package
           python3 -c "from app import handler; print('Imported handler OK:', handler)"
 
+      - name: Export OpenAPI spec
+        run: |
+          cd package
+          python3 -c "import json; from app import app; json.dump(app.openapi(), open('../openapi.json', 'w'), indent=2)"
+
       - name: Check package size against Lambda's 50MB direct-upload limit
         run: |
           size=$(stat -c%s lambda.zip)
@@ -68,3 +73,10 @@ jobs:
             --zip-file fileb://lambda.zip
           aws lambda wait function-updated \
             --function-name cd-platform-cd-api
+
+      - name: Publish OpenAPI spec to S3
+        run: |
+          aws s3 cp openapi.json \
+            s3://${{ vars.OPENAPI_SPEC_BUCKET }}/openapi.json \
+            --content-type application/json \
+            --cache-control "no-cache"
