@@ -13,7 +13,7 @@ pyproject_path="$3"
 git_ref="${4:-HEAD}"
 
 tag_version="${tag_name#"$tag_prefix"}"
-pyproject_version=$(git show "${git_ref}:${pyproject_path}" | sed -n 's/^version = "\(.*\)"/\1/p')
+pyproject_version=$(git show "${git_ref}:${pyproject_path}" | sed -n 's/^version = "\([^"]*\)".*/\1/p')
 
 if [ "$tag_version" != "$pyproject_version" ]; then
   echo "error: tag '${tag_name}' implies version '${tag_version}', but ${pyproject_path} (at ${git_ref}) has version '${pyproject_version}'" >&2
