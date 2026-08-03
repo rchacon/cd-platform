@@ -93,4 +93,10 @@ def get_members(
     return group_representatives(rows)
 
 
-handler = Mangum(app)
+# API Gateway's custom-domain base_path_mapping ("v1") is used to select
+# which API/stage a request routes to, but AWS does not strip it from the
+# path forwarded to the Lambda integration -- confirmed empirically against
+# api.civicdog.com/v1 (cd-infra#19), which 404'd since FastAPI's routes are
+# plain /members, not /v1/members. api_gateway_base_path tells Mangum to
+# strip it itself before routing to the ASGI app.
+handler = Mangum(app, api_gateway_base_path="/v1")
