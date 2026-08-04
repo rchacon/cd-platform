@@ -106,6 +106,13 @@ def test_openapi_members_response_documents_person_fields():
         "role", "party", "phone", "website", "photo_url",
     }
 
+    # Regression test: role's description used to claim "Resident
+    # Commissioner" applies to any DC/territory seat, but member_type only
+    # ever uses it for Puerto Rico -- DC and other territories use
+    # "Delegate" (see test_transform.py's role tests).
+    role_description = schemas["Person"]["properties"]["role"]["description"]
+    assert "Puerto Rico" in role_description
+
 
 def test_openapi_error_responses_use_problem_json_content_type():
     # cd-platform#40: the app always returns application/problem+json for

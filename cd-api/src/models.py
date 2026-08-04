@@ -20,8 +20,10 @@ class Person(BaseModel):
     role: str = Field(
         description=(
             'Congress.gov\'s member_type for this seat -- "Senator", '
-            '"Representative", "Delegate", or "Resident Commissioner" '
-            "for DC/territory non-voting seats."
+            '"Representative", "Delegate" for a non-voting territory seat '
+            '(DC, American Samoa, Guam, Northern Mariana Islands, or the '
+            'US Virgin Islands), or "Resident Commissioner" specifically '
+            "for Puerto Rico's non-voting seat."
         )
     )
     party: str | None = None

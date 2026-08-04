@@ -25,9 +25,10 @@ Each person has `first_name`, `middle_name`, `last_name`, `nickname`,
 `suffix` (the individual name parts, passed through as-is -- the API does
 not derive a combined display name; that's left to the client), `role`
 (whatever Congress.gov's `member_type` records for that seat --
-`"Senator"`, `"Representative"`, `"Delegate"`, or `"Resident Commissioner"`
-for DC/territory non-voting seats), `party`, `phone`, `website`,
-`photo_url`. An unknown state returns `404`. A `district`
+`"Senator"`, `"Representative"`, `"Delegate"` for a non-voting territory
+seat (DC, American Samoa, Guam, Northern Mariana Islands, or the US
+Virgin Islands), or `"Resident Commissioner"` specifically for Puerto
+Rico's non-voting seat), `party`, `phone`, `website`, `photo_url`. An unknown state returns `404`. A `district`
 that doesn't exist for that state (validated against real House
 apportionment, see `src/apportionment.py`) also returns `404` -- e.g.
 `district=99` for a 14-district state. A `district` that *does* exist but
