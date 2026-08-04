@@ -11,6 +11,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from apportionment import is_valid_district, max_valid_district
 from db import fetch_current_members
+from models import (
+    PROBLEM_DETAIL_SCHEMA,
+    VALIDATION_PROBLEM_DETAIL_SCHEMA,
+    MembersResponse,
+    VersionResponse,
+)
 from problem import problem_response
 from transform import group_representatives
 
@@ -28,6 +34,10 @@ def _read_version() -> str:
 
 
 app = FastAPI(title="cd-api", version=_read_version())
+
+
+def _problem_response(description: str, schema: dict) -> dict:
+    return {"description": description, "content": {"application/problem+json": {"schema": schema}}}
 
 
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
@@ -63,16 +73,50 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     return problem_response(status=500, detail="An unexpected error occurred.")
 
 
-@app.get("/version")
+@app.get(
+    "/version",
+    response_model=VersionResponse,
+    responses={500: _problem_response("An unexpected error occurred.", PROBLEM_DETAIL_SCHEMA)},
+)
 def get_version() -> dict:
     return {"version": _read_version()}
 
 
-@app.get("/members")
+@app.get(
+    "/members",
+    response_model=MembersResponse,
+    responses={
+        404: _problem_response(
+            "Unknown state, or a district that doesn't exist for the given state.",
+            PROBLEM_DETAIL_SCHEMA,
+        ),
+        422: _problem_response(
+            "Request parameters failed validation.", VALIDATION_PROBLEM_DETAIL_SCHEMA
+        ),
+        500: _problem_response("An unexpected error occurred.", PROBLEM_DETAIL_SCHEMA),
+    },
+)
 def get_members(
     state: str = Query(..., min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
-    district: int | None = Query(None, ge=0),
+    district: int | None = Query(
+        None,
+        ge=0,
+        description=(
+            "Omit entirely to get senators only. `0` selects the state's "
+            "single at-large House seat (only valid for 1-seat states/"
+            "territories, e.g. WY, DC). `1` and above selects a specific "
+            "numbered House district. There is no explicit \"null\" form -- "
+            "HTTP query strings can't express it, so `district=` or "
+            "`district=null` both fail validation; omission is the only "
+            "way to get the senators-only behavior."
+        ),
+    ),
 ) -> dict:
+    """Look up current senators and representative(s) for a state.
+
+    Optionally scoped to one House district via `district` -- see that
+    parameter's own description for its omitted/0/1+ semantics.
+    """
     # Distinguishes "this district doesn't exist" from "this district
     # exists but is currently vacant" (see cd-platform#12) -- without this,
     # both cases fall through to the same 200 + empty representatives list

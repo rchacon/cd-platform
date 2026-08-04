@@ -41,6 +41,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "mangum" },
     { name = "psycopg2-binary" },
+    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -55,6 +56,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "mangum", specifier = ">=0.19.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },
+    { name = "pydantic", specifier = ">=2.9.0" },
 ]
 
 [package.metadata.requires-dev]

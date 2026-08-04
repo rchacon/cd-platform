@@ -45,6 +45,10 @@ registered in `src/app.py`.
 `src/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
 issue #4). `src/transform.py` holds the pure row -> JSON-shape functions.
+`src/models.py` holds the Pydantic models documenting those same
+request/response shapes (`response_model=`/`responses=` on each route in
+`src/app.py`), so the OpenAPI spec exported on release (see Releasing
+below) actually reflects what the API returns, including error bodies.
 
 `handler = Mangum(app)` in `app.py` is what an AWS Lambda config points to;
 it's untouched for local development.

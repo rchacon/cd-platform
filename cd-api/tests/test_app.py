@@ -90,6 +90,53 @@ def test_openapi_json_has_expected_title_and_version():
     assert schema["info"]["version"] == "dev"
 
 
+def test_openapi_members_response_documents_person_fields():
+    # cd-platform#40: /members' 200 response used to be an undocumented
+    # {"type": "object", "additionalProperties": true} placeholder --
+    # response_model=MembersResponse should make the real shape show up.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    schemas = schema["components"]["schemas"]
+    assert "MembersResponse" in schemas
+    assert "Person" in schemas
+    assert schemas["Person"]["required"] == ["role"]
+    assert set(schemas["Person"]["properties"]) == {
+        "first_name", "middle_name", "last_name", "nickname", "suffix",
+        "role", "party", "phone", "website", "photo_url",
+    }
+
+
+def test_openapi_error_responses_use_problem_json_content_type():
+    # cd-platform#40: the app always returns application/problem+json for
+    # errors (see problem.py), but FastAPI's default-generated 422 used to
+    # document application/json + its own HTTPValidationError shape instead.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    responses = schema["paths"]["/members"]["get"]["responses"]
+    for status in ("404", "422", "500"):
+        content = responses[status]["content"]
+        assert list(content) == ["application/problem+json"]
+
+    schemas = schema["components"]["schemas"]
+    assert "HTTPValidationError" not in schemas
+    assert "ValidationError" not in schemas
+
+
+def test_openapi_district_parameter_documents_semantics():
+    # cd-platform#40: district's omitted/0/1+ meaning isn't derivable from
+    # its bare `int | None, ge=0` schema alone.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    parameters = schema["paths"]["/members"]["get"]["parameters"]
+    district_param = next(p for p in parameters if p["name"] == "district")
+
+    assert "omit" in district_param["description"].lower()
+    assert "at-large" in district_param["description"].lower()
+
+
 def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path):
     # cd-platform#29: local dev/CI never has a VERSION file -- only the
     # deploy workflow writes one into the Lambda zip -- so this is the
