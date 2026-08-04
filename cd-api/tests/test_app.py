@@ -90,6 +90,93 @@ def test_openapi_json_has_expected_title_and_version():
     assert schema["info"]["version"] == "dev"
 
 
+def test_openapi_members_response_documents_person_fields():
+    # cd-platform#40: /members' 200 response used to be an undocumented
+    # {"type": "object", "additionalProperties": true} placeholder --
+    # response_model=MembersResponse should make the real shape show up.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    schemas = schema["components"]["schemas"]
+    assert "MembersResponse" in schemas
+    assert "Person" in schemas
+    assert schemas["Person"]["required"] == ["role"]
+    assert set(schemas["Person"]["properties"]) == {
+        "first_name", "middle_name", "last_name", "nickname", "suffix",
+        "role", "party", "phone", "website", "photo_url",
+    }
+
+    # Regression test: role's description used to claim "Resident
+    # Commissioner" applies to any DC/territory seat, but member_type only
+    # ever uses it for Puerto Rico -- DC and other territories use
+    # "Delegate" (see test_transform.py's role tests).
+    role_description = schemas["Person"]["properties"]["role"]["description"]
+    assert "Puerto Rico" in role_description
+
+
+def test_openapi_error_responses_use_problem_json_content_type():
+    # cd-platform#40: the app always returns application/problem+json for
+    # errors (see problem.py), but FastAPI's default-generated 422 used to
+    # document application/json + its own HTTPValidationError shape instead.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    responses = schema["paths"]["/members"]["get"]["responses"]
+    for status in ("404", "422", "500"):
+        content = responses[status]["content"]
+        assert list(content) == ["application/problem+json"]
+
+    schemas = schema["components"]["schemas"]
+    assert "HTTPValidationError" not in schemas
+    assert "ValidationError" not in schemas
+
+
+def test_openapi_error_schemas_are_shared_ref_components():
+    # Regression test: ProblemDetail/ValidationProblemDetail used to be
+    # inlined in full at every use (404/422/500 on /members, 500 on
+    # /version) instead of being registered once under components.schemas
+    # and referenced by $ref, unlike MembersResponse/Person/VersionResponse.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    schemas = schema["components"]["schemas"]
+    assert "ProblemDetail" in schemas
+    assert "ValidationProblemDetail" in schemas
+
+    responses = schema["paths"]["/members"]["get"]["responses"]
+    assert responses["404"]["content"]["application/problem+json"]["schema"] == {
+        "$ref": "#/components/schemas/ProblemDetail"
+    }
+    assert responses["422"]["content"]["application/problem+json"]["schema"] == {
+        "$ref": "#/components/schemas/ValidationProblemDetail"
+    }
+
+
+def test_openapi_documents_405_for_disallowed_method():
+    # Regression test: http_exception_handler genuinely returns a
+    # problem+json 405 for a disallowed method (see
+    # test_disallowed_method_returns_problem_detail), but it wasn't
+    # documented in responses= for either route.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    assert "405" in schema["paths"]["/members"]["get"]["responses"]
+    assert "405" in schema["paths"]["/version"]["get"]["responses"]
+
+
+def test_openapi_district_parameter_documents_semantics():
+    # cd-platform#40: district's omitted/0/1+ meaning isn't derivable from
+    # its bare `int | None, ge=0` schema alone.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    parameters = schema["paths"]["/members"]["get"]["parameters"]
+    district_param = next(p for p in parameters if p["name"] == "district")
+
+    assert "omit" in district_param["description"].lower()
+    assert "at-large" in district_param["description"].lower()
+
+
 def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path):
     # cd-platform#29: local dev/CI never has a VERSION file -- only the
     # deploy workflow writes one into the Lambda zip -- so this is the

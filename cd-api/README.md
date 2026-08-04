@@ -25,9 +25,10 @@ Each person has `first_name`, `middle_name`, `last_name`, `nickname`,
 `suffix` (the individual name parts, passed through as-is -- the API does
 not derive a combined display name; that's left to the client), `role`
 (whatever Congress.gov's `member_type` records for that seat --
-`"Senator"`, `"Representative"`, `"Delegate"`, or `"Resident Commissioner"`
-for DC/territory non-voting seats), `party`, `phone`, `website`,
-`photo_url`. An unknown state returns `404`. A `district`
+`"Senator"`, `"Representative"`, `"Delegate"` for a non-voting territory
+seat (DC, American Samoa, Guam, Northern Mariana Islands, or the US
+Virgin Islands), or `"Resident Commissioner"` specifically for Puerto
+Rico's non-voting seat), `party`, `phone`, `website`, `photo_url`. An unknown state returns `404`. A `district`
 that doesn't exist for that state (validated against real House
 apportionment, see `src/apportionment.py`) also returns `404` -- e.g.
 `district=99` for a 14-district state. A `district` that *does* exist but
@@ -45,6 +46,10 @@ registered in `src/app.py`.
 `src/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
 issue #4). `src/transform.py` holds the pure row -> JSON-shape functions.
+`src/models.py` holds the Pydantic models documenting those same
+request/response shapes (`response_model=`/`responses=` on each route in
+`src/app.py`), so the OpenAPI spec exported on release (see Releasing
+below) actually reflects what the API returns, including error bodies.
 
 `handler = Mangum(app)` in `app.py` is what an AWS Lambda config points to;
 it's untouched for local development.
