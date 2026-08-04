@@ -102,7 +102,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 @app.get(
     "/version",
     response_model=VersionResponse,
-    responses={500: _problem_response("An unexpected error occurred.", "ProblemDetail")},
+    responses={
+        405: _problem_response("HTTP method not allowed for this path.", "ProblemDetail"),
+        500: _problem_response("An unexpected error occurred.", "ProblemDetail"),
+    },
 )
 def get_version() -> dict:
     return {"version": _read_version()}
@@ -116,6 +119,7 @@ def get_version() -> dict:
             "Unknown state, or a district that doesn't exist for the given state.",
             "ProblemDetail",
         ),
+        405: _problem_response("HTTP method not allowed for this path.", "ProblemDetail"),
         422: _problem_response(
             "Request parameters failed validation.", "ValidationProblemDetail"
         ),

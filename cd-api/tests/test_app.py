@@ -145,6 +145,18 @@ def test_openapi_error_schemas_are_shared_ref_components():
     }
 
 
+def test_openapi_documents_405_for_disallowed_method():
+    # Regression test: http_exception_handler genuinely returns a
+    # problem+json 405 for a disallowed method (see
+    # test_disallowed_method_returns_problem_detail), but it wasn't
+    # documented in responses= for either route.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    assert "405" in schema["paths"]["/members"]["get"]["responses"]
+    assert "405" in schema["paths"]["/version"]["get"]["responses"]
+
+
 def test_openapi_district_parameter_documents_semantics():
     # cd-platform#40: district's omitted/0/1+ meaning isn't derivable from
     # its bare `int | None, ge=0` schema alone.
