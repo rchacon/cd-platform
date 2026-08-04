@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import pytest
@@ -238,6 +239,22 @@ def test_handler_leaves_unprefixed_path_unchanged(monkeypatch, tmp_path):
 
     assert response["statusCode"] == 200
     assert response["body"] == '{"version":"dev"}'
+
+
+def test_handler_returns_decoded_problem_json_not_base64(monkeypatch, tmp_path):
+    # Regression test for cd-platform#38: Mangum's default text_mime_types
+    # doesn't include application/problem+json, so every error response
+    # was base64-encoded with isBase64Encoded=true, and API Gateway (no
+    # matching binaryMediaTypes entry) forwarded the raw base64 string to
+    # clients untouched instead of decoding it.
+    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    response = handler(_api_gateway_event("/v1/members"), None)  # no `state` -> 422
+
+    assert response["statusCode"] == 422
+    assert response["isBase64Encoded"] is False
+    body = json.loads(response["body"])
+    assert body["type"] == "about:blank"
+    assert body["status"] == 422
 
 
 def test_get_members_returns_senators_and_representative(seeded_state):
