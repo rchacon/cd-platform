@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from mangum import Mangum
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -36,8 +37,33 @@ def _read_version() -> str:
 app = FastAPI(title="cd-api", version=_read_version())
 
 
-def _problem_response(description: str, schema: dict) -> dict:
-    return {"description": description, "content": {"application/problem+json": {"schema": schema}}}
+def _problem_response(description: str, model_name: str) -> dict:
+    return {
+        "description": description,
+        "content": {
+            "application/problem+json": {"schema": {"$ref": f"#/components/schemas/{model_name}"}}
+        },
+    }
+
+
+def _custom_openapi() -> dict:
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+    # ProblemDetail/ValidationProblemDetail are never used as a route's
+    # response_model (only referenced by hand-written $refs above), so
+    # nothing else registers them as reusable components the way FastAPI
+    # does automatically for MembersResponse/Person/VersionResponse.
+    schemas = schema.setdefault("components", {}).setdefault("schemas", {})
+    schemas["ProblemDetail"] = PROBLEM_DETAIL_SCHEMA
+    schemas["ValidationProblemDetail"] = VALIDATION_PROBLEM_DETAIL_SCHEMA
+
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = _custom_openapi
 
 
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
@@ -76,7 +102,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 @app.get(
     "/version",
     response_model=VersionResponse,
-    responses={500: _problem_response("An unexpected error occurred.", PROBLEM_DETAIL_SCHEMA)},
+    responses={500: _problem_response("An unexpected error occurred.", "ProblemDetail")},
 )
 def get_version() -> dict:
     return {"version": _read_version()}
@@ -88,12 +114,12 @@ def get_version() -> dict:
     responses={
         404: _problem_response(
             "Unknown state, or a district that doesn't exist for the given state.",
-            PROBLEM_DETAIL_SCHEMA,
+            "ProblemDetail",
         ),
         422: _problem_response(
-            "Request parameters failed validation.", VALIDATION_PROBLEM_DETAIL_SCHEMA
+            "Request parameters failed validation.", "ValidationProblemDetail"
         ),
-        500: _problem_response("An unexpected error occurred.", PROBLEM_DETAIL_SCHEMA),
+        500: _problem_response("An unexpected error occurred.", "ProblemDetail"),
     },
 )
 def get_members(

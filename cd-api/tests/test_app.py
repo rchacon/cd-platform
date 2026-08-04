@@ -124,6 +124,27 @@ def test_openapi_error_responses_use_problem_json_content_type():
     assert "ValidationError" not in schemas
 
 
+def test_openapi_error_schemas_are_shared_ref_components():
+    # Regression test: ProblemDetail/ValidationProblemDetail used to be
+    # inlined in full at every use (404/422/500 on /members, 500 on
+    # /version) instead of being registered once under components.schemas
+    # and referenced by $ref, unlike MembersResponse/Person/VersionResponse.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    schemas = schema["components"]["schemas"]
+    assert "ProblemDetail" in schemas
+    assert "ValidationProblemDetail" in schemas
+
+    responses = schema["paths"]["/members"]["get"]["responses"]
+    assert responses["404"]["content"]["application/problem+json"]["schema"] == {
+        "$ref": "#/components/schemas/ProblemDetail"
+    }
+    assert responses["422"]["content"]["application/problem+json"]["schema"] == {
+        "$ref": "#/components/schemas/ValidationProblemDetail"
+    }
+
+
 def test_openapi_district_parameter_documents_semantics():
     # cd-platform#40: district's omitted/0/1+ meaning isn't derivable from
     # its bare `int | None, ge=0` schema alone.
