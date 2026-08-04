@@ -8,6 +8,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from mangum import Mangum
+from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from apportionment import is_valid_district, max_valid_district
@@ -18,7 +19,7 @@ from models import (
     MembersResponse,
     VersionResponse,
 )
-from problem import problem_response
+from problem import MEDIA_TYPE, problem_response
 from transform import group_representatives
 
 logging.basicConfig(level=logging.INFO)
@@ -174,4 +175,16 @@ def get_members(
 # api.civicdog.com/v1 (cd-infra#19), which 404'd since FastAPI's routes are
 # plain /members, not /v1/members. api_gateway_base_path tells Mangum to
 # strip it itself before routing to the ASGI app.
-handler = Mangum(app, api_gateway_base_path="/v1")
+#
+# text_mime_types adds MEDIA_TYPE (application/problem+json) on top of
+# Mangum's own defaults -- without it, Mangum doesn't recognize that
+# content type as text, base64-encodes every error response body, and
+# sets isBase64Encoded=true. API Gateway only decodes that back for
+# content types in its own binaryMediaTypes config (cd-infra), which
+# isn't set for application/problem+json, so clients received raw base64
+# instead of JSON for every error response (cd-platform#38).
+handler = Mangum(
+    app,
+    api_gateway_base_path="/v1",
+    text_mime_types=[*DEFAULT_TEXT_MIME_TYPES, MEDIA_TYPE],
+)
