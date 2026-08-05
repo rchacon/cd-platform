@@ -4,13 +4,13 @@ Revision ID: 0002
 Revises: 0001
 Create Date: 2026-08-05 00:00:00.000000
 
-Adds bills/bill_subjects and roll_call_votes/roll_call_vote_member_votes,
+Adds bills/bill_subjects and roll_calls/roll_call_member_votes,
 scoped deliberately to legislation only -- nominations are out of scope
 (see rchacon/cd-platform#8): a member's vote on a Presidential Nomination
 doesn't reveal a policy-area position the way a legislation vote does, so
 nothing here models nomination votes or nominees. Purely procedural roll
 calls with no associated bill (e.g. "Elected Speaker") are excluded the
-same way -- every roll_call_votes row links to a bills row.
+same way -- every roll_calls row links to a bills row.
 
 Also adds members.lis_member_id, a crosswalk needed to resolve the Senate's
 own XML vote feed (which keys members by an internal LIS id, not
@@ -56,7 +56,7 @@ def upgrade() -> None:
         -- (congress, bill_type, bill_number) triple as the Congress.gov
         -- API path. A surrogate bill_id is used as the primary key (like
         -- member_terms' member_term_id) rather than that 3-column
-        -- composite, so bill_subjects and roll_call_votes get a simple
+        -- composite, so bill_subjects and roll_calls get a simple
         -- single-column foreign key instead of a 3-column one.
         --
         -- Deliberately minimal: title, sponsor, introduced_date, and
@@ -172,8 +172,8 @@ def upgrade() -> None:
         -- member_terms.member_type, the full space of result strings
         -- across both sources ("Passed", "Bill Passed", "Agreed to",
         -- "Rejected", ...) hasn't been exhaustively reviewed yet.
-        CREATE TABLE roll_call_votes (
-            roll_call_vote_id BIGSERIAL PRIMARY KEY,
+        CREATE TABLE roll_calls (
+            roll_call_id    BIGSERIAL PRIMARY KEY,
 
             chamber         chamber_type NOT NULL,
 
@@ -206,10 +206,10 @@ def upgrade() -> None:
             created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-            CONSTRAINT roll_call_votes_unique_vote
+            CONSTRAINT roll_calls_unique_vote
                 UNIQUE (chamber, congress, session, vote_number),
 
-            CONSTRAINT roll_call_votes_valid_session
+            CONSTRAINT roll_calls_valid_session
                 CHECK (session IN (1, 2))
         )
         """
@@ -224,11 +224,11 @@ def upgrade() -> None:
         -- ON CONFLICT ... WHERE vote_cast IS DISTINCT FROM EXCLUDED.vote_cast
         -- clause is enough to detect the one column that could ever
         -- change, without a dedicated hash column.
-        CREATE TABLE roll_call_vote_member_votes (
-            roll_call_vote_member_vote_id BIGSERIAL PRIMARY KEY,
+        CREATE TABLE roll_call_member_votes (
+            roll_call_member_vote_id BIGSERIAL PRIMARY KEY,
 
-            roll_call_vote_id BIGINT NOT NULL
-                REFERENCES roll_call_votes (roll_call_vote_id)
+            roll_call_id    BIGINT NOT NULL
+                REFERENCES roll_calls (roll_call_id)
                 ON DELETE CASCADE,
 
             bioguide_id     TEXT NOT NULL
@@ -240,8 +240,8 @@ def upgrade() -> None:
             created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-            CONSTRAINT roll_call_vote_member_votes_unique_cast
-                UNIQUE (roll_call_vote_id, bioguide_id)
+            CONSTRAINT roll_call_member_votes_unique_cast
+                UNIQUE (roll_call_id, bioguide_id)
         )
         """
     )
@@ -266,8 +266,8 @@ def upgrade() -> None:
         """
         -- Serves this feature's actual query: for a given member, find
         -- every vote they cast.
-        CREATE INDEX idx_roll_call_vote_member_votes_bioguide
-        ON roll_call_vote_member_votes (bioguide_id)
+        CREATE INDEX idx_roll_call_member_votes_bioguide
+        ON roll_call_member_votes (bioguide_id)
         """
     )
 
@@ -275,18 +275,18 @@ def upgrade() -> None:
         """
         -- Serves the reverse direction: for a given bill (and, via its
         -- policy_area, a policy area), find every vote cast on it.
-        CREATE INDEX idx_roll_call_votes_bill
-        ON roll_call_votes (bill_id)
+        CREATE INDEX idx_roll_calls_bill
+        ON roll_calls (bill_id)
         """
     )
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX idx_roll_call_votes_bill")
-    op.execute("DROP INDEX idx_roll_call_vote_member_votes_bioguide")
+    op.execute("DROP INDEX idx_roll_calls_bill")
+    op.execute("DROP INDEX idx_roll_call_member_votes_bioguide")
     op.execute("ALTER TABLE members DROP COLUMN lis_member_id")
-    op.execute("DROP TABLE roll_call_vote_member_votes")
-    op.execute("DROP TABLE roll_call_votes")
+    op.execute("DROP TABLE roll_call_member_votes")
+    op.execute("DROP TABLE roll_calls")
     op.execute("DROP TYPE vote_cast_type")
     op.execute("DROP TABLE bill_subjects")
     op.execute("DROP TABLE bills")
