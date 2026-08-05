@@ -100,6 +100,14 @@ def upgrade() -> None:
             CONSTRAINT bills_unique_bill
                 UNIQUE (congress, bill_type, bill_number),
 
+            -- Lets roll_calls take a composite (bill_id, congress) FK
+            -- back to this table, so a roll call's own congress can be
+            -- constrained to match its linked bill's congress rather than
+            -- just trusted. bill_id alone is already unique (it's the PK)
+            -- -- this just makes that pair referenceable together.
+            CONSTRAINT bills_unique_bill_id_congress
+                UNIQUE (bill_id, congress),
+
             CONSTRAINT bills_positive_number
                 CHECK (bill_number > 0)
         )
@@ -171,10 +179,10 @@ def upgrade() -> None:
         -- columns present on the row being inserted, not values reachable
         -- through a join -- the same reason member_terms.congress exists
         -- in 0001 (see MEMBER_TERMS_UPSERT_SQL's ON CONFLICT target in
-        -- members_etl.py). Nothing enforces that this matches the linked
-        -- bill's own congress; accepted as a known gap rather than adding
-        -- a composite FK ahead of the ETL code that will actually
-        -- populate both.
+        -- members_etl.py). The composite (bill_id, congress) foreign key
+        -- below, backed by bills_unique_bill_id_congress, enforces that
+        -- this always matches the linked bill's own congress -- closing
+        -- the gap where the two could otherwise silently diverge.
         --
         -- bill_id is required: like nominations, purely procedural roll
         -- calls with no associated piece of legislation (e.g. "Elected
@@ -198,8 +206,7 @@ def upgrade() -> None:
             session         SMALLINT NOT NULL,
             vote_number     INTEGER NOT NULL,
 
-            bill_id         BIGINT NOT NULL
-                REFERENCES bills (bill_id),
+            bill_id         BIGINT NOT NULL,
 
             vote_question   TEXT NOT NULL,
             result          TEXT NOT NULL,
@@ -225,7 +232,11 @@ def upgrade() -> None:
                 UNIQUE (chamber, congress, session, vote_number),
 
             CONSTRAINT roll_calls_valid_session
-                CHECK (session IN (1, 2))
+                CHECK (session IN (1, 2)),
+
+            CONSTRAINT roll_calls_bill_congress_fk
+                FOREIGN KEY (bill_id, congress)
+                REFERENCES bills (bill_id, congress)
         )
         """
     )
