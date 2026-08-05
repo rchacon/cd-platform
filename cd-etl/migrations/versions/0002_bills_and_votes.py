@@ -161,6 +161,21 @@ def upgrade() -> None:
         -- because House and Senate vote numbers are independently
         -- sequenced per chamber, not globally.
         --
+        -- congress is stored here even though it's also reachable via
+        -- bill_id -> bills.congress: it's part of this table's own
+        -- natural key (chamber, congress, session, vote_number), matching
+        -- how the House API (/house-vote/{congress}/{session}) and the
+        -- Senate XML feed (vote_menu_{congress}_{session}.xml) address a
+        -- vote in the first place. The ETL's upsert needs it as a
+        -- physical column regardless -- ON CONFLICT can only match
+        -- columns present on the row being inserted, not values reachable
+        -- through a join -- the same reason member_terms.congress exists
+        -- in 0001 (see MEMBER_TERMS_UPSERT_SQL's ON CONFLICT target in
+        -- members_etl.py). Nothing enforces that this matches the linked
+        -- bill's own congress; accepted as a known gap rather than adding
+        -- a composite FK ahead of the ETL code that will actually
+        -- populate both.
+        --
         -- bill_id is required: like nominations, purely procedural roll
         -- calls with no associated piece of legislation (e.g. "Elected
         -- Speaker", "On Motion to Adjourn") don't reveal a policy-area
