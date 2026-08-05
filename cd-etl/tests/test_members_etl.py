@@ -11,8 +11,12 @@ def _kiley_party_history(order: str) -> list[dict]:
     return [independent, republican] if order == "independent_first" else [republican, independent]
 
 
-def _kiley_member(party_history_order: str) -> dict:
-    return {
+def _party_history_entries(order: str) -> list[etl.PartyHistoryEntry]:
+    return [etl.PartyHistoryEntry.model_validate(entry) for entry in _kiley_party_history(order)]
+
+
+def _kiley_member(party_history_order: str) -> etl.MemberDetail:
+    return etl.MemberDetail.model_validate({
         "bioguideId": "K000401",
         "firstName": "Kevin",
         "lastName": "Kiley",
@@ -31,25 +35,25 @@ def _kiley_member(party_history_order: str) -> dict:
                 "district": 3,
             }
         ],
-    }
+    })
 
 
 def test_party_history_sorts_by_start_year_regardless_of_input_order():
-    reversed_order = etl._party_history(_kiley_party_history("independent_first"))
-    chronological = etl._party_history(_kiley_party_history("republican_first"))
+    reversed_order = etl._party_history(_party_history_entries("independent_first"))
+    chronological = etl._party_history(_party_history_entries("republican_first"))
 
     assert reversed_order == chronological
     assert [p["start_year"] for p in reversed_order] == [2023, 2026]
 
 
 def test_party_history_drops_entries_with_missing_start_year():
-    # An entry with no startYear can't be placed chronologically, so it
+    # An entry with no start_year can't be placed chronologically, so it
     # can never correctly answer "which is the most recent party" --
     # it's dropped rather than stored (also incidentally means sorted()
     # never has to compare a None start_year against anything).
     result = etl._party_history([
-        {"partyName": "Republican", "startYear": 2023},
-        {"partyName": "Independent"},  # no startYear
+        etl.PartyHistoryEntry(party_name="Republican", start_year=2023),
+        etl.PartyHistoryEntry(party_name="Independent"),  # no start_year
     ])
 
     assert [p["start_year"] for p in result] == [2023]
@@ -57,9 +61,9 @@ def test_party_history_drops_entries_with_missing_start_year():
 
 def test_count_missing_start_year_counts_entries_without_a_start_year():
     party_history = [
-        {"partyName": "Republican", "startYear": 2023},
-        {"partyName": "Independent"},
-        {"partyName": "Democratic", "startYear": None},
+        etl.PartyHistoryEntry(party_name="Republican", start_year=2023),
+        etl.PartyHistoryEntry(party_name="Independent"),
+        etl.PartyHistoryEntry(party_name="Democratic", start_year=None),
     ]
 
     assert etl._count_missing_start_year(party_history) == 2
@@ -67,8 +71,8 @@ def test_count_missing_start_year_counts_entries_without_a_start_year():
 
 def test_party_history_normalizes_known_and_unknown_parties():
     result = etl._party_history([
-        {"partyName": "Republican", "startYear": 2023},
-        {"partyName": "Some Third Party", "startYear": 2020},
+        etl.PartyHistoryEntry(party_name="Republican", start_year=2023),
+        etl.PartyHistoryEntry(party_name="Some Third Party", start_year=2020),
     ])
 
     assert result[0]["party"] == "OTHER"
@@ -82,7 +86,7 @@ def test_party_history_normalizes_independent_republican_symmetrically_with_demo
     # "Independent Republican" entry, so the latter fell through to
     # OTHER instead of REPUBLICAN.
     result = etl._party_history([
-        {"partyName": "Independent Republican", "startYear": 2020},
+        etl.PartyHistoryEntry(party_name="Independent Republican", start_year=2020),
     ])
 
     assert result[0]["party"] == "REPUBLICAN"
@@ -130,7 +134,7 @@ def test_wrap_party_history_for_insert_wraps_only_that_column():
 def test_term_rows_at_large_house_seat_defaults_district_to_zero():
     # Regression test: the item-level API omits "district" entirely for
     # at-large seats, unlike the list endpoint which returns 0 explicitly.
-    member = {
+    member = etl.MemberDetail.model_validate({
         "bioguideId": "M001238",
         "terms": [
             {
@@ -142,7 +146,7 @@ def test_term_rows_at_large_house_seat_defaults_district_to_zero():
                 # no "district" key
             }
         ],
-    }
+    })
 
     rows = etl._term_rows(member, 119)
 
@@ -151,7 +155,7 @@ def test_term_rows_at_large_house_seat_defaults_district_to_zero():
 
 
 def test_term_rows_senate_seat_has_no_district():
-    member = {
+    member = etl.MemberDetail.model_validate({
         "bioguideId": "M001244",
         "terms": [
             {
@@ -162,7 +166,7 @@ def test_term_rows_senate_seat_has_no_district():
                 "stateCode": "FL",
             }
         ],
-    }
+    })
 
     rows = etl._term_rows(member, 119)
 
@@ -172,7 +176,7 @@ def test_term_rows_senate_seat_has_no_district():
 def test_derive_congress_dates_uses_earliest_session_start_and_start_year_plus_two():
     # Mirrors the real /congress/current shape: two sessions already
     # underway, plus a second session pair that hasn't started yet.
-    payload = {
+    congress = etl.CongressCurrent.model_validate({
         "number": 119,
         "startYear": "2025",
         "endYear": "2026",
@@ -182,9 +186,9 @@ def test_derive_congress_dates_uses_earliest_session_start_and_start_year_plus_t
             {"chamber": "House of Representatives", "startDate": "2026-01-03", "number": 2},
             {"chamber": "Senate", "startDate": "2026-01-03", "number": 2},
         ],
-    }
+    })
 
-    number, start_date, end_date = etl._derive_congress_dates(payload)
+    number, start_date, end_date = etl._derive_congress_dates(congress)
 
     assert number == 119
     assert start_date == date(2025, 1, 3)
@@ -192,9 +196,11 @@ def test_derive_congress_dates_uses_earliest_session_start_and_start_year_plus_t
 
 
 def test_derive_congress_dates_falls_back_when_no_sessions_have_start_dates():
-    payload = {"number": 120, "startYear": "2027", "sessions": []}
+    congress = etl.CongressCurrent.model_validate({
+        "number": 120, "startYear": "2027", "sessions": [],
+    })
 
-    number, start_date, end_date = etl._derive_congress_dates(payload)
+    number, start_date, end_date = etl._derive_congress_dates(congress)
 
     assert number == 120
     assert start_date == date(2027, 1, 3)
@@ -275,7 +281,7 @@ def test_members_needing_sync_includes_returning_member_missing_current_congress
 
 
 def test_term_rows_only_includes_the_requested_congress():
-    member = {
+    member = etl.MemberDetail.model_validate({
         "bioguideId": "T000489",
         "terms": [
             {
@@ -297,7 +303,7 @@ def test_term_rows_only_includes_the_requested_congress():
                 "district": 18,
             },
         ],
-    }
+    })
 
     rows = etl._term_rows(member, 119)
 
@@ -310,13 +316,13 @@ def test_fetch_member_details_skips_failed_fetches_without_failing_the_batch(mon
     # Regression test: ThreadPoolExecutor.map + list(...) previously
     # re-raised the first exception, discarding every other
     # already-fetched member's details when even one fetch failed.
-    def fake_api_get(url, params=None):
+    def fake_api_get(session, url, params=None):
         bioguide_id = url.rsplit("/", 1)[-1]
         if bioguide_id == "BAD001":
             raise RuntimeError("simulated API failure")
         return {"member": {"bioguideId": bioguide_id}}
 
-    monkeypatch.setattr(etl, "_api_get", fake_api_get)
+    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
 
     dag = etl.congress_members_etl()
     fetch_member_details = dag.task_dict["fetch_member_details"].python_callable
@@ -330,6 +336,11 @@ def test_transform_skips_malformed_member_without_failing_the_batch():
     # Regression test: _term_rows previously indexed term["chamber"] etc.
     # unguarded, so one member with an unrecognized chamber value raised
     # an uncaught KeyError that aborted transform() for the whole batch.
+    # Now the chamber lookup happens via CHAMBER_MAP after the member
+    # has already parsed cleanly as a MemberDetail (chamber is a plain
+    # str field, not validated against a closed set at parse time), so
+    # this still fails at the same place -- CHAMBER_MAP[term.chamber] --
+    # just one layer further in.
     dag = etl.congress_members_etl()
     transform = dag.task_dict["transform"].python_callable
 
@@ -366,6 +377,23 @@ def test_transform_skips_malformed_member_without_failing_the_batch():
     assert [row[0] for row in result["terms"]] == ["GOOD001"]
 
 
+def test_transform_skips_member_with_missing_required_field():
+    # Regression test: a member missing bioguideId entirely (required on
+    # MemberDetail) now raises a pydantic ValidationError at parse time
+    # instead of a KeyError deep inside _member_row -- still caught by
+    # the same per-member try/except, so one bad record still can't
+    # abort the whole batch.
+    dag = etl.congress_members_etl()
+    transform = dag.task_dict["transform"].python_callable
+
+    good_member = {"bioguideId": "GOOD001", "firstName": "Jane", "lastName": "Doe", "terms": []}
+    bad_member = {"firstName": "No", "lastName": "BioguideId", "terms": []}
+
+    result = transform([good_member, bad_member], 119)
+
+    assert [row[0] for row in result["members"]] == ["GOOD001"]
+
+
 def test_dag_has_expected_tasks_wired_in_the_expected_order():
     # Cheap sanity check that catches typos/wiring mistakes (a renamed
     # task, a dropped dependency) before they ever reach a real
@@ -399,11 +427,11 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
 
 
 def test_api_session_reuses_connections_and_retries_transient_failures():
-    # Regression test: _api_get previously used the module-level
-    # requests.get(), which opens and tears down a fresh Session (and
-    # connection) on every call and has no retry/backoff -- across
-    # ~500+ per-member detail calls that meant no connection reuse and
-    # a single transient 5xx/timeout failing the whole task.
+    # Regression test: members_etl previously built its own bare
+    # requests.Session() with no retry/backoff -- across ~500+
+    # per-member detail calls that meant no connection reuse and a
+    # single transient 5xx/timeout failing the whole task. Now built via
+    # congress_api.build_session(), shared by any future DAG.
     adapter = etl._API_SESSION.get_adapter("https://api.congress.gov")
 
     assert adapter.max_retries.total == 3
