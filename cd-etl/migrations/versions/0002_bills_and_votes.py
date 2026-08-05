@@ -8,9 +8,9 @@ Adds bills/bill_subjects and roll_call_votes/roll_call_vote_member_votes,
 scoped deliberately to legislation only -- nominations are out of scope
 (see rchacon/cd-platform#8): a member's vote on a Presidential Nomination
 doesn't reveal a policy-area position the way a legislation vote does, so
-nothing here models nomination votes or nominees. Every roll_call_votes row
-is either linked to a bills row or unresolvable/procedural (bill_id NULL),
-never a nomination.
+nothing here models nomination votes or nominees. Purely procedural roll
+calls with no associated bill (e.g. "Elected Speaker") are excluded the
+same way -- every roll_call_votes row links to a bills row.
 
 Also adds members.lis_member_id, a crosswalk needed to resolve the Senate's
 own XML vote feed (which keys members by an internal LIS id, not
@@ -161,12 +161,12 @@ def upgrade() -> None:
         -- because House and Senate vote numbers are independently
         -- sequenced per chamber, not globally.
         --
-        -- bill_id is nullable: a small residue of roll calls (e.g.
-        -- "Elected Speaker", "On Motion to Adjourn") have no associated
-        -- piece of legislation at all and are stored with bill_id NULL
-        -- rather than being excluded outright. It is never NULL because
-        -- of a nomination -- those are filtered out entirely before
-        -- ingestion (see rchacon/cd-platform#8), never stored here.
+        -- bill_id is required: like nominations, purely procedural roll
+        -- calls with no associated piece of legislation (e.g. "Elected
+        -- Speaker", "On Motion to Adjourn") don't reveal a policy-area
+        -- position either, so they're filtered out entirely before
+        -- ingestion (see rchacon/cd-platform#8) rather than stored with
+        -- bill_id NULL.
         --
         -- result is kept TEXT rather than an enum -- like
         -- member_terms.member_type, the full space of result strings
@@ -183,7 +183,7 @@ def upgrade() -> None:
             session         SMALLINT NOT NULL,
             vote_number     INTEGER NOT NULL,
 
-            bill_id         BIGINT
+            bill_id         BIGINT NOT NULL
                 REFERENCES bills (bill_id),
 
             vote_question   TEXT NOT NULL,
@@ -277,7 +277,6 @@ def upgrade() -> None:
         -- policy_area, a policy area), find every vote cast on it.
         CREATE INDEX idx_roll_call_votes_bill
         ON roll_call_votes (bill_id)
-        WHERE bill_id IS NOT NULL
         """
     )
 
