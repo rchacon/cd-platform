@@ -416,6 +416,7 @@ dependencies = [
     { name = "apache-airflow" },
     { name = "apache-airflow-providers-postgres" },
     { name = "psycopg2-binary" },
+    { name = "pydantic" },
     { name = "requests" },
 ]
 
@@ -430,6 +431,7 @@ requires-dist = [
     { name = "apache-airflow", specifier = ">=3.3.0" },
     { name = "apache-airflow-providers-postgres", specifier = ">=6.8.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },
+    { name = "pydantic", specifier = ">=2.9" },
     { name = "requests", specifier = ">=2.34.2" },
 ]
 

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-import hashlib
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from typing import Any
 
-import requests
+import congress_api
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
+from congress_models import (
+    CongressCurrent,
+    CongressCurrentResponse,
+    MemberDetail,
+    MemberSummary,
+    PartyHistoryEntry,
+)
 from psycopg2.extras import Json, execute_values
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from pydantic import ValidationError
 
-CONGRESS_API_KEY = os.environ["CONGRESS_API_KEY"]
 CONGRESS_MEMBERS_API = "https://api.congress.gov/v3/member/"
 CONGRESS_CURRENT_CONGRESS_API = "https://api.congress.gov/v3/congress/current"
 
@@ -22,26 +24,8 @@ PAGE_LIMIT = 250
 DETAIL_FETCH_WORKERS = 10
 POSTGRES_CONN_ID = "congressional_postgres"
 
-# Shared across all API calls (including the DETAIL_FETCH_WORKERS-way
-# thread pool in fetch_member_details) so requests reuse pooled
-# connections instead of paying a fresh TCP+TLS handshake every call,
-# and transient failures (rate limits, 5xxs) retry with backoff instead
-# of failing the whole call on the first hiccup. The underlying
-# urllib3 connection pool is thread-safe, so one shared Session is the
-# standard pattern for this. Only GET is used against this API.
-_API_SESSION = requests.Session()
-_API_SESSION.mount(
-    "https://",
-    HTTPAdapter(
-        max_retries=Retry(
-            total=3,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=frozenset(["GET"]),
-        ),
-        pool_maxsize=DETAIL_FETCH_WORKERS,
-    ),
-)
+_API_SESSION = congress_api.build_session(pool_maxsize=DETAIL_FETCH_WORKERS)
+
 
 MEMBERS_UPSERT_SQL = """
     INSERT INTO members (
@@ -115,43 +99,21 @@ PARTY_MAP = {
 logger = logging.getLogger(__name__)
 
 
-def _api_get(url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    response = _API_SESSION.get(
-        url,
-        params={**(params or {}), "api_key": CONGRESS_API_KEY, "format": "json"},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def _to_smallint(value: str | int | None) -> int | None:
-    return int(value) if value is not None else None
-
-
-def _parse_timestamp(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _derive_congress_dates(payload: dict[str, Any]) -> tuple[int, date, date]:
+def _derive_congress_dates(congress: CongressCurrent) -> tuple[int, date, date]:
     # The API's own "endYear" is a generalized label (off by one from
     # the actual term-end date), so the real end date is derived as
     # exactly two years after the earliest session start date -- the
     # same convention init.sql used to seed the 119th Congress.
-    number = payload["number"]
-    start_year = int(payload["startYear"])
     start_date = min(
         (
-            date.fromisoformat(session["startDate"])
-            for session in payload.get("sessions", [])
-            if "startDate" in session
+            session.start_date
+            for session in congress.sessions
+            if session.start_date is not None
         ),
-        default=date(start_year, 1, 3),
+        default=date(congress.start_year, 1, 3),
     )
-    end_date = date(start_year + 2, 1, 3)
-    return number, start_date, end_date
+    end_date = date(congress.start_year + 2, 1, 3)
+    return congress.number, start_date, end_date
 
 
 def _members_needing_sync(
@@ -164,11 +126,19 @@ def _members_needing_sync(
     # have a member_terms row for the current Congress -- the detail
     # endpoint is one call per member, so skipping unchanged members
     # avoids hundreds of needless requests on a typical day.
+    #
+    # summaries are validated here, at the point their fields actually
+    # get read, rather than at extract_member_summaries -- consistent
+    # with how transform() below validates member detail dicts at the
+    # point of use rather than at fetch time (see its own comment for
+    # why: crossing an Airflow XCom boundary requires plain JSON-safe
+    # dicts, not pydantic model instances).
     stale_or_new = []
-    for summary in summaries:
-        bioguide_id = summary["bioguideId"]
+    for raw_summary in summaries:
+        summary = MemberSummary.model_validate(raw_summary)
+        bioguide_id = summary.bioguide_id
         last_synced = stored_updated_at.get(bioguide_id)
-        source_updated = _parse_timestamp(summary.get("updateDate"))
+        source_updated = summary.update_date
 
         # A returning incumbent's bio-level updateDate may not change
         # just because a new Congress started -- relying on that alone
@@ -194,12 +164,12 @@ def _members_needing_sync(
     return stale_or_new
 
 
-def _count_missing_start_year(party_history: list[dict[str, Any]]) -> int:
-    return sum(1 for entry in party_history if entry.get("startYear") is None)
+def _count_missing_start_year(party_history: list[PartyHistoryEntry]) -> int:
+    return sum(1 for entry in party_history if entry.start_year is None)
 
 
-def _party_history(party_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # An entry with no startYear can't be placed chronologically, so it
+def _party_history(party_history: list[PartyHistoryEntry]) -> list[dict[str, Any]]:
+    # An entry with no start_year can't be placed chronologically, so it
     # can never correctly answer "which is the most recent party" --
     # that's unusable data, not just imprecise data, so it's dropped
     # rather than stored. Dropped-entry counts are surfaced via
@@ -212,60 +182,43 @@ def _party_history(party_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         (
             {
-                "party": PARTY_MAP.get(entry.get("partyName"), "OTHER"),
-                "source_party_name": entry.get("partyName"),
-                "start_year": _to_smallint(entry.get("startYear")),
-                "end_year": _to_smallint(entry.get("endYear")),
+                "party": PARTY_MAP.get(entry.party_name, "OTHER"),
+                "source_party_name": entry.party_name,
+                "start_year": entry.start_year,
+                "end_year": entry.end_year,
             }
             for entry in party_history
-            if entry.get("startYear") is not None
+            if entry.start_year is not None
         ),
         key=lambda period: period["start_year"],
     )
 
 
-def _source_hash(*parts: Any) -> str:
-    normalized = "|".join(
-        str(part).strip().lower() if part is not None else "" for part in parts
-    )
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _member_row(member: dict[str, Any]) -> tuple[Any, ...]:
-    bioguide_id = member["bioguideId"]
-    given_name = member.get("firstName")
-    middle_name = member.get("middleName")
-    family_name = member.get("lastName")
-    nickname = member.get("nickName")
-    suffix = member.get("suffixName")
-    birth_year = _to_smallint(member.get("birthYear"))
-    death_year = _to_smallint(member.get("deathYear"))
-    photo_uri = member.get("depiction", {}).get("imageUrl")
-    address_info = member.get("addressInformation", {})
-    phone = address_info.get("phoneNumber")
-    website_url = member.get("officialWebsiteUrl")
-    party_history = _party_history(member.get("partyHistory", []))
-    source_updated_at = _parse_timestamp(member.get("updateDate"))
+def _member_row(member: MemberDetail) -> tuple[Any, ...]:
+    party_history = _party_history(member.party_history)
+    photo_uri = member.depiction.image_url
+    phone = member.address_information.phone_number
 
     return (
-        bioguide_id,
-        given_name,
-        middle_name,
-        family_name,
-        nickname,
-        suffix,
-        birth_year,
-        death_year,
+        member.bioguide_id,
+        member.first_name,
+        member.middle_name,
+        member.last_name,
+        member.nick_name,
+        member.suffix_name,
+        member.birth_year,
+        member.death_year,
         photo_uri,
         phone,
-        website_url,
+        member.official_website_url,
         party_history,
-        _source_hash(
-            bioguide_id, given_name, middle_name, family_name, nickname,
-            suffix, birth_year, death_year, photo_uri, phone, website_url,
-            party_history,
+        congress_api.source_hash(
+            member.bioguide_id, member.first_name, member.middle_name,
+            member.last_name, member.nick_name, member.suffix_name,
+            member.birth_year, member.death_year, photo_uri, phone,
+            member.official_website_url, party_history,
         ),
-        source_updated_at,
+        member.update_date,
     )
 
 
@@ -280,45 +233,33 @@ def _wrap_party_history_for_insert(
     return [(*row[:11], Json(row[11]), *row[12:]) for row in member_rows]
 
 
-def _term_rows(member: dict[str, Any], congress: int) -> list[tuple[Any, ...]]:
-    bioguide_id = member["bioguideId"]
+def _term_rows(member: MemberDetail, congress: int) -> list[tuple[Any, ...]]:
+    bioguide_id = member.bioguide_id
 
     rows = []
-    for term in member.get("terms", []):
+    for term in member.terms:
         # The API returns a member's full term history, but cd-lookup only
         # needs "who currently represents this district" -- so only the
         # current Congress's term is kept. This is why current_members
         # can't derive Senior/Junior Senator status (see issue #3): that
         # requires continuous-service history this deliberately discards.
-        if term.get("congress") != congress:
+        if term.congress != congress:
             continue
 
-        chamber = CHAMBER_MAP[term["chamber"]]
-        member_type = term["memberType"]
-        state = term["stateCode"]
-        # The item-level API omits "district" entirely for at-large
-        # seats (unlike the list endpoint, which returns 0) -- confirmed
-        # directly against the live API (e.g. M001238/McBride, at-large
-        # DE: item-level omits district, list-level shows district: 0;
-        # same pattern for DC/territory delegates). This is a
-        # deliberate, verified API convention, not a guess, so a
-        # missing value for a House seat is treated as at-large.
-        district = (term.get("district") or 0) if chamber == "HOUSE" else None
-        start_year = _to_smallint(term.get("startYear"))
-        end_year = _to_smallint(term.get("endYear"))
+        chamber = CHAMBER_MAP[term.chamber]
 
         rows.append((
             bioguide_id,
             congress,
             chamber,
-            member_type,
-            state,
-            district,
-            start_year,
-            end_year,
-            _source_hash(
-                bioguide_id, congress, chamber, member_type, state,
-                district, start_year, end_year,
+            term.member_type,
+            term.state_code,
+            term.district,
+            term.start_year,
+            term.end_year,
+            congress_api.source_hash(
+                bioguide_id, congress, chamber, term.member_type,
+                term.state_code, term.district, term.start_year, term.end_year,
             ),
         ))
 
@@ -338,8 +279,10 @@ def congress_members_etl():
 
     @task
     def sync_current_congress() -> int:
-        payload = _api_get(CONGRESS_CURRENT_CONGRESS_API)["congress"]
-        number, start_date, end_date = _derive_congress_dates(payload)
+        response = congress_api.api_get_model(
+            _API_SESSION, CONGRESS_CURRENT_CONGRESS_API, CongressCurrentResponse,
+        )
+        number, start_date, end_date = _derive_congress_dates(response.congress)
 
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         hook.run(
@@ -380,26 +323,23 @@ def congress_members_etl():
         # updateDate is included here (list-level, no extra calls) so
         # filter_members_needing_sync can skip the expensive per-member
         # detail call for anyone who hasn't changed since our last sync.
-        summaries = []
-        offset = 0
-
-        while True:
-            page = _api_get(
+        #
+        # Returned as plain dicts, not parsed MemberSummary models --
+        # this crosses an Airflow XCom boundary (serialized to JSON),
+        # which pydantic model instances can't survive any more than
+        # psycopg2's Json wrapper can (see _wrap_party_history_for_insert's
+        # comment). Validated instead at the point of use, in
+        # _members_needing_sync.
+        summaries = [
+            {"bioguideId": item["bioguideId"], "updateDate": item.get("updateDate")}
+            for item in congress_api.paginate(
+                _API_SESSION,
                 f"{CONGRESS_MEMBERS_API}congress/{congress}",
-                {"currentMember": "false", "limit": PAGE_LIMIT, "offset": offset},
+                {"currentMember": "false"},
+                items_key="members",
+                page_limit=PAGE_LIMIT,
             )
-            members = page.get("members", [])
-            if not members:
-                break
-
-            summaries.extend(
-                {"bioguideId": member["bioguideId"], "updateDate": member.get("updateDate")}
-                for member in members
-            )
-
-            if len(members) < PAGE_LIMIT:
-                break
-            offset += PAGE_LIMIT
+        ]
 
         logger.info("Found %d members of the %dth Congress", len(summaries), congress)
         return summaries
@@ -432,24 +372,13 @@ def congress_members_etl():
     @task
     def fetch_member_details(bioguide_ids: list[str]) -> list[dict[str, Any]]:
         def fetch_one(bioguide_id: str) -> dict[str, Any]:
-            return _api_get(f"{CONGRESS_MEMBERS_API}{bioguide_id}")["member"]
+            return congress_api.api_get(
+                _API_SESSION, f"{CONGRESS_MEMBERS_API}{bioguide_id}",
+            )["member"]
 
-        details = []
-        with ThreadPoolExecutor(max_workers=DETAIL_FETCH_WORKERS) as executor:
-            futures = {
-                executor.submit(fetch_one, bioguide_id): bioguide_id
-                for bioguide_id in bioguide_ids
-            }
-            for future in futures:
-                try:
-                    details.append(future.result())
-                except Exception as exc:
-                    # One member's detail fetch failing (404, rate
-                    # limit, transient 5xx) shouldn't discard every
-                    # other already-fetched member in this batch.
-                    logger.error(
-                        "Failed to fetch detail for %s: %s", futures[future], exc,
-                    )
+        details = congress_api.fetch_concurrently(
+            bioguide_ids, fetch_one, DETAIL_FETCH_WORKERS,
+        )
 
         logger.info(
             "Fetched details for %d of %d members", len(details), len(bioguide_ids),
@@ -466,9 +395,20 @@ def congress_members_etl():
 
         for member in members:
             try:
-                member_row = _member_row(member)
-                member_term_rows = _term_rows(member, congress)
-            except (KeyError, TypeError) as exc:
+                # Validated here, immediately before use, rather than in
+                # fetch_member_details -- that task's return value
+                # crosses an Airflow XCom boundary (serialized to JSON),
+                # which a pydantic model instance can't survive, so it
+                # has to stay a plain dict until a task that doesn't
+                # need to hand its result off can parse it. This is
+                # still "at the boundary" in the sense issue #7 means:
+                # one clear, well-located ValidationError naming the
+                # exact field, instead of an obscure crash several
+                # functions later inside _member_row/_term_rows.
+                parsed_member = MemberDetail.model_validate(member)
+                member_row = _member_row(parsed_member)
+                member_term_rows = _term_rows(parsed_member, congress)
+            except (KeyError, TypeError, ValidationError) as exc:
                 # One member with unexpected/missing API fields (e.g. an
                 # unrecognized chamber value) shouldn't abort the whole
                 # batch -- log it and continue with everyone else.
@@ -479,7 +419,7 @@ def congress_members_etl():
                 continue
 
             dropped_party_history_count += _count_missing_start_year(
-                member.get("partyHistory", [])
+                parsed_member.party_history
             )
             member_rows.append(member_row)
             term_rows.extend(member_term_rows)
