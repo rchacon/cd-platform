@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -90,3 +90,75 @@ class CongressCurrent(_CamelModel):
 
 class CongressCurrentResponse(_CamelModel):
     congress: CongressCurrent
+
+
+class HouseVoteListItem(_CamelModel):
+    roll_call_number: int
+    session_number: int
+    result: str
+
+    # Kept as datetime, not date -- pydantic's exact date-only coercion
+    # behavior for a full offset-aware string like
+    # "2025-09-08T18:56:00-04:00" isn't something this codebase has
+    # verified, so the .date() extraction happens explicitly in Python
+    # instead (see house_votes_etl.py). That also preserves the vote's
+    # own Eastern local calendar date rather than risking a UTC-shift
+    # landing a late-evening vote on the wrong day.
+    start_date: datetime
+
+    # A vote references either a bill directly, an amendment (resolved
+    # back to its bill via a separate API call), or neither (a purely
+    # procedural motion, e.g. "Elected Speaker") -- never both.
+    legislation_type: str | None = None
+    legislation_number: str | None = None
+    amendment_type: str | None = None
+    amendment_number: str | None = None
+
+
+class HouseVoteDetail(_CamelModel):
+    # The only field this endpoint is actually fetched for -- result and
+    # startDate are already present on the list item (see
+    # HouseVoteListItem), so they aren't duplicated here.
+    vote_question: str
+
+
+class HouseVoteMemberVote(_CamelModel):
+    # The member-votes sub-resource uses "bioguideID" (capital ID),
+    # inconsistent with the rest of the API's "bioguideId" convention and
+    # with to_camel's own output for this field name -- needs an explicit
+    # alias rather than the generator.
+    bioguide_id: str = Field(alias="bioguideID")
+    vote_cast: str
+
+
+class PolicyArea(_CamelModel):
+    name: str | None = None
+
+
+class BillDetail(_CamelModel):
+    congress: int
+    type: str
+    number: str
+    policy_area: PolicyArea | None = None
+    update_date: datetime
+
+
+class LegislativeSubject(_CamelModel):
+    name: str
+    update_date: datetime | None = None
+
+
+class BillSubjects(_CamelModel):
+    legislative_subjects: list[LegislativeSubject] = []
+
+
+class AmendedBill(_CamelModel):
+    congress: int
+    type: str
+    number: str
+
+
+class AmendmentDetail(_CamelModel):
+    # None is a real, expected case -- not every amendment resolves to a
+    # specific bill.
+    amended_bill: AmendedBill | None = None
