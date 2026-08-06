@@ -107,12 +107,14 @@ def paginate(
 
 
 def fetch_concurrently(
-    ids: list[str], fetch_one: Callable[[str], Any], max_workers: int,
+    ids: list[Any], fetch_one: Callable[[Any], Any], max_workers: int,
 ) -> list[Any]:
-    # Fetches one result per id concurrently. A single id's failure
-    # (404, rate limit, transient 5xx, or a validation error if
-    # fetch_one parses its result) is logged and skipped rather than
-    # discarding every other already-fetched result.
+    # Fetches one result per id concurrently. `ids` need only be
+    # hashable -- a tuple key (e.g. (session, roll_call_number)) works
+    # as well as a plain string id. A single id's failure (404, rate
+    # limit, transient 5xx, or a validation error if fetch_one parses
+    # its result) is logged and skipped rather than discarding every
+    # other already-fetched result.
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(fetch_one, id_): id_ for id_ in ids}
