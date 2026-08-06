@@ -20,8 +20,8 @@ class _FakeSession:
         self._pages = list(pages)
         self.calls = []
 
-    def get(self, url, params=None, timeout=None):
-        self.calls.append({"url": url, "params": params, "timeout": timeout})
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
         return _FakeResponse(self._pages.pop(0))
 
 
@@ -40,7 +40,7 @@ def test_build_session_retries_transient_failures_get_only():
     assert adapter._pool_maxsize == 5
 
 
-def test_api_get_includes_api_key_and_format_alongside_caller_params():
+def test_api_get_includes_format_alongside_caller_params():
     session = _FakeSession([{"ok": True}])
 
     result = congress_api.api_get(session, "https://api.congress.gov/v3/thing", {"foo": "bar"})
@@ -48,8 +48,22 @@ def test_api_get_includes_api_key_and_format_alongside_caller_params():
     assert result == {"ok": True}
     call = session.calls[0]
     assert call["params"]["foo"] == "bar"
-    assert call["params"]["api_key"] == congress_api.CONGRESS_API_KEY
     assert call["params"]["format"] == "json"
+
+
+def test_api_get_sends_the_api_key_as_a_header_not_a_query_param():
+    # Regression test: api_key previously traveled as a query param,
+    # which meant it ended up embedded in the request URL -- and
+    # requests.HTTPError's own string representation includes the full
+    # URL, so any failed-request log line leaked the key in plaintext.
+    session = _FakeSession([{"ok": True}])
+
+    congress_api.api_get(session, "https://api.congress.gov/v3/thing")
+
+    call = session.calls[0]
+    assert call["headers"] == {"X-Api-Key": congress_api.CONGRESS_API_KEY}
+    assert "api_key" not in call["params"]
+    assert "api_key" not in (call["url"] or "")
 
 
 def test_api_get_model_validates_response_into_the_given_model():

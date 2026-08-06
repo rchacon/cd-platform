@@ -49,9 +49,15 @@ def build_session(pool_maxsize: int) -> requests.Session:
 def api_get(
     session: requests.Session, url: str, params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # api_key travels as a header, not a query param -- requests embeds
+    # the full request URL (query string included) in an HTTPError's own
+    # message, so a query-param key would leak into any log line or
+    # Airflow task traceback that stringifies a failed request. Verified
+    # live that api.congress.gov accepts X-Api-Key the same as api_key.
     response = session.get(
         url,
-        params={**(params or {}), "api_key": CONGRESS_API_KEY, "format": "json"},
+        params={**(params or {}), "format": "json"},
+        headers={"X-Api-Key": CONGRESS_API_KEY},
         timeout=30,
     )
     response.raise_for_status()
