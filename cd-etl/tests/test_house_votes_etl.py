@@ -119,6 +119,27 @@ def test_filter_votes_needing_sync_drops_purely_procedural_votes(monkeypatch):
     assert result["known_bioguide_ids"] == ["A000055"]
 
 
+def test_filter_votes_needing_sync_skips_malformed_summary(monkeypatch):
+    # Regression test: one malformed vote summary (missing a required
+    # field) must be logged and skipped, not raise and fail the whole
+    # task -- same fault-isolation philosophy as every other per-item
+    # loop in this module.
+    monkeypatch.setattr(
+        etl, "PostgresHook",
+        lambda postgres_conn_id: _FakeHook(known_votes=[], known_bioguide_ids=[]),
+    )
+
+    dag = etl.house_votes_etl()
+    filter_votes_needing_sync = dag.task_dict["filter_votes_needing_sync"].python_callable
+
+    malformed = {"sessionNumber": 1}  # missing rollCallNumber/result/startDate
+    good = _house_vote_summary(240, legislation_type="HR", legislation_number="3424")
+
+    result = filter_votes_needing_sync([malformed, good], 119)
+
+    assert result["votes"] == [good]
+
+
 def test_filter_votes_needing_sync_skips_already_known_votes(monkeypatch):
     monkeypatch.setattr(
         etl, "PostgresHook",

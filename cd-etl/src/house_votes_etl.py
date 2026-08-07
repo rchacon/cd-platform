@@ -280,8 +280,18 @@ def house_votes_etl():
         votes = []
         already_known_count = 0
         dropped_procedural_count = 0
+        dropped_malformed_count = 0
         for raw_summary in summaries:
-            item = HouseVoteListItem.model_validate(raw_summary)
+            try:
+                item = HouseVoteListItem.model_validate(raw_summary)
+            except ValidationError as exc:
+                # One malformed vote summary shouldn't crash this task
+                # (and with it the whole DAG run) -- logged and skipped,
+                # same fault-isolation philosophy as every other
+                # per-item loop in this module.
+                dropped_malformed_count += 1
+                logger.error("Skipping malformed vote summary: %s", exc)
+                continue
 
             if (item.session_number, item.roll_call_number) in known_votes:
                 already_known_count += 1
@@ -298,8 +308,10 @@ def house_votes_etl():
             votes.append(raw_summary)
 
         logger.info(
-            "%d of %d votes need syncing (%d already known, %d purely procedural dropped)",
+            "%d of %d votes need syncing (%d already known, %d purely procedural dropped, "
+            "%d malformed dropped)",
             len(votes), len(summaries), already_known_count, dropped_procedural_count,
+            dropped_malformed_count,
         )
         return {"votes": votes, "known_bioguide_ids": known_bioguide_ids}
 
