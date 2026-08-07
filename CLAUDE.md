@@ -31,13 +31,21 @@ failure mode. Airflow's own metadata lives in a separate `airflow_metadata`
 database on the same Postgres instance (not its SQLite default), matching
 how production's RDS instance is designed.
 A gitignored `local_seed.sql` (a `pg_dump --data-only` snapshot of
-`members`/`member_terms`) can be loaded after the schema exists to seed real
-data instead of re-running the DAG. Generate it with (only needed when a
-schema change alters those two tables' own columns, not for unrelated
-schema changes):
+`members`/`member_terms`/`bills`/`bill_subjects`/`roll_calls`/
+`roll_call_member_votes`) can be loaded after the schema exists to seed
+real data instead of re-running the DAGs. `congresses` is deliberately
+excluded -- migration 0001 already seeds it (`INSERT ... ON CONFLICT DO
+NOTHING`), so a fresh schema always has it regardless of this file.
+`pg_dump` orders a multi-table `--data-only` dump by foreign-key
+dependency automatically, so this single command produces a
+restore-safe file without needing per-table ordering by hand. Generate
+it with (only needed when a schema change alters one of these tables'
+own columns, or you want a fresher real-data snapshot):
 
 ```bash
-docker compose exec -T postgres pg_dump -U postgres -d congressional_app --data-only -t members -t member_terms > local_seed.sql
+docker compose exec -T postgres pg_dump -U postgres -d congressional_app --data-only \
+  -t members -t member_terms -t bills -t bill_subjects -t roll_calls -t roll_call_member_votes \
+  > local_seed.sql
 ```
 
 Then load it:

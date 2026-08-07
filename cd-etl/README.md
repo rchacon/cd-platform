@@ -61,14 +61,18 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
      -f - < local_seed.sql
    ```
 
-   Otherwise there's nothing to load yet -- run the DAG once (step 2 above)
-   to populate real data first. Once it has, generate `local_seed.sql` for
-   next time (only needed when a schema change alters `members`/
-   `member_terms`'s own columns, not for unrelated schema changes):
+   Otherwise there's nothing to load yet -- run the DAGs once (step 2
+   above; `house_votes_etl` too, if you want its tables in the seed) to
+   populate real data first. Once they have, generate `local_seed.sql`
+   for next time (only needed when a schema change alters one of these
+   tables' own columns, or you want a fresher real-data snapshot).
+   `congresses` is deliberately excluded -- migration 0001 already seeds
+   it, so a fresh schema always has it regardless of this file:
 
    ```bash
    docker compose exec -T postgres pg_dump -U postgres -d congressional_app \
-     --data-only -t members -t member_terms > local_seed.sql
+     --data-only -t members -t member_terms -t bills -t bill_subjects \
+     -t roll_calls -t roll_call_member_votes > local_seed.sql
    ```
 
 ## Releasing
