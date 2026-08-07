@@ -389,3 +389,68 @@ def test_load_attributes_member_votes_to_the_correct_roll_call(
                 (CONGRESS, vote_number_a, vote_number_b),
             )
         pg_conn.commit()
+
+
+def test_load_chunk_failure_does_not_block_other_chunks(
+    pg_conn, test_bill_id, test_bioguide_id, monkeypatch,
+):
+    # Regression test for the chunked-commit design: a bad row in one
+    # chunk must not roll back roll calls already committed in an
+    # earlier chunk, and must not prevent other chunks from loading.
+    monkeypatch.setattr(etl, "LOAD_CHUNK_SIZE", 2)
+    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
+
+    good_vote_number_1 = _random_number(20000, 22000)
+    good_vote_number_2 = _random_number(22000, 24000)
+    bad_vote_number = _random_number(24000, 26000)
+    nonexistent_bill_id = 999_999_999  # violates roll_calls_bill_congress_fk
+
+    dag = etl.house_votes_etl()
+    load = dag.task_dict["load"].python_callable
+
+    rows = {
+        "roll_calls": [
+            _roll_call_row(test_bill_id, good_vote_number_1, "hash-good-1"),   # chunk 1
+            _roll_call_row(test_bill_id, good_vote_number_2, "hash-good-2"),   # chunk 1
+            _roll_call_row(nonexistent_bill_id, bad_vote_number, "hash-bad"),  # chunk 2, fails
+        ],
+        "member_votes": [
+            {"key": [1, good_vote_number_1], "casts": [(test_bioguide_id, "YEA")]},
+            {"key": [1, good_vote_number_2], "casts": [(test_bioguide_id, "NAY")]},
+            {"key": [1, bad_vote_number], "casts": [(test_bioguide_id, "YEA")]},
+        ],
+    }
+
+    try:
+        load(rows)
+
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT vote_number FROM roll_calls WHERE chamber = 'HOUSE' AND congress = %s "
+                "AND vote_number IN (%s, %s, %s)",
+                (CONGRESS, good_vote_number_1, good_vote_number_2, bad_vote_number),
+            )
+            landed_vote_numbers = {row[0] for row in cursor.fetchall()}
+
+        # Chunk 1's two good roll calls landed; chunk 2's bad one didn't.
+        assert landed_vote_numbers == {good_vote_number_1, good_vote_number_2}
+
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT count(*) FROM roll_call_member_votes rcmv
+                JOIN roll_calls rc ON rc.roll_call_id = rcmv.roll_call_id
+                WHERE rc.chamber = 'HOUSE' AND rc.congress = %s
+                  AND rc.vote_number IN (%s, %s)
+                """,
+                (CONGRESS, good_vote_number_1, good_vote_number_2),
+            )
+            assert cursor.fetchone()[0] == 2
+    finally:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM roll_calls WHERE chamber = 'HOUSE' AND congress = %s "
+                "AND vote_number IN (%s, %s, %s)",
+                (CONGRESS, good_vote_number_1, good_vote_number_2, bad_vote_number),
+            )
+        pg_conn.commit()

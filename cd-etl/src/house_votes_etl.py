@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from itertools import batched
 from typing import Any
 
 import congress_api
@@ -26,6 +27,11 @@ CONGRESS_HOUSE_VOTE_API = "https://api.congress.gov/v3/house-vote/"
 PAGE_LIMIT = 250
 MEMBER_VOTES_FETCH_WORKERS = 10
 POSTGRES_CONN_ID = "congressional_postgres"
+
+# Bounds a load() failure's blast radius to one chunk of roll calls
+# rather than either the whole run (one big transaction) or a full
+# commit per roll call (too many WAL flushes at real vote volumes).
+LOAD_CHUNK_SIZE = 50
 
 _API_SESSION = congress_api.build_session(pool_maxsize=MEMBER_VOTES_FETCH_WORKERS)
 
@@ -448,56 +454,94 @@ def house_votes_etl():
 
     @task
     def load(rows: dict[str, list[Any]]) -> None:
+        # Committed in chunks of LOAD_CHUNK_SIZE roll calls rather than
+        # one transaction for the whole run (which would roll back
+        # everything on a single bad row) or one transaction per roll
+        # call (correspondingly more commits/WAL flushes than needed at
+        # real vote volumes) -- a failed chunk only costs that chunk,
+        # logged and skipped, while the rest of the run's roll calls
+        # still land. A roll_calls row is never committed without its
+        # own member votes: both upserts for a chunk share the same
+        # transaction, so that pairing holds per chunk even though the
+        # run as a whole isn't one single transaction anymore.
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         conn = hook.get_conn()
 
+        member_votes_by_key = {
+            tuple(mv["key"]): mv["casts"] for mv in rows["member_votes"]
+        }
+        loaded_roll_calls = 0
+        loaded_votes = 0
+        failed_chunks = 0
+
         try:
-            with conn.cursor() as cursor:
-                roll_call_id_by_key = {}
+            for chunk in batched(rows["roll_calls"], LOAD_CHUNK_SIZE):
+                chunk = list(chunk)
+                try:
+                    with conn.cursor() as cursor:
+                        execute_values(cursor, ROLL_CALLS_UPSERT_SQL, chunk)
 
-                if rows["roll_calls"]:
-                    execute_values(cursor, ROLL_CALLS_UPSERT_SQL, rows["roll_calls"])
+                        # ROLL_CALLS_UPSERT_SQL's ON CONFLICT is
+                        # WHERE-gated on source_hash, so RETURNING would
+                        # silently omit any row Postgres decided not to
+                        # update -- a follow-up SELECT on the natural key
+                        # is used instead to reliably get every
+                        # roll_call_id this chunk needs (unlike
+                        # BILLS_UPSERT_SQL, which is single-row and can
+                        # safely use RETURNING because its ON CONFLICT is
+                        # deliberately unconditional).
+                        congress = chunk[0][1]
+                        sessions = [row[2] for row in chunk]
+                        vote_numbers = [row[3] for row in chunk]
+                        cursor.execute(
+                            """
+                            SELECT roll_call_id, session, vote_number FROM roll_calls
+                            WHERE chamber = 'HOUSE' AND congress = %s
+                              AND session = ANY(%s) AND vote_number = ANY(%s)
+                            """,
+                            (congress, sessions, vote_numbers),
+                        )
+                        roll_call_id_by_key = {
+                            (session, vote_number): roll_call_id
+                            for roll_call_id, session, vote_number in cursor.fetchall()
+                        }
 
-                    # ROLL_CALLS_UPSERT_SQL's ON CONFLICT is WHERE-gated
-                    # on source_hash, so RETURNING would silently omit
-                    # any row Postgres decided not to update -- a
-                    # follow-up SELECT on the natural key is used instead
-                    # to reliably get every roll_call_id this batch needs
-                    # (unlike BILLS_UPSERT_SQL, which is single-row and
-                    # can safely use RETURNING because its ON CONFLICT is
-                    # deliberately unconditional).
-                    congress = rows["roll_calls"][0][1]
-                    sessions = [row[2] for row in rows["roll_calls"]]
-                    vote_numbers = [row[3] for row in rows["roll_calls"]]
-                    cursor.execute(
-                        """
-                        SELECT roll_call_id, session, vote_number FROM roll_calls
-                        WHERE chamber = 'HOUSE' AND congress = %s
-                          AND session = ANY(%s) AND vote_number = ANY(%s)
-                        """,
-                        (congress, sessions, vote_numbers),
+                        member_vote_rows = []
+                        for row in chunk:
+                            key = (row[2], row[3])
+                            roll_call_id = roll_call_id_by_key.get(key)
+                            if roll_call_id is None:
+                                continue
+                            for bioguide_id, vote_cast in member_votes_by_key.get(key, []):
+                                member_vote_rows.append((roll_call_id, bioguide_id, vote_cast))
+
+                        if member_vote_rows:
+                            execute_values(
+                                cursor, ROLL_CALL_MEMBER_VOTES_UPSERT_SQL, member_vote_rows,
+                            )
+
+                    conn.commit()
+                    loaded_roll_calls += len(chunk)
+                    loaded_votes += len(member_vote_rows)
+                except Exception as exc:
+                    # A chunk's own failure shouldn't abort chunks
+                    # already committed, or chunks still to come --
+                    # rollback resets the shared connection to a usable
+                    # state for the next iteration (same reason
+                    # resolve_bills rolls back on a per-vote failure).
+                    conn.rollback()
+                    failed_chunks += 1
+                    logger.error(
+                        "Failed to load a chunk of %d roll calls (%s): %s",
+                        len(chunk), [(row[2], row[3]) for row in chunk], exc,
                     )
-                    roll_call_id_by_key = {
-                        (session, vote_number): roll_call_id
-                        for roll_call_id, session, vote_number in cursor.fetchall()
-                    }
-
-                member_vote_rows = [
-                    (roll_call_id_by_key[tuple(mv["key"])], bioguide_id, vote_cast)
-                    for mv in rows["member_votes"]
-                    if tuple(mv["key"]) in roll_call_id_by_key
-                    for bioguide_id, vote_cast in mv["casts"]
-                ]
-                if member_vote_rows:
-                    execute_values(cursor, ROLL_CALL_MEMBER_VOTES_UPSERT_SQL, member_vote_rows)
-
-            conn.commit()
-            logger.info(
-                "Loaded %d roll calls and %d member votes",
-                len(rows["roll_calls"]), len(member_vote_rows),
-            )
         finally:
             conn.close()
+
+        logger.info(
+            "Loaded %d roll calls and %d member votes (%d chunk(s) failed)",
+            loaded_roll_calls, loaded_votes, failed_chunks,
+        )
 
     congress = get_current_congress()
     summaries = extract_house_vote_summaries(congress)
