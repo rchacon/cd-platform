@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
@@ -122,6 +123,10 @@ class HouseVoteDetail(_CamelModel):
     vote_question: str
 
 
+class HouseVoteDetailResponse(_CamelModel):
+    house_roll_call_vote: HouseVoteDetail
+
+
 class HouseVoteMemberVote(_CamelModel):
     # The member-votes sub-resource uses "bioguideID" (capital ID),
     # inconsistent with the rest of the API's "bioguideId" convention and
@@ -129,6 +134,20 @@ class HouseVoteMemberVote(_CamelModel):
     # alias rather than the generator.
     bioguide_id: str = Field(alias="bioguideID")
     vote_cast: str
+
+
+class HouseRollCallVoteMemberVotes(_CamelModel):
+    # Deliberately loose (list[dict], not list[HouseVoteMemberVote]) --
+    # transform() validates each cast itself, one at a time, so one
+    # malformed cast can be skipped without losing every other cast in
+    # the same roll call. Validating the whole list here would make that
+    # per-item fault isolation impossible: one bad element would fail
+    # the envelope's own model_validate and drop the entire roll call.
+    results: list[dict[str, Any]] = []
+
+
+class HouseVoteMemberVotesResponse(_CamelModel):
+    house_roll_call_vote_member_votes: HouseRollCallVoteMemberVotes
 
 
 class PolicyArea(_CamelModel):
@@ -150,6 +169,10 @@ class BillDetail(_CamelModel):
         return self.policy_area.name if self.policy_area else None
 
 
+class BillDetailResponse(_CamelModel):
+    bill: BillDetail
+
+
 class LegislativeSubject(_CamelModel):
     name: str
     update_date: datetime | None = None
@@ -157,6 +180,10 @@ class LegislativeSubject(_CamelModel):
 
 class BillSubjects(_CamelModel):
     legislative_subjects: list[LegislativeSubject] = []
+
+
+class BillSubjectsResponse(_CamelModel):
+    subjects: BillSubjects
 
 
 class AmendedBill(_CamelModel):
@@ -169,3 +196,7 @@ class AmendmentDetail(_CamelModel):
     # None is a real, expected case -- not every amendment resolves to a
     # specific bill.
     amended_bill: AmendedBill | None = None
+
+
+class AmendmentResponse(_CamelModel):
+    amendment: AmendmentDetail

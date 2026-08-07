@@ -29,12 +29,13 @@ import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 from congress_models import (
-    AmendmentDetail,
-    BillDetail,
-    BillSubjects,
-    HouseVoteDetail,
+    AmendmentResponse,
+    BillDetailResponse,
+    BillSubjectsResponse,
+    HouseVoteDetailResponse,
     HouseVoteListItem,
     HouseVoteMemberVote,
+    HouseVoteMemberVotesResponse,
 )
 from psycopg2.extras import execute_values
 from pydantic import ValidationError
@@ -162,10 +163,14 @@ def get_or_sync_bill(
     # see its own comment).
     bill_url = f"{CONGRESS_BILL_API}{congress}/{bill_type.lower()}/{bill_number}"
     with ThreadPoolExecutor(max_workers=2) as executor:
-        detail_future = executor.submit(congress_api.api_get, session, bill_url)
-        subjects_future = executor.submit(congress_api.api_get, session, f"{bill_url}/subjects")
-        bill = BillDetail.model_validate(detail_future.result()["bill"])
-        subjects = BillSubjects.model_validate(subjects_future.result()["subjects"])
+        detail_future = executor.submit(
+            congress_api.api_get_model, session, bill_url, BillDetailResponse,
+        )
+        subjects_future = executor.submit(
+            congress_api.api_get_model, session, f"{bill_url}/subjects", BillSubjectsResponse,
+        )
+        bill = detail_future.result().bill
+        subjects = subjects_future.result().subjects
 
     policy_area = bill.policy_area_name
 
@@ -204,10 +209,11 @@ def get_or_sync_bill(
 def resolve_amendment_bill(
     session: requests.Session, congress: int, amendment_type: str, amendment_number: str,
 ) -> tuple[int, str, int] | None:
-    raw = congress_api.api_get(
-        session, f"{CONGRESS_AMENDMENT_API}{congress}/{amendment_type.lower()}/{amendment_number}",
-    )["amendment"]
-    amendment = AmendmentDetail.model_validate(raw)
+    amendment = congress_api.api_get_model(
+        session,
+        f"{CONGRESS_AMENDMENT_API}{congress}/{amendment_type.lower()}/{amendment_number}",
+        AmendmentResponse,
+    ).amendment
 
     if amendment.amended_bill is None:
         return None
@@ -410,11 +416,11 @@ def house_votes_etl():
         # treatment and can run like fetch_member_votes instead.
         def fetch_one(key: tuple[int, int]) -> dict[str, Any]:
             session_number, roll_call_number = key
-            raw_detail = congress_api.api_get(
+            detail = congress_api.api_get_model(
                 _API_SESSION,
                 f"{CONGRESS_HOUSE_VOTE_API}{congress}/{session_number}/{roll_call_number}",
-            )["houseRollCallVote"]
-            detail = HouseVoteDetail.model_validate(raw_detail)
+                HouseVoteDetailResponse,
+            ).house_roll_call_vote
             return {
                 "session": session_number,
                 "roll_call_number": roll_call_number,
@@ -435,14 +441,15 @@ def house_votes_etl():
     ) -> list[dict[str, Any]]:
         def fetch_one(key: tuple[int, int]) -> dict[str, Any]:
             session_number, roll_call_number = key
-            raw = congress_api.api_get(
+            member_votes = congress_api.api_get_model(
                 _API_SESSION,
                 f"{CONGRESS_HOUSE_VOTE_API}{congress}/{session_number}/{roll_call_number}/members",
-            )["houseRollCallVoteMemberVotes"]
+                HouseVoteMemberVotesResponse,
+            ).house_roll_call_vote_member_votes
             return {
                 "session": session_number,
                 "roll_call_number": roll_call_number,
-                "votes": raw["results"],
+                "votes": member_votes.results,
             }
 
         keys = [(v["session"], v["roll_call_number"]) for v in resolved_votes]
