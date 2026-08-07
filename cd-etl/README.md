@@ -29,14 +29,9 @@ shapes) are shared, DAG-agnostic modules every DAG below builds on.
 
 ### `house_votes_etl` (`src/house_votes_etl.py`)
 
-Syncs House roll call votes into `roll_calls`/`roll_call_member_votes`.
-Bills are populated on demand, not proactively synced wholesale --
-`get_or_sync_bill()` is called inline for each vote's linked legislation
-(or its resolved amendment, for the ~12% of votes that reference one
-instead of a bill directly), fetching and storing a bill only the first
-time it's actually referenced by a vote. Purely procedural votes with no
-bill or amendment reference (e.g. "Elected Speaker") are excluded
-entirely, same as nominations.
+Syncs House roll call votes into `roll_calls`/`roll_call_member_votes`,
+populating bills on demand rather than proactively -- see the module's
+own docstring for why.
 
 1. `get_current_congress` — same query `congress_members_etl` uses.
 2. `extract_house_vote_summaries` — pages through both sessions' vote lists.

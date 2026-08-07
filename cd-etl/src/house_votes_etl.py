@@ -1,3 +1,21 @@
+"""Syncs House roll call votes into roll_calls/roll_call_member_votes.
+
+Bills are populated on demand, not proactively synced wholesale --
+get_or_sync_bill() is called inline for each vote's linked legislation
+(or its resolved amendment, for the ~12% of votes that reference one
+instead of a bill directly), fetching and storing a bill only the
+first time it's actually referenced by a vote. The 119th Congress has
+18,140 bills total but only a few hundred are ever referenced by a
+House vote, and roll_calls' whole purpose is deriving how a member
+voted on a policy area -- a bill nobody voted on doesn't serve that,
+so proactively syncing all 18,140 was rejected as wasted API calls
+(see rchacon/cd-platform#8).
+
+Purely procedural votes with no bill or amendment reference at all
+(e.g. "Elected Speaker") are excluded entirely, same treatment as
+nominations.
+"""
+
 from __future__ import annotations
 
 import logging
