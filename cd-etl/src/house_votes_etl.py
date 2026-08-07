@@ -387,6 +387,21 @@ def house_votes_etl():
         known_bioguide_ids: list[str],
         congress: int,
     ) -> dict[str, list[Any]]:
+        """Builds the two SQL-ready row lists load() upserts.
+
+        Returns a dict with:
+          "roll_calls": list of tuples, one per roll_call_rows in
+            ROLL_CALLS_UPSERT_SQL's column order (chamber, congress,
+            session, vote_number, bill_id, vote_question, result,
+            vote_date, source_hash).
+          "member_votes": list of {"key": [session, vote_number],
+            "casts": [(bioguide_id, vote_cast), ...]} dicts -- "key"
+            identifies which roll call these casts belong to (a plain
+            list, not a tuple, since this return value crosses an
+            Airflow XCom boundary and has to stay JSON-serializable).
+            load() resolves "key" to the actual roll_call_id itself,
+            since that's only known after its own roll_calls upsert.
+        """
         member_votes_by_key = {
             (mv["session"], mv["roll_call_number"]): mv["votes"] for mv in member_votes
         }
