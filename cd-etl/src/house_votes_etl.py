@@ -429,6 +429,7 @@ def house_votes_etl():
         member_vote_rows = []
         dropped_unknown_bioguide_count = 0
         skipped_missing_member_votes_count = 0
+        skipped_zero_valid_casts_count = 0
 
         for vote in resolved_votes:
             key = (vote["session"], vote["roll_call_number"])
@@ -467,6 +468,16 @@ def house_votes_etl():
 
                 casts.append((member_vote.bioguide_id, vote_cast))
 
+            if not casts:
+                # Every cast for this vote was dropped (malformed data,
+                # or none of its voters are known to us yet) -- same
+                # reasoning as the raw_casts-is-None case above: a
+                # roll_calls row with zero real casts would look
+                # "already synced" forever, with no way to backfill it
+                # once the missing member(s) are known.
+                skipped_zero_valid_casts_count += 1
+                continue
+
             source_hash = congress_api.source_hash(
                 "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
                 vote["vote_question"], vote["result"], vote["vote_date"],
@@ -479,9 +490,9 @@ def house_votes_etl():
 
         logger.info(
             "Transformed %d roll calls (%d skipped for missing member votes, "
-            "%d member votes dropped for unknown bioguide_id)",
+            "%d skipped for zero valid casts, %d member votes dropped for unknown bioguide_id)",
             len(roll_call_rows), skipped_missing_member_votes_count,
-            dropped_unknown_bioguide_count,
+            skipped_zero_valid_casts_count, dropped_unknown_bioguide_count,
         )
         return {"roll_calls": roll_call_rows, "member_votes": member_vote_rows}
 

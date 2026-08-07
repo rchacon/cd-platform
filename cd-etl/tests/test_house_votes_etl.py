@@ -298,6 +298,28 @@ def test_transform_drops_vote_missing_its_member_votes_entirely():
     assert result["member_votes"] == []
 
 
+def test_transform_drops_vote_when_all_casts_filtered_out():
+    # Regression test: a vote whose every cast got filtered out (all
+    # unknown bioguide_ids, here) must produce NO roll_calls row --
+    # same transactional-invariant reasoning as the missing-member-votes
+    # case above. Previously this only checked for raw_casts is None,
+    # missing the case where casts is a non-empty list that fully empties
+    # out after per-cast filtering.
+    dag = etl.house_votes_etl()
+    transform = dag.task_dict["transform"].python_callable
+
+    resolved = [_resolved_vote()]
+    member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
+        {"bioguideID": "UNKNOWN01", "voteCast": "Yea"},
+        {"bioguideID": "UNKNOWN02", "voteCast": "Nay"},
+    ]}]
+
+    result = transform(resolved, member_votes, ["KNOWN01"], 119)
+
+    assert result["roll_calls"] == []
+    assert result["member_votes"] == []
+
+
 def test_dag_has_expected_tasks_wired_in_the_expected_order():
     dag = etl.house_votes_etl()
 
