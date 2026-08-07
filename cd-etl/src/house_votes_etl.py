@@ -365,12 +365,6 @@ def house_votes_etl():
                             )
 
                     bill_id = get_or_sync_bill(_API_SESSION, conn, *bill_key)
-
-                    raw_detail = congress_api.api_get(
-                        _API_SESSION,
-                        f"{CONGRESS_HOUSE_VOTE_API}{congress}/{item.session_number}/{item.roll_call_number}",
-                    )["houseRollCallVote"]
-                    detail = HouseVoteDetail.model_validate(raw_detail)
                 except Exception as exc:
                     # Broad on purpose -- HTTP errors, pydantic
                     # ValidationError, a malformed legislation_number
@@ -392,7 +386,6 @@ def house_votes_etl():
                     "session": item.session_number,
                     "roll_call_number": item.roll_call_number,
                     "bill_id": bill_id,
-                    "vote_question": detail.vote_question,
                     "result": item.result,
                     "vote_date": item.start_date.date().isoformat(),
                 })
@@ -401,6 +394,36 @@ def house_votes_etl():
 
         logger.info("Resolved %d of %d votes to a bill", len(resolved), len(votes))
         return resolved
+
+    @task
+    def fetch_vote_details(
+        resolved_votes: list[dict[str, Any]], congress: int,
+    ) -> list[dict[str, Any]]:
+        # Split out of resolve_bills into its own concurrent task -- this
+        # detail fetch (only needed for vote_question) has no ordering
+        # dependency on bill resolution, unlike get_or_sync_bill's own
+        # calls, so it doesn't need resolve_bills's sequential-per-vote
+        # treatment and can run like fetch_member_votes instead.
+        def fetch_one(key: tuple[int, int]) -> dict[str, Any]:
+            session_number, roll_call_number = key
+            raw_detail = congress_api.api_get(
+                _API_SESSION,
+                f"{CONGRESS_HOUSE_VOTE_API}{congress}/{session_number}/{roll_call_number}",
+            )["houseRollCallVote"]
+            detail = HouseVoteDetail.model_validate(raw_detail)
+            return {
+                "session": session_number,
+                "roll_call_number": roll_call_number,
+                "vote_question": detail.vote_question,
+            }
+
+        keys = [(v["session"], v["roll_call_number"]) for v in resolved_votes]
+        results = congress_api.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
+
+        logger.info(
+            "Fetched vote question detail for %d of %d votes", len(results), len(resolved_votes),
+        )
+        return results
 
     @task
     def fetch_member_votes(
@@ -429,6 +452,7 @@ def house_votes_etl():
     @task
     def transform(
         resolved_votes: list[dict[str, Any]],
+        vote_details: list[dict[str, Any]],
         member_votes: list[dict[str, Any]],
         known_bioguide_ids: list[str],
         congress: int,
@@ -448,6 +472,9 @@ def house_votes_etl():
             load() resolves "key" to the actual roll_call_id itself,
             since that's only known after its own roll_calls upsert.
         """
+        vote_question_by_key = {
+            (vd["session"], vd["roll_call_number"]): vd["vote_question"] for vd in vote_details
+        }
         member_votes_by_key = {
             (mv["session"], mv["roll_call_number"]): mv["votes"] for mv in member_votes
         }
@@ -456,11 +483,22 @@ def house_votes_etl():
         roll_call_rows = []
         member_vote_rows = []
         dropped_unknown_bioguide_count = 0
+        skipped_missing_detail_count = 0
         skipped_missing_member_votes_count = 0
         skipped_zero_valid_casts_count = 0
 
         for vote in resolved_votes:
             key = (vote["session"], vote["roll_call_number"])
+
+            vote_question = vote_question_by_key.get(key)
+            if vote_question is None:
+                # This vote's detail fetch (vote_question) failed or was
+                # skipped -- can't build a roll_calls row without it
+                # (a NOT NULL column), same reasoning as the
+                # missing-member-votes case below.
+                skipped_missing_detail_count += 1
+                continue
+
             raw_casts = member_votes_by_key.get(key)
             if raw_casts is None:
                 # This vote's member-vote fetch failed or was skipped --
@@ -508,19 +546,21 @@ def house_votes_etl():
 
             source_hash = congress_api.source_hash(
                 "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
-                vote["vote_question"], vote["result"], vote["vote_date"],
+                vote_question, vote["result"], vote["vote_date"],
             )
             roll_call_rows.append((
                 "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
-                vote["vote_question"], vote["result"], vote["vote_date"], source_hash,
+                vote_question, vote["result"], vote["vote_date"], source_hash,
             ))
             member_vote_rows.append({"key": list(key), "casts": casts})
 
         logger.info(
-            "Transformed %d roll calls (%d skipped for missing member votes, "
-            "%d skipped for zero valid casts, %d member votes dropped for unknown bioguide_id)",
-            len(roll_call_rows), skipped_missing_member_votes_count,
-            skipped_zero_valid_casts_count, dropped_unknown_bioguide_count,
+            "Transformed %d roll calls (%d skipped for missing detail, "
+            "%d skipped for missing member votes, %d skipped for zero valid casts, "
+            "%d member votes dropped for unknown bioguide_id)",
+            len(roll_call_rows), skipped_missing_detail_count,
+            skipped_missing_member_votes_count, skipped_zero_valid_casts_count,
+            dropped_unknown_bioguide_count,
         )
         return {"roll_calls": roll_call_rows, "member_votes": member_vote_rows}
 
@@ -619,8 +659,9 @@ def house_votes_etl():
     summaries = extract_house_vote_summaries(congress)
     filtered = filter_votes_needing_sync(summaries, congress)
     resolved = resolve_bills(filtered["votes"], congress)
+    vote_details = fetch_vote_details(resolved, congress)
     member_votes = fetch_member_votes(resolved, congress)
-    load(transform(resolved, member_votes, filtered["known_bioguide_ids"], congress))
+    load(transform(resolved, vote_details, member_votes, filtered["known_bioguide_ids"], congress))
 
 
 house_votes_etl()

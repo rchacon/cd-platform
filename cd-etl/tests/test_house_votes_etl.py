@@ -239,6 +239,33 @@ def test_extract_house_vote_summaries_covers_both_sessions(monkeypatch):
     assert any(url.endswith("/119/2") for url in calls)
 
 
+def test_fetch_vote_details_skips_failed_fetch_without_failing_the_batch(monkeypatch):
+    # Regression test: fetch_vote_details was split out of resolve_bills's
+    # own sequential loop into its own concurrent task -- mirrors
+    # fetch_member_votes's fault isolation, one vote's failed detail
+    # fetch shouldn't discard the others.
+    def fake_api_get(session, url, params=None):
+        if url.endswith("/1/240"):
+            raise RuntimeError("simulated failure")
+        return {"houseRollCallVote": {"voteQuestion": "On Passage"}}
+
+    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
+
+    dag = etl.house_votes_etl()
+    fetch_vote_details = dag.task_dict["fetch_vote_details"].python_callable
+
+    resolved = [
+        {"session": 1, "roll_call_number": 240},
+        {"session": 1, "roll_call_number": 241},
+    ]
+
+    result = fetch_vote_details(resolved, 119)
+
+    assert len(result) == 1
+    assert result[0]["roll_call_number"] == 241
+    assert result[0]["vote_question"] == "On Passage"
+
+
 def test_fetch_member_votes_skips_failed_fetch_without_failing_the_batch(monkeypatch):
     # Regression test: mirrors fetch_member_details's fault isolation --
     # one vote's failed /members fetch shouldn't discard the others.
@@ -267,8 +294,12 @@ def test_fetch_member_votes_skips_failed_fetch_without_failing_the_batch(monkeyp
 def _resolved_vote(roll_call_number=240, session=1, bill_id=1):
     return {
         "session": session, "roll_call_number": roll_call_number, "bill_id": bill_id,
-        "vote_question": "On Passage", "result": "Passed", "vote_date": "2025-09-08",
+        "result": "Passed", "vote_date": "2025-09-08",
     }
+
+
+def _vote_detail(roll_call_number=240, session=1, vote_question="On Passage"):
+    return {"session": session, "roll_call_number": roll_call_number, "vote_question": vote_question}
 
 
 def test_transform_normalizes_vote_cast_case_insensitively():
@@ -276,15 +307,17 @@ def test_transform_normalizes_vote_cast_case_insensitively():
     transform = dag.task_dict["transform"].python_callable
 
     resolved = [_resolved_vote()]
+    vote_details = [_vote_detail()]
     member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
         {"bioguideID": "A000055", "voteCast": "yea"},
         {"bioguideID": "A000148", "voteCast": "AYE"},
         {"bioguideID": "A000369", "voteCast": "Nay"},
     ]}]
 
-    result = transform(resolved, member_votes, ["A000055", "A000148", "A000369"], 119)
+    result = transform(resolved, vote_details, member_votes, ["A000055", "A000148", "A000369"], 119)
 
     assert result["roll_calls"][0][0] == "HOUSE"
+    assert result["roll_calls"][0][5] == "On Passage"
     casts = dict(result["member_votes"][0]["casts"])
     assert casts == {"A000055": "YEA", "A000148": "YEA", "A000369": "NAY"}
 
@@ -297,12 +330,13 @@ def test_transform_skips_malformed_vote_cast_without_failing_the_vote():
     transform = dag.task_dict["transform"].python_callable
 
     resolved = [_resolved_vote()]
+    vote_details = [_vote_detail()]
     member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
         {"bioguideID": "A000055", "voteCast": "Yea"},
         {"bioguideID": "A000148", "voteCast": "Unrecognized"},
     ]}]
 
-    result = transform(resolved, member_votes, ["A000055", "A000148"], 119)
+    result = transform(resolved, vote_details, member_votes, ["A000055", "A000148"], 119)
 
     assert len(result["roll_calls"]) == 1
     casts = dict(result["member_votes"][0]["casts"])
@@ -317,15 +351,35 @@ def test_transform_drops_member_vote_for_unknown_bioguide_id():
     transform = dag.task_dict["transform"].python_callable
 
     resolved = [_resolved_vote()]
+    vote_details = [_vote_detail()]
     member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
         {"bioguideID": "KNOWN01", "voteCast": "Yea"},
         {"bioguideID": "UNKNOWN01", "voteCast": "Nay"},
     ]}]
 
-    result = transform(resolved, member_votes, ["KNOWN01"], 119)
+    result = transform(resolved, vote_details, member_votes, ["KNOWN01"], 119)
 
     casts = dict(result["member_votes"][0]["casts"])
     assert casts == {"KNOWN01": "YEA"}
+
+
+def test_transform_drops_vote_missing_its_detail_entirely():
+    # Regression test: a vote whose detail fetch (vote_question) failed
+    # (absent from vote_details) must produce NO roll_calls row at all --
+    # vote_question is a NOT NULL column, same transactional-invariant
+    # reasoning as the missing-member-votes case below.
+    dag = etl.house_votes_etl()
+    transform = dag.task_dict["transform"].python_callable
+
+    resolved = [_resolved_vote()]
+    member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
+        {"bioguideID": "A000055", "voteCast": "Yea"},
+    ]}]
+
+    result = transform(resolved, [], member_votes, ["A000055"], 119)
+
+    assert result["roll_calls"] == []
+    assert result["member_votes"] == []
 
 
 def test_transform_drops_vote_missing_its_member_votes_entirely():
@@ -338,8 +392,9 @@ def test_transform_drops_vote_missing_its_member_votes_entirely():
     transform = dag.task_dict["transform"].python_callable
 
     resolved = [_resolved_vote()]
+    vote_details = [_vote_detail()]
 
-    result = transform(resolved, [], [], 119)
+    result = transform(resolved, vote_details, [], [], 119)
 
     assert result["roll_calls"] == []
     assert result["member_votes"] == []
@@ -356,12 +411,13 @@ def test_transform_drops_vote_when_all_casts_filtered_out():
     transform = dag.task_dict["transform"].python_callable
 
     resolved = [_resolved_vote()]
+    vote_details = [_vote_detail()]
     member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
         {"bioguideID": "UNKNOWN01", "voteCast": "Yea"},
         {"bioguideID": "UNKNOWN02", "voteCast": "Nay"},
     ]}]
 
-    result = transform(resolved, member_votes, ["KNOWN01"], 119)
+    result = transform(resolved, vote_details, member_votes, ["KNOWN01"], 119)
 
     assert result["roll_calls"] == []
     assert result["member_votes"] == []
@@ -376,6 +432,7 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
         "extract_house_vote_summaries",
         "filter_votes_needing_sync",
         "resolve_bills",
+        "fetch_vote_details",
         "fetch_member_votes",
         "transform",
         "load",
@@ -391,8 +448,10 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
         "extract_house_vote_summaries", "get_current_congress",
     }
     assert upstream["resolve_bills"] == {"filter_votes_needing_sync", "get_current_congress"}
+    assert upstream["fetch_vote_details"] == {"resolve_bills", "get_current_congress"}
     assert upstream["fetch_member_votes"] == {"resolve_bills", "get_current_congress"}
     assert upstream["transform"] == {
-        "resolve_bills", "fetch_member_votes", "filter_votes_needing_sync", "get_current_congress",
+        "resolve_bills", "fetch_vote_details", "fetch_member_votes",
+        "filter_votes_needing_sync", "get_current_congress",
     }
     assert upstream["load"] == {"transform"}
