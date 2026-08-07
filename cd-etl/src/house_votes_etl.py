@@ -347,6 +347,22 @@ def house_votes_etl():
                                 item.session_number, item.roll_call_number,
                             )
                             continue
+                        if bill_key[0] != congress:
+                            # An amendment's own reported bill congress
+                            # should always equal the Congress currently
+                            # being synced -- amendments only exist
+                            # during the live legislative process of
+                            # their own Congress. Treated as a
+                            # resolution failure rather than silently
+                            # trusted: roll_calls.congress is this
+                            # task's congress, not the bill's, so
+                            # inserting under a mismatched congress would
+                            # point a roll call at the wrong bill_id
+                            # instead of failing loudly.
+                            raise ValueError(
+                                f"Amendment's resolved bill congress ({bill_key[0]}) does not "
+                                f"match the currently-synced congress ({congress})"
+                            )
 
                     bill_id = get_or_sync_bill(_API_SESSION, conn, *bill_key)
 

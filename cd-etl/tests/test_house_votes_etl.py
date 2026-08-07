@@ -194,6 +194,32 @@ def test_resolve_bills_skips_vote_with_unresolvable_amendment(monkeypatch):
     assert fake_conn.closed
 
 
+def test_resolve_bills_skips_vote_when_amendment_bill_congress_mismatches(monkeypatch):
+    # Regression test: an amendment's resolved bill should always belong
+    # to the Congress currently being synced -- a mismatch must be
+    # treated as a resolution failure (skip + rollback), not silently
+    # trusted into a roll_calls row pointed at the wrong congress.
+    fake_conn = _FakeConn()
+    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _FakeConnHook(fake_conn))
+    monkeypatch.setattr(
+        etl.congress_api, "api_get",
+        lambda session, url, params=None: {
+            "amendment": {"amendedBill": {"congress": 118, "type": "HR", "number": "3838"}}
+        },
+    )
+
+    dag = etl.house_votes_etl()
+    resolve_bills = dag.task_dict["resolve_bills"].python_callable
+
+    amendment_vote = _house_vote_summary(259, amendment_type="HAMDT", amendment_number="97")
+
+    result = resolve_bills([amendment_vote], 119)
+
+    assert result == []
+    assert fake_conn.rolled_back
+    assert fake_conn.closed
+
+
 def test_extract_house_vote_summaries_covers_both_sessions(monkeypatch):
     calls = []
 
