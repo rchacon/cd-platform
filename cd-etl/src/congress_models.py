@@ -142,6 +142,13 @@ class BillDetail(_CamelModel):
     policy_area: PolicyArea | None = None
     update_date: datetime
 
+    @property
+    def policy_area_name(self) -> str | None:
+        # Flattens the nested policy_area.name (itself nullable -- not
+        # every bill has been assigned one) into a plain scalar, so
+        # callers don't each need to repeat the None-check.
+        return self.policy_area.name if self.policy_area else None
+
 
 class LegislativeSubject(_CamelModel):
     name: str

@@ -145,7 +145,7 @@ def get_or_sync_bill(
     )["subjects"]
     subjects = BillSubjects.model_validate(raw_subjects)
 
-    policy_area = bill.policy_area.name if bill.policy_area else None
+    policy_area = bill.policy_area_name
 
     with conn.cursor() as cursor:
         cursor.execute(
