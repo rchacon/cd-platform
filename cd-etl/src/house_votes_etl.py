@@ -19,6 +19,7 @@ nominations.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from itertools import batched
 from typing import Any
@@ -153,15 +154,18 @@ def get_or_sync_bill(
     if row is not None:
         return row[0]
 
-    raw_detail = congress_api.api_get(
-        session, f"{CONGRESS_BILL_API}{congress}/{bill_type.lower()}/{bill_number}",
-    )["bill"]
-    bill = BillDetail.model_validate(raw_detail)
-
-    raw_subjects = congress_api.api_get(
-        session, f"{CONGRESS_BILL_API}{congress}/{bill_type.lower()}/{bill_number}/subjects",
-    )["subjects"]
-    subjects = BillSubjects.model_validate(raw_subjects)
+    # Detail and subjects are two independent endpoints -- fetched
+    # concurrently rather than sequentially, since this whole helper
+    # already runs once per not-yet-seen bill inside resolve_bills's own
+    # sequential per-vote loop, so there's no race to avoid here (unlike
+    # that outer loop, which stays sequential for a different reason --
+    # see its own comment).
+    bill_url = f"{CONGRESS_BILL_API}{congress}/{bill_type.lower()}/{bill_number}"
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        detail_future = executor.submit(congress_api.api_get, session, bill_url)
+        subjects_future = executor.submit(congress_api.api_get, session, f"{bill_url}/subjects")
+        bill = BillDetail.model_validate(detail_future.result()["bill"])
+        subjects = BillSubjects.model_validate(subjects_future.result()["subjects"])
 
     policy_area = bill.policy_area_name
 
