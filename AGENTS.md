@@ -82,10 +82,34 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
    member.
 5. `fetch_member_details` — fetches full profiles for whatever's left, via a
    `ThreadPoolExecutor`.
-6. `transform` — builds the `members`/`member_terms` row tuples.
-7. `load` — upserts both tables. `ON CONFLICT DO UPDATE` is guarded by
-   `WHERE source_hash IS DISTINCT FROM EXCLUDED.source_hash`, so `updated_at`
-   only changes on rows that actually changed.
+6. `extract_legislators_crosswalk` — fetches and parses
+   `unitedstates/congress-legislators`'s `legislators-current.yaml`, a
+   separate public/unauthenticated source (no relation to api.congress.gov)
+   used to resolve `members.lis_member_id` (needed to key a future Senate
+   votes DAG, which identifies members by LIS id, not `bioguideId`) and
+   `members.senate_state_rank` (`SENIOR`/`JUNIOR`, resolving issue #3 --
+   sourced from that file's editorially-maintained per-term `state_rank`
+   rather than derived from continuous-service history). Has no upstream
+   dependency on `current_congress`/member details, so Airflow runs it
+   concurrently with the rest of the chain above. Never raises: a
+   broken/unreachable source degrades to "no crosswalk update today," not a
+   failed/retried run of the member sync `cd-lookup` depends on.
+7. `transform` — builds the `members`/`member_terms` row tuples, plus a
+   third `crosswalk` row list (`(bioguide_id, lis_member_id,
+   senate_state_rank)`) from step 6's raw YAML entries.
+8. `load` — upserts `members`/`member_terms`. `ON CONFLICT DO UPDATE` is
+   guarded by `WHERE source_hash IS DISTINCT FROM EXCLUDED.source_hash`, so
+   `updated_at` only changes on rows that actually changed.
+9. `load_crosswalk` — a plain guarded `UPDATE` for the crosswalk rows, never
+   an upsert (this task never creates a `members` row itself -- rows for a
+   `bioguide_id` not yet synced by `load` simply match nothing). A separate
+   `@task` from `load`, not a second commit folded into it, specifically so
+   a crosswalk-specific failure gets Airflow's own task-level retries
+   (`default_args={"retries": 2}`) and shows up as a failed task run,
+   rather than being caught and swallowed into one log line. Still can't
+   block or roll back the member/term sync: `load(...) >> load_crosswalk(...)`
+   makes it strictly downstream of `load` already having committed, not
+   just downstream of `transform`'s output.
 
 ### Data model notes (`cd-etl/migrations/versions/0001_initial_schema.py`)
 
@@ -109,9 +133,16 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
 - There is no `party_type` enum — party values are normalized by the ETL
   (`PARTY_MAP`) to a small canonical set but stored as plain text, since
   Postgres can't validate values inside JSONB anyway.
-- Known gap, tracked in issue #3: `current_members` has no Senior/Junior
-  Senator distinction, since that's based on continuous years of Senate
-  service and isn't derivable from current-Congress-only term data.
+- `members.senate_state_rank` (`SENIOR`/`JUNIOR`, NULL for House members)
+  resolves issue #3's Senior/Junior Senator distinction, exposed on
+  `current_members` as `state_rank`. Sourced from
+  `unitedstates/congress-legislators`'s `legislators-current.yaml` (see the
+  `congress_members_etl` pipeline's `extract_legislators_crosswalk` step
+  above) rather than derived from continuous-service history -- that
+  upstream file already carries an editorially-maintained `state_rank` per
+  Senate term, correctly resolving tie-break cases (prior chamber/
+  gubernatorial service, alphabetical order) this project would otherwise
+  have to approximate.
 
 ### XCom gotcha
 

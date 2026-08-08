@@ -332,6 +332,188 @@ def test_fetch_member_details_skips_failed_fetches_without_failing_the_batch(mon
     assert sorted(m["bioguideId"] for m in result) == ["GOOD001", "GOOD002"]
 
 
+def _senator_entry(bioguide="C000127", lis="S275", state_rank="junior"):
+    # Wide, safely-bounded date ranges (not tied to any particular real
+    # "today") so these tests stay valid regardless of when they run --
+    # a historical term that's definitely over, and a current term that's
+    # open-ended (no "end", matching a still-serving senator).
+    return {
+        "id": {"bioguide": bioguide, "lis": lis},
+        "terms": [
+            {"type": "sen", "start": "2000-01-03", "end": "2010-01-03", "state_rank": "senior"},
+            {"type": "sen", "start": "2010-01-04", "state_rank": state_rank},
+        ],
+    }
+
+
+def _house_entry(bioguide="A000055"):
+    return {
+        "id": {"bioguide": bioguide},  # no "lis" key at all -- House members never get one
+        "terms": [
+            {"type": "rep", "start": "2000-01-03", "end": "2010-01-03", "state": "AL"},
+            {"type": "rep", "start": "2010-01-04", "state": "AL"},
+        ],
+    }
+
+
+def test_crosswalk_row_resolves_current_senate_term():
+    result = etl._crosswalk_row(_senator_entry())
+
+    assert result == ("C000127", "S275", "JUNIOR")
+
+
+def test_crosswalk_row_house_member_has_no_lis_or_rank():
+    # House members never carry id.lis or terms[].state_rank in this
+    # source -- both Senate-only concepts.
+    result = etl._crosswalk_row(_house_entry())
+
+    assert result == ("A000055", None, None)
+
+
+def test_crosswalk_row_ignores_expired_terms():
+    entry = {
+        "id": {"bioguide": "GONE001", "lis": "S001"},
+        "terms": [{"type": "sen", "start": "2000-01-03", "end": "2010-01-03", "state_rank": "junior"}],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("GONE001", None, None)
+
+
+def test_crosswalk_row_treats_missing_end_as_open_ended():
+    entry = {
+        "id": {"bioguide": "NEW001", "lis": "S999"},
+        "terms": [{"type": "sen", "start": "2010-01-03", "state_rank": "senior"}],  # no "end"
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("NEW001", "S999", "SENIOR")
+
+
+def test_crosswalk_row_returns_none_for_missing_bioguide_id():
+    assert etl._crosswalk_row({"id": {}, "terms": []}) is None
+
+
+def test_crosswalk_row_skips_term_with_malformed_end_instead_of_raising():
+    # Regression test: a malformed "end" value previously raised
+    # ValueError uncaught (only "start" was inside the try/except) --
+    # that would propagate out of _crosswalk_row and fail transform()'s
+    # whole crosswalk loop, including the member/term transform sharing
+    # its task. Now just skips this one term, same as a malformed start.
+    entry = {
+        "id": {"bioguide": "BADEND001", "lis": "S001"},
+        "terms": [{"type": "sen", "start": "2010-01-03", "end": "not-a-date", "state_rank": "junior"}],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("BADEND001", None, None)
+
+
+def test_crosswalk_row_drops_non_string_state_rank_instead_of_raising():
+    # Regression test: raw_rank.upper() previously only guarded against a
+    # falsy state_rank, not a non-string one -- a truthy non-string value
+    # (a YAML formatting quirk) would raise AttributeError uncaught, with
+    # nothing above _crosswalk_row to catch it, failing the whole
+    # transform() task including the member/term transform sharing it.
+    entry = {
+        "id": {"bioguide": "BADRANK001", "lis": "S001"},
+        "terms": [{"type": "sen", "start": "2010-01-03", "state_rank": {"unexpected": "shape"}}],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("BADRANK001", "S001", None)
+
+
+def test_crosswalk_row_drops_unrecognized_state_rank_value():
+    # Regression test: an unexpected-but-string state_rank value (e.g. a
+    # future upstream addition beyond senior/junior) previously passed
+    # straight through to LEGISLATORS_CROSSWALK_UPDATE_SQL's
+    # ::senate_state_rank_type cast, which would fail and roll back every
+    # other valid row batched in the same execute_values() call. Now
+    # validated in Python before it ever reaches SQL.
+    entry = {
+        "id": {"bioguide": "UNKNOWNRANK001", "lis": "S001"},
+        "terms": [{"type": "sen", "start": "2010-01-03", "state_rank": "president-pro-tempore"}],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("UNKNOWNRANK001", "S001", None)
+
+
+def test_crosswalk_row_picks_latest_start_among_overlapping_matches():
+    # Defensive tie-break: terms' upstream ordering isn't trusted (same
+    # reasoning as _party_history's explicit sort) -- the candidate with
+    # the latest start wins even when it isn't listed last.
+    entry = {
+        "id": {"bioguide": "TIE001", "lis": "S001"},
+        "terms": [
+            {"type": "sen", "start": "2015-01-03", "state_rank": "junior"},
+            {"type": "sen", "start": "2010-01-03", "end": "2099-01-01", "state_rank": "senior"},
+        ],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("TIE001", "S001", "JUNIOR")
+
+
+class _FakeResponse:
+    def __init__(self, text, status=200):
+        self.text = text
+        self._status = status
+
+    def raise_for_status(self):
+        if self._status >= 400:
+            raise RuntimeError(f"simulated HTTP {self._status}")
+
+
+def test_extract_legislators_crosswalk_returns_parsed_yaml(monkeypatch):
+    yaml_text = "- id:\n    bioguide: C000127\n    lis: S275\n  terms:\n  - type: sen\n    start: '2010-01-04'\n    state_rank: junior\n"
+    monkeypatch.setattr(etl._API_SESSION, "get", lambda url, timeout=None: _FakeResponse(yaml_text))
+
+    dag = etl.congress_members_etl()
+    extract_legislators_crosswalk = dag.task_dict["extract_legislators_crosswalk"].python_callable
+
+    result = extract_legislators_crosswalk()
+
+    assert result == [{"id": {"bioguide": "C000127", "lis": "S275"}, "terms": [
+        {"type": "sen", "start": "2010-01-04", "state_rank": "junior"},
+    ]}]
+
+
+def test_extract_legislators_crosswalk_returns_empty_list_on_fetch_failure(monkeypatch):
+    # Regression test: a broken/unreachable crosswalk source must never
+    # fail this task -- that would fail/retry the whole DAG run over data
+    # that's best-effort by design, blocking the member sync cd-lookup
+    # actually depends on.
+    def fake_get(url, timeout=None):
+        raise RuntimeError("simulated network failure")
+
+    monkeypatch.setattr(etl._API_SESSION, "get", fake_get)
+
+    dag = etl.congress_members_etl()
+    extract_legislators_crosswalk = dag.task_dict["extract_legislators_crosswalk"].python_callable
+
+    assert extract_legislators_crosswalk() == []
+
+
+def test_transform_builds_crosswalk_rows():
+    dag = etl.congress_members_etl()
+    transform = dag.task_dict["transform"].python_callable
+
+    result = transform([], 119, [_senator_entry(), _house_entry()])
+
+    assert set(result["crosswalk"]) == {
+        ("C000127", "S275", "JUNIOR"),
+        ("A000055", None, None),
+    }
+
+
 def test_transform_skips_malformed_member_without_failing_the_batch():
     # Regression test: _term_rows previously indexed term["chamber"] etc.
     # unguarded, so one member with an unrecognized chamber value raised
@@ -371,7 +553,7 @@ def test_transform_skips_malformed_member_without_failing_the_batch():
         }],
     }
 
-    result = transform([good_member, bad_member], 119)
+    result = transform([good_member, bad_member], 119, [])
 
     assert [row[0] for row in result["members"]] == ["GOOD001"]
     assert [row[0] for row in result["terms"]] == ["GOOD001"]
@@ -389,7 +571,7 @@ def test_transform_skips_member_with_missing_required_field():
     good_member = {"bioguideId": "GOOD001", "firstName": "Jane", "lastName": "Doe", "terms": []}
     bad_member = {"firstName": "No", "lastName": "BioguideId", "terms": []}
 
-    result = transform([good_member, bad_member], 119)
+    result = transform([good_member, bad_member], 119, [])
 
     assert [row[0] for row in result["members"]] == ["GOOD001"]
 
@@ -407,8 +589,10 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
         "extract_member_summaries",
         "filter_members_needing_sync",
         "fetch_member_details",
+        "extract_legislators_crosswalk",
         "transform",
         "load",
+        "load_crosswalk",
     }
 
     upstream = {
@@ -422,8 +606,19 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
         "extract_member_summaries", "get_current_congress",
     }
     assert upstream["fetch_member_details"] == {"filter_members_needing_sync"}
-    assert upstream["transform"] == {"fetch_member_details", "get_current_congress"}
+    # No upstream at all -- independent of current_congress/member
+    # details, so Airflow runs it concurrently with the rest of the chain.
+    assert upstream["extract_legislators_crosswalk"] == set()
+    assert upstream["transform"] == {
+        "fetch_member_details", "get_current_congress", "extract_legislators_crosswalk",
+    }
     assert upstream["load"] == {"transform"}
+    # Strictly downstream of load() too (not just transform()) -- the
+    # explicit load(...) >> load_crosswalk(...) wiring, on top of the
+    # data dependency both share on transform's output, is what
+    # guarantees the crosswalk update never runs before members/terms
+    # have already committed.
+    assert upstream["load_crosswalk"] == {"transform", "load"}
 
 
 def test_api_session_reuses_connections_and_retries_transient_failures():
