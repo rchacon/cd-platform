@@ -132,9 +132,12 @@ When addressing review comments on an open PR, break the fixes up into
 separate commits along logical lines (one commit per distinct issue/fix,
 not one commit for everything) rather than a single catch-all commit, and
 reply to each review comment on GitHub referencing the specific commit
-hash that addressed it (e.g. "Fixed in `abc1234`.") -- keeps the review
-thread traceable to the exact change that resolved it, rather than a
-generic "addressed" reply pointing at the whole PR.
+hash that addressed it, formatted as a hyperlink to the commit rather than
+just backticked text (e.g. "Fixed in
+[abc1234](https://github.com/<owner>/<repo>/commit/abc1234).") -- keeps
+the review thread traceable to the exact change that resolved it, one
+click away, rather than a generic "addressed" reply pointing at the whole
+PR.
 
 When *submitting* a code review on a PR, post each finding as its own
 separate inline review comment (anchored to the specific file/line via
