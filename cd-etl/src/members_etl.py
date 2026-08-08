@@ -315,10 +315,16 @@ def _crosswalk_row(entry: dict[str, Any]) -> tuple[str, str | None, str | None] 
     for term in entry.get("terms") or []:
         try:
             start = date.fromisoformat(term["start"])
+            end_raw = term.get("end")
+            end = date.fromisoformat(end_raw) if end_raw else None
         except (KeyError, TypeError, ValueError):
+            # A malformed end (like a malformed start) should skip just
+            # this one term, not raise out of _crosswalk_row entirely --
+            # an uncaught exception here would propagate through
+            # transform()'s crosswalk loop, which has no per-entry
+            # try/except of its own, failing the whole task (including
+            # the member/term transform it shares a task with).
             continue
-        end_raw = term.get("end")
-        end = date.fromisoformat(end_raw) if end_raw else None
         if start > today or (end is not None and today > end):
             continue
         if current_term is None or start > date.fromisoformat(current_term["start"]):

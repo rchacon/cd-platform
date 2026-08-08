@@ -396,6 +396,22 @@ def test_crosswalk_row_returns_none_for_missing_bioguide_id():
     assert etl._crosswalk_row({"id": {}, "terms": []}) is None
 
 
+def test_crosswalk_row_skips_term_with_malformed_end_instead_of_raising():
+    # Regression test: a malformed "end" value previously raised
+    # ValueError uncaught (only "start" was inside the try/except) --
+    # that would propagate out of _crosswalk_row and fail transform()'s
+    # whole crosswalk loop, including the member/term transform sharing
+    # its task. Now just skips this one term, same as a malformed start.
+    entry = {
+        "id": {"bioguide": "BADEND001", "lis": "S001"},
+        "terms": [{"type": "sen", "start": "2010-01-03", "end": "not-a-date", "state_rank": "junior"}],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("BADEND001", None, None)
+
+
 def test_crosswalk_row_picks_latest_start_among_overlapping_matches():
     # Defensive tie-break: terms' upstream ordering isn't trusted (same
     # reasoning as _party_history's explicit sort) -- the candidate with
