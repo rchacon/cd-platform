@@ -569,25 +569,6 @@ def congress_members_etl():
                 "Loaded %d members and %d terms",
                 len(rows["members"]), len(rows["terms"]),
             )
-
-            # Separately committed from the upsert above -- a crosswalk-
-            # specific failure (bad row, unexpected value) must not roll
-            # back member/term data that already committed successfully,
-            # since this crosswalk sync is best-effort by design (see
-            # extract_legislators_crosswalk's own comment).
-            if rows["crosswalk"]:
-                try:
-                    with conn.cursor() as cursor:
-                        execute_values(
-                            cursor, LEGISLATORS_CROSSWALK_UPDATE_SQL, rows["crosswalk"],
-                        )
-                    conn.commit()
-                    logger.info(
-                        "Updated LIS/seniority crosswalk for %d members", len(rows["crosswalk"]),
-                    )
-                except Exception as exc:
-                    conn.rollback()
-                    logger.error("Skipping legislators crosswalk update: %s", exc)
         finally:
             # No explicit rollback needed on the exception path: conn is
             # a fresh, never-reused connection (hook.get_conn() opens a
@@ -597,12 +578,40 @@ def congress_members_etl():
             # uncommitted work.
             conn.close()
 
+    @task
+    def load_crosswalk(rows: dict[str, list[tuple[Any, ...]]]) -> None:
+        # A separate @task, not folded into load() above, specifically so
+        # a crosswalk-specific failure gets Airflow's own task-level
+        # retries (default_args={"retries": 2}) and shows up as a failed
+        # task run, instead of being caught and swallowed into one log
+        # line the way a hand-rolled try/except inside load() would --
+        # unlike that, an uncaught exception here is allowed to propagate.
+        # This still can't block or roll back the member/term sync: this
+        # task never receives load()'s connection or touches its data,
+        # and the DAG wiring below makes it strictly downstream of load()
+        # already having committed, not just downstream of transform().
+        crosswalk_rows = rows["crosswalk"]
+        if not crosswalk_rows:
+            logger.info("No crosswalk rows to update")
+            return
+
+        hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+        conn = hook.get_conn()
+        try:
+            with conn.cursor() as cursor:
+                execute_values(cursor, LEGISLATORS_CROSSWALK_UPDATE_SQL, crosswalk_rows)
+            conn.commit()
+            logger.info("Updated LIS/seniority crosswalk for %d members", len(crosswalk_rows))
+        finally:
+            conn.close()
+
     current_congress = get_current_congress(sync_current_congress())
     summaries = extract_member_summaries(current_congress)
     member_ids = filter_members_needing_sync(summaries, current_congress)
     details = fetch_member_details(member_ids)
     crosswalk_raw = extract_legislators_crosswalk()
-    load(transform(details, current_congress, crosswalk_raw))
+    transformed = transform(details, current_congress, crosswalk_raw)
+    load(transformed) >> load_crosswalk(transformed)
 
 
 congress_members_etl()

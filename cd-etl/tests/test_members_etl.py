@@ -592,6 +592,7 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
         "extract_legislators_crosswalk",
         "transform",
         "load",
+        "load_crosswalk",
     }
 
     upstream = {
@@ -612,6 +613,12 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
         "fetch_member_details", "get_current_congress", "extract_legislators_crosswalk",
     }
     assert upstream["load"] == {"transform"}
+    # Strictly downstream of load() too (not just transform()) -- the
+    # explicit load(...) >> load_crosswalk(...) wiring, on top of the
+    # data dependency both share on transform's output, is what
+    # guarantees the crosswalk update never runs before members/terms
+    # have already committed.
+    assert upstream["load_crosswalk"] == {"transform", "load"}
 
 
 def test_api_session_reuses_connections_and_retries_transient_failures():

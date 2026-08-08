@@ -97,14 +97,19 @@ Tasks run in this order, each an Airflow TaskFlow `@task`:
 7. `transform` — builds the `members`/`member_terms` row tuples, plus a
    third `crosswalk` row list (`(bioguide_id, lis_member_id,
    senate_state_rank)`) from step 6's raw YAML entries.
-8. `load` — upserts `members`/`member_terms` (`ON CONFLICT DO UPDATE` guarded
-   by `WHERE source_hash IS DISTINCT FROM EXCLUDED.source_hash`, so
-   `updated_at` only changes on rows that actually changed), then commits a
-   **separate**, plain guarded `UPDATE` for the crosswalk rows -- never an
-   upsert, since this task never creates a `members` row itself. That
-   second commit is deliberately isolated from the first: a crosswalk-
-   specific failure is caught, logged, and rolled back on its own, without
-   touching the member/term data the first commit already landed.
+8. `load` — upserts `members`/`member_terms`. `ON CONFLICT DO UPDATE` is
+   guarded by `WHERE source_hash IS DISTINCT FROM EXCLUDED.source_hash`, so
+   `updated_at` only changes on rows that actually changed.
+9. `load_crosswalk` — a plain guarded `UPDATE` for the crosswalk rows, never
+   an upsert (this task never creates a `members` row itself -- rows for a
+   `bioguide_id` not yet synced by `load` simply match nothing). A separate
+   `@task` from `load`, not a second commit folded into it, specifically so
+   a crosswalk-specific failure gets Airflow's own task-level retries
+   (`default_args={"retries": 2}`) and shows up as a failed task run,
+   rather than being caught and swallowed into one log line. Still can't
+   block or roll back the member/term sync: `load(...) >> load_crosswalk(...)`
+   makes it strictly downstream of `load` already having committed, not
+   just downstream of `transform`'s output.
 
 ### Data model notes (`cd-etl/migrations/versions/0001_initial_schema.py`)
 

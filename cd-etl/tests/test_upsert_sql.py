@@ -294,17 +294,23 @@ class _RealConnHook:
         return _NonClosingConnWrapper(self._conn)
 
 
-def test_load_crosswalk_failure_does_not_roll_back_members_and_terms(
+def test_load_crosswalk_raises_instead_of_swallowing_and_does_not_affect_members(
     pg_conn, test_bioguide_id, monkeypatch,
 ):
-    # Key regression test for the folded-in design: a crosswalk-specific
-    # failure (here, an invalid enum value) must not roll back the
-    # members/terms data load() already committed in the same call --
-    # the crosswalk sync is best-effort, the member sync isn't.
+    # Regression test: load_crosswalk() (split out of load() into its own
+    # @task specifically so Airflow's own default_args={"retries": 2}
+    # actually applies to it) must let a failure propagate rather than
+    # catching and just logging it -- a swallowed exception would never
+    # get retried the way a genuine task failure does. Still can't affect
+    # members/terms: load() (called first here, mirroring the DAG's
+    # load(...) >> load_crosswalk(...) wiring) already committed that
+    # data in a separate task before load_crosswalk ever runs, so a
+    # crosswalk-only failure has nothing of load()'s to roll back.
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
 
     dag = etl.congress_members_etl()
     load = dag.task_dict["load"].python_callable
+    load_crosswalk = dag.task_dict["load_crosswalk"].python_callable
 
     # Unwrapped shape (plain list for party_history, not Json(...)) --
     # this is transform()'s actual output shape; load() does the Json(...)
@@ -316,10 +322,24 @@ def test_load_crosswalk_failure_does_not_roll_back_members_and_terms(
     rows = {
         "members": [member_row],
         "terms": [],
+        # A hand-built bad row, bypassing _crosswalk_row's own
+        # SENATE_STATE_RANKS validation -- exercises load_crosswalk's own
+        # failure handling directly, regardless of how unlikely that
+        # validation makes this in the real pipeline.
         "crosswalk": [(test_bioguide_id, "S999", "NOT_A_VALID_RANK")],
     }
 
     load(rows)
+
+    with pytest.raises(Exception):
+        load_crosswalk(rows)
+    # load_crosswalk's own finally block closes its connection on this
+    # path in production (hook.get_conn() returns a fresh one every
+    # call), which discards the aborted transaction with it -- this test
+    # reuses pg_conn via _NonClosingConnWrapper instead, so it needs an
+    # explicit rollback here to reach the same clean state before
+    # querying again.
+    pg_conn.rollback()
 
     with pg_conn.cursor() as cursor:
         cursor.execute(
@@ -328,8 +348,8 @@ def test_load_crosswalk_failure_does_not_roll_back_members_and_terms(
         )
         given_name, lis_member_id = cursor.fetchone()
 
-    assert given_name == "Test"  # members upsert committed despite the crosswalk failure
-    assert lis_member_id is None  # crosswalk update itself rolled back, not applied
+    assert given_name == "Test"  # members upsert committed independently, in a prior task
+    assert lis_member_id is None  # crosswalk update itself rolled back, never applied
 
 
 def test_current_members_exposes_state_rank(
