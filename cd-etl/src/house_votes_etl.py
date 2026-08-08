@@ -275,6 +275,20 @@ def house_votes_etl():
     def filter_votes_needing_sync(
         summaries: list[dict[str, Any]], congress: int,
     ) -> dict[str, Any]:
+        """Narrows summaries down to the votes later tasks actually need to sync.
+
+        A raw summary is dropped (not returned in "votes") if it's
+        malformed, already has a roll_calls row for its (session,
+        vote_number), or is purely procedural (no bill or amendment
+        reference at all, e.g. "Elected Speaker").
+
+        Returns a dict with:
+          "votes": list of raw summary dicts (unvalidated -- re-validated
+            by resolve_bills) needing a sync this run.
+          "known_bioguide_ids": list of every bioguide_id currently in
+            members, passed through so transform() can defensively drop
+            a member vote referencing someone not in members yet.
+        """
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         known_votes = {
             (row[0], row[1])
