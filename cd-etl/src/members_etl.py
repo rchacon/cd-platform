@@ -320,6 +320,7 @@ def _crosswalk_row(entry: dict[str, Any]) -> tuple[str, str | None, str | None] 
 
     today = date.today()
     current_term = None
+    current_start = None
     for term in entry.get("terms") or []:
         try:
             start = date.fromisoformat(term["start"])
@@ -335,8 +336,12 @@ def _crosswalk_row(entry: dict[str, Any]) -> tuple[str, str | None, str | None] 
             continue
         if start > today or (end is not None and today > end):
             continue
-        if current_term is None or start > date.fromisoformat(current_term["start"]):
+        # current_start caches the winning candidate's already-parsed
+        # start, rather than re-parsing current_term["start"] from
+        # scratch on every remaining iteration.
+        if current_term is None or start > current_start:
             current_term = term
+            current_start = start
 
     if current_term is None or current_term.get("type") != "sen":
         # House members (and anyone with no resolvable current term) get
