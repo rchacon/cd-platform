@@ -125,6 +125,14 @@ PARTY_MAP = {
     "Green": "GREEN",
 }
 
+# Matches senate_state_rank_type's own two values (migration 0003).
+# Validated here, in Python, rather than trusting the ::senate_state_rank_type
+# cast in LEGISLATORS_CROSSWALK_UPDATE_SQL to reject anything else -- that
+# cast runs inside one batched execute_values() call covering every
+# crosswalk row, so one unexpected value there would fail (and roll back)
+# every other valid row in the same run, not just the bad one.
+SENATE_STATE_RANKS = {"SENIOR", "JUNIOR"}
+
 logger = logging.getLogger(__name__)
 
 
@@ -338,7 +346,14 @@ def _crosswalk_row(entry: dict[str, Any]) -> tuple[str, str | None, str | None] 
 
     lis_member_id = entry["id"].get("lis")
     raw_rank = current_term.get("state_rank")
-    senate_state_rank = raw_rank.upper() if raw_rank else None
+    # isinstance guard, not just truthiness -- raw_rank.upper() would raise
+    # AttributeError uncaught on a non-string value, with nothing above
+    # this function to catch it (same failure mode the start/end
+    # date-parsing try/except above exists to avoid). Anything that
+    # doesn't normalize to a real SENATE_STATE_RANKS value is dropped to
+    # None rather than stored -- see SENATE_STATE_RANKS's own comment.
+    normalized_rank = raw_rank.upper() if isinstance(raw_rank, str) else None
+    senate_state_rank = normalized_rank if normalized_rank in SENATE_STATE_RANKS else None
     return (bioguide_id, lis_member_id, senate_state_rank)
 
 

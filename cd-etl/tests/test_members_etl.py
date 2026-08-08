@@ -412,6 +412,39 @@ def test_crosswalk_row_skips_term_with_malformed_end_instead_of_raising():
     assert result == ("BADEND001", None, None)
 
 
+def test_crosswalk_row_drops_non_string_state_rank_instead_of_raising():
+    # Regression test: raw_rank.upper() previously only guarded against a
+    # falsy state_rank, not a non-string one -- a truthy non-string value
+    # (a YAML formatting quirk) would raise AttributeError uncaught, with
+    # nothing above _crosswalk_row to catch it, failing the whole
+    # transform() task including the member/term transform sharing it.
+    entry = {
+        "id": {"bioguide": "BADRANK001", "lis": "S001"},
+        "terms": [{"type": "sen", "start": "2010-01-03", "state_rank": {"unexpected": "shape"}}],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("BADRANK001", "S001", None)
+
+
+def test_crosswalk_row_drops_unrecognized_state_rank_value():
+    # Regression test: an unexpected-but-string state_rank value (e.g. a
+    # future upstream addition beyond senior/junior) previously passed
+    # straight through to LEGISLATORS_CROSSWALK_UPDATE_SQL's
+    # ::senate_state_rank_type cast, which would fail and roll back every
+    # other valid row batched in the same execute_values() call. Now
+    # validated in Python before it ever reaches SQL.
+    entry = {
+        "id": {"bioguide": "UNKNOWNRANK001", "lis": "S001"},
+        "terms": [{"type": "sen", "start": "2010-01-03", "state_rank": "president-pro-tempore"}],
+    }
+
+    result = etl._crosswalk_row(entry)
+
+    assert result == ("UNKNOWNRANK001", "S001", None)
+
+
 def test_crosswalk_row_picks_latest_start_among_overlapping_matches():
     # Defensive tie-break: terms' upstream ordering isn't trusted (same
     # reasoning as _party_history's explicit sort) -- the candidate with
