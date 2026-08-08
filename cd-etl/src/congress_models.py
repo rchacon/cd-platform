@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -90,3 +91,112 @@ class CongressCurrent(_CamelModel):
 
 class CongressCurrentResponse(_CamelModel):
     congress: CongressCurrent
+
+
+class HouseVoteListItem(_CamelModel):
+    roll_call_number: int
+    session_number: int
+    result: str
+
+    # Kept as datetime, not date -- pydantic's exact date-only coercion
+    # behavior for a full offset-aware string like
+    # "2025-09-08T18:56:00-04:00" isn't something this codebase has
+    # verified, so the .date() extraction happens explicitly in Python
+    # instead (see house_votes_etl.py). That also preserves the vote's
+    # own Eastern local calendar date rather than risking a UTC-shift
+    # landing a late-evening vote on the wrong day.
+    start_date: datetime
+
+    # A vote references either a bill directly, an amendment (resolved
+    # back to its bill via a separate API call), or neither (a purely
+    # procedural motion, e.g. "Elected Speaker") -- never both.
+    legislation_type: str | None = None
+    legislation_number: str | None = None
+    amendment_type: str | None = None
+    amendment_number: str | None = None
+
+
+class HouseVoteDetail(_CamelModel):
+    # The only field this endpoint is actually fetched for -- result and
+    # startDate are already present on the list item (see
+    # HouseVoteListItem), so they aren't duplicated here.
+    vote_question: str
+
+
+class HouseVoteDetailResponse(_CamelModel):
+    house_roll_call_vote: HouseVoteDetail
+
+
+class HouseVoteMemberVote(_CamelModel):
+    # The member-votes sub-resource uses "bioguideID" (capital ID),
+    # inconsistent with the rest of the API's "bioguideId" convention and
+    # with to_camel's own output for this field name -- needs an explicit
+    # alias rather than the generator.
+    bioguide_id: str = Field(alias="bioguideID")
+    vote_cast: str
+
+
+class HouseRollCallVoteMemberVotes(_CamelModel):
+    # Deliberately loose (list[dict], not list[HouseVoteMemberVote]) --
+    # transform() validates each cast itself, one at a time, so one
+    # malformed cast can be skipped without losing every other cast in
+    # the same roll call. Validating the whole list here would make that
+    # per-item fault isolation impossible: one bad element would fail
+    # the envelope's own model_validate and drop the entire roll call.
+    results: list[dict[str, Any]] = []
+
+
+class HouseVoteMemberVotesResponse(_CamelModel):
+    house_roll_call_vote_member_votes: HouseRollCallVoteMemberVotes
+
+
+class PolicyArea(_CamelModel):
+    name: str | None = None
+
+
+class BillDetail(_CamelModel):
+    congress: int
+    type: str
+    number: str
+    policy_area: PolicyArea | None = None
+    update_date: datetime
+
+    @property
+    def policy_area_name(self) -> str | None:
+        # Flattens the nested policy_area.name (itself nullable -- not
+        # every bill has been assigned one) into a plain scalar, so
+        # callers don't each need to repeat the None-check.
+        return self.policy_area.name if self.policy_area else None
+
+
+class BillDetailResponse(_CamelModel):
+    bill: BillDetail
+
+
+class LegislativeSubject(_CamelModel):
+    name: str
+    update_date: datetime | None = None
+
+
+class BillSubjects(_CamelModel):
+    legislative_subjects: list[LegislativeSubject] = []
+
+
+class BillSubjectsResponse(_CamelModel):
+    subjects: BillSubjects
+
+
+class AmendedBill(_CamelModel):
+    congress: int
+    type: str
+    number: str
+
+
+class AmendmentDetail(_CamelModel):
+    # None is a real, expected case -- not every amendment resolves to a
+    # specific bill.
+    amended_bill: AmendedBill | None = None
+
+
+class AmendmentResponse(_CamelModel):
+    amendment: AmendmentDetail

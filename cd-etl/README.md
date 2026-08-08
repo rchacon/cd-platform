@@ -1,12 +1,16 @@
 # CD-ETL
 
-Airflow ETL that syncs House and Senate members of the current Congress from
-[api.congress.gov](https://api.congress.gov) into the `members`/`member_terms`
-tables defined in `migrations/versions/0001_initial_schema.py`.
+Airflow ETL that syncs House and Senate members, and House roll call votes,
+of the current Congress from [api.congress.gov](https://api.congress.gov)
+into the schema defined in `migrations/versions/`.
 
 ## What it does
 
-`src/members_etl.py` defines a single TaskFlow DAG, `congress_members_etl`:
+`src/congress_api.py` (session/pagination/concurrent-fetch HTTP helpers)
+and `src/congress_models.py` (Pydantic models for the API's response
+shapes) are shared, DAG-agnostic modules every DAG below builds on.
+
+### `congress_members_etl` (`src/members_etl.py`)
 
 1. `sync_current_congress` — fetches `/congress/current` and upserts the
    `congresses` table (so the app never relies on a hardcoded Congress number).
@@ -18,9 +22,29 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
 4. `filter_members_needing_sync` — skips the expensive per-member detail call
    for anyone whose `updateDate` hasn't changed since our last sync.
 5. `fetch_member_details` — fetches full profile data for whatever's left.
-6. `transform` — builds `members`/`member_terms` rows.
+6. `transform` — validates each raw response into a Pydantic model and
+   builds `members`/`member_terms` rows.
 7. `load` — upserts both tables; updates are guarded by `source_hash` so
    `updated_at` only bumps when something actually changed.
+
+### `house_votes_etl` (`src/house_votes_etl.py`)
+
+Syncs House roll call votes into `roll_calls`/`roll_call_member_votes`,
+populating bills on demand rather than proactively -- see the module's
+own docstring for why.
+
+1. `get_current_congress` — same query `congress_members_etl` uses.
+2. `extract_house_vote_summaries` — pages through both sessions' vote lists.
+3. `filter_votes_needing_sync` — skips already-synced votes and drops
+   purely procedural ones.
+4. `resolve_bills` — resolves each vote's `bill_id` (syncing the bill on
+   demand if it's new), sequentially rather than concurrently so two
+   votes referencing the same new bill don't race an insert.
+5. `fetch_member_votes` — concurrently fetches each vote's individual
+   member casts.
+6. `transform` — validates and normalizes vote casts, dropping any vote
+   whose member-vote fetch failed rather than storing it incomplete.
+7. `load` — upserts `roll_calls` and `roll_call_member_votes`.
 
 ## Prerequisites
 
@@ -50,7 +74,10 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
    and this project's schema migrations, then starts the API server,
    scheduler, and dag-processor together. Open the UI at
    `http://localhost:8080`, unpause `congress_members_etl`, and trigger it.
-   `cd-etl/src` is bind-mounted, so DAG edits show up without rebuilding.
+   Once it's synced members, unpause and trigger `house_votes_etl` too --
+   it looks up `members.bioguide_id` for each vote cast, so members needs
+   to run first. `cd-etl/src` is bind-mounted, so DAG edits show up
+   without rebuilding.
 
 3. Optionally, seed real data instead of running the DAG. `local_seed.sql`
    is gitignored (not tracked in git -- from a previous run of your own, or
@@ -61,14 +88,18 @@ tables defined in `migrations/versions/0001_initial_schema.py`.
      -f - < local_seed.sql
    ```
 
-   Otherwise there's nothing to load yet -- run the DAG once (step 2 above)
-   to populate real data first. Once it has, generate `local_seed.sql` for
-   next time (only needed when a schema change alters `members`/
-   `member_terms`'s own columns, not for unrelated schema changes):
+   Otherwise there's nothing to load yet -- run the DAGs once (step 2
+   above; `house_votes_etl` too, if you want its tables in the seed) to
+   populate real data first. Once they have, generate `local_seed.sql`
+   for next time (only needed when a schema change alters one of these
+   tables' own columns, or you want a fresher real-data snapshot).
+   `congresses` is deliberately excluded -- migration 0001 already seeds
+   it, so a fresh schema always has it regardless of this file:
 
    ```bash
    docker compose exec -T postgres pg_dump -U postgres -d congressional_app \
-     --data-only -t members -t member_terms > local_seed.sql
+     --data-only -t members -t member_terms -t bills -t bill_subjects \
+     -t roll_calls -t roll_call_member_votes > local_seed.sql
    ```
 
 ## Releasing
