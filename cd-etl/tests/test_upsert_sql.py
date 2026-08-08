@@ -196,6 +196,160 @@ def _insert_member_term(pg_conn, bioguide_id: str, congress: int, end_year) -> N
         )
 
 
+def _get_crosswalk(pg_conn, bioguide_id: str):
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT lis_member_id, senate_state_rank, updated_at FROM members WHERE bioguide_id = %s",
+            (bioguide_id,),
+        )
+        return cursor.fetchone()
+
+
+def test_legislators_crosswalk_update_skips_when_unchanged(pg_conn, test_bioguide_id):
+    with pg_conn.cursor() as cursor:
+        execute_values(cursor, etl.MEMBERS_UPSERT_SQL, [_member_row(test_bioguide_id, "hash-a")])
+        execute_values(
+            cursor, etl.LEGISLATORS_CROSSWALK_UPDATE_SQL,
+            [(test_bioguide_id, "S275", "JUNIOR")],
+        )
+    pg_conn.commit()
+    _, _, first_updated_at = _get_crosswalk(pg_conn, test_bioguide_id)
+
+    time.sleep(0.01)
+    with pg_conn.cursor() as cursor:
+        execute_values(
+            cursor, etl.LEGISLATORS_CROSSWALK_UPDATE_SQL,
+            [(test_bioguide_id, "S275", "JUNIOR")],
+        )
+    pg_conn.commit()
+    lis_member_id, senate_state_rank, second_updated_at = _get_crosswalk(pg_conn, test_bioguide_id)
+
+    assert (lis_member_id, senate_state_rank) == ("S275", "JUNIOR")
+    assert second_updated_at == first_updated_at
+
+
+def test_legislators_crosswalk_update_bumps_when_changed(pg_conn, test_bioguide_id):
+    with pg_conn.cursor() as cursor:
+        execute_values(cursor, etl.MEMBERS_UPSERT_SQL, [_member_row(test_bioguide_id, "hash-a")])
+        execute_values(
+            cursor, etl.LEGISLATORS_CROSSWALK_UPDATE_SQL,
+            [(test_bioguide_id, "S275", "JUNIOR")],
+        )
+    pg_conn.commit()
+    _, _, first_updated_at = _get_crosswalk(pg_conn, test_bioguide_id)
+
+    time.sleep(0.01)
+    with pg_conn.cursor() as cursor:
+        # Re-elected to a senior seat, or corrected data -- state_rank
+        # changes for the same bioguide_id/lis_member_id.
+        execute_values(
+            cursor, etl.LEGISLATORS_CROSSWALK_UPDATE_SQL,
+            [(test_bioguide_id, "S275", "SENIOR")],
+        )
+    pg_conn.commit()
+    lis_member_id, senate_state_rank, second_updated_at = _get_crosswalk(pg_conn, test_bioguide_id)
+
+    assert senate_state_rank == "SENIOR"
+    assert second_updated_at > first_updated_at
+
+
+def test_legislators_crosswalk_update_noops_for_unknown_bioguide_id(pg_conn):
+    # This is a plain guarded UPDATE, not an upsert -- a crosswalk entry
+    # for a bioguide_id not yet in members must match zero rows, not
+    # raise or create one (member creation stays MEMBERS_UPSERT_SQL's job).
+    with pg_conn.cursor() as cursor:
+        execute_values(
+            cursor, etl.LEGISLATORS_CROSSWALK_UPDATE_SQL,
+            [("NOTREAL01", "S001", "JUNIOR")],
+        )
+    pg_conn.commit()  # no error
+
+
+class _NonClosingConnWrapper:
+    # load()'s finally block closes the connection it got from
+    # hook.get_conn() -- this wrapper lets a test hand load() the shared
+    # pg_conn fixture's real connection without that close() call
+    # breaking the fixture's own teardown/later assertions.
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        pass
+
+
+class _RealConnHook:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def get_conn(self):
+        return _NonClosingConnWrapper(self._conn)
+
+
+def test_load_crosswalk_failure_does_not_roll_back_members_and_terms(
+    pg_conn, test_bioguide_id, monkeypatch,
+):
+    # Key regression test for the folded-in design: a crosswalk-specific
+    # failure (here, an invalid enum value) must not roll back the
+    # members/terms data load() already committed in the same call --
+    # the crosswalk sync is best-effort, the member sync isn't.
+    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
+
+    dag = etl.congress_members_etl()
+    load = dag.task_dict["load"].python_callable
+
+    # Unwrapped shape (plain list for party_history, not Json(...)) --
+    # this is transform()'s actual output shape; load() does the Json(...)
+    # wrapping itself via _wrap_party_history_for_insert.
+    member_row = (
+        test_bioguide_id, "Test", None, "Member", None, None,
+        1970, None, None, None, None, [], f"hash-{test_bioguide_id}", None,
+    )
+    rows = {
+        "members": [member_row],
+        "terms": [],
+        "crosswalk": [(test_bioguide_id, "S999", "NOT_A_VALID_RANK")],
+    }
+
+    load(rows)
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT given_name, lis_member_id FROM members WHERE bioguide_id = %s",
+            (test_bioguide_id,),
+        )
+        given_name, lis_member_id = cursor.fetchone()
+
+    assert given_name == "Test"  # members upsert committed despite the crosswalk failure
+    assert lis_member_id is None  # crosswalk update itself rolled back, not applied
+
+
+def test_current_members_exposes_state_rank(
+    pg_conn, test_bioguide_id, current_congress_number,
+):
+    _insert_member_term(pg_conn, test_bioguide_id, current_congress_number, None)
+    with pg_conn.cursor() as cursor:
+        execute_values(
+            cursor, etl.LEGISLATORS_CROSSWALK_UPDATE_SQL,
+            [(test_bioguide_id, "S001", "SENIOR")],
+        )
+    pg_conn.commit()
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT state_rank FROM current_members WHERE bioguide_id = %s", (test_bioguide_id,),
+        )
+        assert cursor.fetchone()[0] == "SENIOR"
+
+
 def test_current_members_excludes_prior_year_end_year(
     pg_conn, test_bioguide_id, current_congress_number, current_year
 ):

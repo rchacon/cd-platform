@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Any
 
 import congress_api
+import yaml
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 from congress_models import (
@@ -19,6 +20,17 @@ from pydantic import ValidationError
 
 CONGRESS_MEMBERS_API = "https://api.congress.gov/v3/member/"
 CONGRESS_CURRENT_CONGRESS_API = "https://api.congress.gov/v3/congress/current"
+
+# Not api.congress.gov -- a separate, public, unauthenticated source (see
+# _crosswalk_row's own comment for why this crosswalk can't come from
+# Congress.gov itself). Fetched directly with _API_SESSION.get(...), not
+# congress_api.api_get, since that helper hardcodes the Congress.gov API
+# key header and a format=json param, neither of which applies here (this
+# is YAML, not JSON).
+LEGISLATORS_CROSSWALK_URL = (
+    "https://raw.githubusercontent.com/unitedstates/congress-legislators/"
+    "main/legislators-current.yaml"
+)
 
 PAGE_LIMIT = 250
 DETAIL_FETCH_WORKERS = 10
@@ -77,6 +89,23 @@ MEMBER_TERMS_UPSERT_SQL = """
         synced_at = NOW(),
         updated_at = NOW()
     WHERE member_terms.source_hash IS DISTINCT FROM EXCLUDED.source_hash
+"""
+
+# A plain guarded UPDATE, not an upsert -- this never creates a members row
+# (that's MEMBERS_UPSERT_SQL's job, above); a crosswalk entry for a
+# bioguide_id not yet in members simply matches zero rows. No source_hash
+# column for this pair (only two nullable fields, cheap to compare
+# directly) -- the IS DISTINCT FROM guard alone is enough to keep
+# updated_at from bumping on every unchanged row every day.
+LEGISLATORS_CROSSWALK_UPDATE_SQL = """
+    UPDATE members SET
+        lis_member_id = v.lis_member_id,
+        senate_state_rank = v.senate_state_rank::senate_state_rank_type,
+        updated_at = NOW()
+    FROM (VALUES %s) AS v(bioguide_id, lis_member_id, senate_state_rank)
+    WHERE members.bioguide_id = v.bioguide_id
+      AND (members.lis_member_id IS DISTINCT FROM v.lis_member_id
+           OR members.senate_state_rank IS DISTINCT FROM v.senate_state_rank::senate_state_rank_type)
 """
 
 CHAMBER_MAP = {
@@ -240,9 +269,10 @@ def _term_rows(member: MemberDetail, congress: int) -> list[tuple[Any, ...]]:
     for term in member.terms:
         # The API returns a member's full term history, but cd-lookup only
         # needs "who currently represents this district" -- so only the
-        # current Congress's term is kept. This is why current_members
-        # can't derive Senior/Junior Senator status (see issue #3): that
-        # requires continuous-service history this deliberately discards.
+        # current Congress's term is kept. (Senior/Junior Senator status --
+        # issue #3 -- doesn't need this history either: see _crosswalk_row
+        # below, sourced from a separate, editorially-maintained crosswalk
+        # instead of derived from continuous-service math.)
         if term.congress != congress:
             continue
 
@@ -264,6 +294,46 @@ def _term_rows(member: MemberDetail, congress: int) -> list[tuple[Any, ...]]:
         ))
 
     return rows
+
+
+def _crosswalk_row(entry: dict[str, Any]) -> tuple[str, str | None, str | None] | None:
+    # legislators-current.yaml has no per-Congress "current term" marker
+    # the way Congress.gov's own member detail does -- terms is instead
+    # this person's full career history, so the current one is picked by
+    # date: the entry whose [start, end] window contains today (a missing
+    # end on the newest term is treated as open-ended, not excluded).
+    # Ties aren't broken by trusting list order -- terms' ordering isn't
+    # documented as guaranteed, same reasoning as _party_history's
+    # explicit sort above -- the candidate with the latest start wins.
+    try:
+        bioguide_id = entry["id"]["bioguide"]
+    except (KeyError, TypeError):
+        return None
+
+    today = date.today()
+    current_term = None
+    for term in entry.get("terms") or []:
+        try:
+            start = date.fromisoformat(term["start"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        end_raw = term.get("end")
+        end = date.fromisoformat(end_raw) if end_raw else None
+        if start > today or (end is not None and today > end):
+            continue
+        if current_term is None or start > date.fromisoformat(current_term["start"]):
+            current_term = term
+
+    if current_term is None or current_term.get("type") != "sen":
+        # House members (and anyone with no resolvable current term) get
+        # no lis_member_id/senate_state_rank -- id.lis and terms[].state_rank
+        # are Senate-only concepts in this source.
+        return (bioguide_id, None, None)
+
+    lis_member_id = entry["id"].get("lis")
+    raw_rank = current_term.get("state_rank")
+    senate_state_rank = raw_rank.upper() if raw_rank else None
+    return (bioguide_id, lis_member_id, senate_state_rank)
 
 
 @dag(
@@ -386,8 +456,27 @@ def congress_members_etl():
         return details
 
     @task
+    def extract_legislators_crosswalk() -> list[dict[str, Any]]:
+        # Independent of current_congress/member details -- Airflow runs
+        # this concurrently with the rest of the chain above. Deliberately
+        # never raises: a broken/unreachable crosswalk source degrades to
+        # "no crosswalk update today" (load() below just gets an empty
+        # list), not a failed/retried run of the member sync cd-lookup
+        # actually depends on.
+        try:
+            response = _API_SESSION.get(LEGISLATORS_CROSSWALK_URL, timeout=30)
+            response.raise_for_status()
+            legislators = yaml.safe_load(response.text) or []
+        except Exception as exc:
+            logger.error("Skipping legislators crosswalk sync: %s", exc)
+            return []
+
+        logger.info("Fetched %d legislators for the LIS/seniority crosswalk", len(legislators))
+        return legislators
+
+    @task
     def transform(
-        members: list[dict[str, Any]], congress: int
+        members: list[dict[str, Any]], congress: int, crosswalk_raw: list[dict[str, Any]],
     ) -> dict[str, list[tuple[Any, ...]]]:
         member_rows = []
         term_rows = []
@@ -424,12 +513,23 @@ def congress_members_etl():
             member_rows.append(member_row)
             term_rows.extend(member_term_rows)
 
+        crosswalk_rows = []
+        dropped_crosswalk_count = 0
+        for entry in crosswalk_raw:
+            row = _crosswalk_row(entry)
+            if row is None:
+                dropped_crosswalk_count += 1
+                continue
+            crosswalk_rows.append(row)
+
         logger.info(
             "Transformed %d members into %d term rows "
-            "(%d party_history entries dropped for missing start_year)",
+            "(%d party_history entries dropped for missing start_year), "
+            "%d crosswalk rows (%d dropped for missing bioguide_id)",
             len(member_rows), len(term_rows), dropped_party_history_count,
+            len(crosswalk_rows), dropped_crosswalk_count,
         )
-        return {"members": member_rows, "terms": term_rows}
+        return {"members": member_rows, "terms": term_rows, "crosswalk": crosswalk_rows}
 
     @task
     def load(rows: dict[str, list[tuple[Any, ...]]]) -> None:
@@ -448,6 +548,25 @@ def congress_members_etl():
                 "Loaded %d members and %d terms",
                 len(rows["members"]), len(rows["terms"]),
             )
+
+            # Separately committed from the upsert above -- a crosswalk-
+            # specific failure (bad row, unexpected value) must not roll
+            # back member/term data that already committed successfully,
+            # since this crosswalk sync is best-effort by design (see
+            # extract_legislators_crosswalk's own comment).
+            if rows["crosswalk"]:
+                try:
+                    with conn.cursor() as cursor:
+                        execute_values(
+                            cursor, LEGISLATORS_CROSSWALK_UPDATE_SQL, rows["crosswalk"],
+                        )
+                    conn.commit()
+                    logger.info(
+                        "Updated LIS/seniority crosswalk for %d members", len(rows["crosswalk"]),
+                    )
+                except Exception as exc:
+                    conn.rollback()
+                    logger.error("Skipping legislators crosswalk update: %s", exc)
         finally:
             # No explicit rollback needed on the exception path: conn is
             # a fresh, never-reused connection (hook.get_conn() opens a
@@ -461,7 +580,8 @@ def congress_members_etl():
     summaries = extract_member_summaries(current_congress)
     member_ids = filter_members_needing_sync(summaries, current_congress)
     details = fetch_member_details(member_ids)
-    load(transform(details, current_congress))
+    crosswalk_raw = extract_legislators_crosswalk()
+    load(transform(details, current_congress, crosswalk_raw))
 
 
 congress_members_etl()
