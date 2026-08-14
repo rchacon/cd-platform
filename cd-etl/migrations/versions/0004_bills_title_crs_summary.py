@@ -22,10 +22,16 @@ by the ETL as the entry with the latest actionDate. Not modeled as its own
 child table: unlike bill_subjects, nothing in this project's scope needs
 every historical summary version, only the current one.
 
-source_hash's inputs (documented on the column in 0002) now also cover
-title and crs_summary, so a change to either bumps updated_at the same way
-a policy_area change already does -- no schema change needed for that, only
-the ETL computing the hash needs to include the new fields.
+source_hash's inputs now also cover title and crs_summary, so a change to
+either bumps updated_at the same way a policy_area change already does --
+no schema change needed for the hashing itself, only the ETL computing it
+needs to include the new fields. 0002's own inline SQL comment
+documenting source_hash's inputs is left as-is rather than edited (same
+precedent 0003 already set for not editing a prior migration's own
+comment -- see that file's docstring): this migration instead issues a
+live COMMENT ON COLUMN, which actually supersedes it in the schema
+Postgres itself reports, rather than just a comment in a file nothing
+re-reads at runtime.
 """
 from typing import Sequence, Union
 
@@ -48,8 +54,24 @@ def upgrade() -> None:
         """
     )
 
+    op.execute(
+        """
+        COMMENT ON COLUMN bills.source_hash IS
+            'SHA-256 hash of the normalized source fields: congress, '
+            'bill_type, bill_number, title, policy_area, crs_summary'
+        """
+    )
+
 
 def downgrade() -> None:
+    op.execute(
+        """
+        COMMENT ON COLUMN bills.source_hash IS
+            'SHA-256 hash of the normalized source fields: congress, '
+            'bill_type, bill_number, policy_area'
+        """
+    )
+
     op.execute(
         """
         ALTER TABLE bills
