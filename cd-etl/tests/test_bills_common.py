@@ -255,3 +255,31 @@ def test_sync_bill_preserves_prior_subjects_when_subjects_response_is_empty(
     )
 
     assert _get_bill_subjects(pg_conn, bill_id) == ["Health", "Insurance"]
+
+
+def test_sync_bill_preserves_prior_values_when_refresh_returns_nulls(
+    pg_conn, test_bill_number, monkeypatch,
+):
+    # Regression test: a refresh where title/policy_area/crs_summary all
+    # come back null (a degraded fetch, not a real upstream change) must
+    # not blank out a previously-synced bill's real values.
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("A Title", "Health", ["Health"], [("2025-01-01", "A summary")]),
+    )
+    bill_id = bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+    )
+
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get(None, None, ["Health"], []),
+    )
+    bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+    )
+
+    title, policy_area, crs_summary, _ = _get_bill_row(pg_conn, bill_id)
+    assert title == "A Title"
+    assert policy_area == "Health"
+    assert crs_summary == "A summary"

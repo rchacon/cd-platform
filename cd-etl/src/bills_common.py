@@ -40,9 +40,17 @@ BILLS_UPSERT_SQL = """
     )
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (congress, bill_type, bill_number) DO UPDATE SET
-        title = EXCLUDED.title,
-        policy_area = EXCLUDED.policy_area,
-        crs_summary = EXCLUDED.crs_summary,
+        -- COALESCE, not a bare overwrite: title/policy_area/crs_summary
+        -- can each legitimately come back NULL from a single degraded
+        -- fetch (a missing title, an unassigned policy_area, or a
+        -- /summaries response with no usable text -- see
+        -- _latest_crs_summary) without the bill itself having actually
+        -- lost that data upstream. A bare EXCLUDED assignment would let
+        -- one bad refresh permanently blank out a previously-good value;
+        -- COALESCE only ever replaces it with an actual new value.
+        title = COALESCE(EXCLUDED.title, bills.title),
+        policy_area = COALESCE(EXCLUDED.policy_area, bills.policy_area),
+        crs_summary = COALESCE(EXCLUDED.crs_summary, bills.crs_summary),
         source_hash = EXCLUDED.source_hash,
         source_updated_at = EXCLUDED.source_updated_at,
         synced_at = NOW(),
