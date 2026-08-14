@@ -91,6 +91,53 @@ def test_openapi_json_has_expected_title_and_version():
     assert schema["info"]["version"] == "dev"
 
 
+def test_openapi_json_description_documents_auth_and_error_contract():
+    # cd-platform#46: this used to live only as hand-written prose in
+    # cd-website's api.astro, disconnected from the code it describes --
+    # pins that the OpenAPI spec itself now carries it.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    description = schema["info"]["description"]
+    assert "X-Api-Key" in description
+    assert "RFC 9457" in description
+    assert "application/problem+json" in description
+
+
+def test_openapi_json_documents_production_server_url():
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    assert schema["servers"] == [
+        {"url": "https://api.civicdog.com/v1", "description": "Production"}
+    ]
+
+
+def test_openapi_json_documents_api_key_security_scheme():
+    # X-Api-Key is enforced by API Gateway, not a FastAPI Security(...)
+    # dependency -- pins that _custom_openapi() still documents it by
+    # hand, since nothing derives it automatically from the routes.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    scheme = schema["components"]["securitySchemes"]["ApiKeyAuth"]
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    assert scheme["name"] == "X-Api-Key"
+    assert schema["security"] == [{"ApiKeyAuth": []}]
+
+
+def test_openapi_members_route_documents_404_vs_vacancy_distinction():
+    # cd-platform#46: this behavior used to only be explained in
+    # cd-website's prose and an internal code comment -- pins that the
+    # route's own OpenAPI description now covers it too.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    description = schema["paths"]["/members"]["get"]["description"]
+    assert "vacant" in description.lower()
+
+
 def test_openapi_members_response_documents_person_fields():
     # cd-platform#40: /members' 200 response used to be an undocumented
     # {"type": "object", "additionalProperties": true} placeholder --
