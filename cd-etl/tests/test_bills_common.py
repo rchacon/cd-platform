@@ -230,3 +230,28 @@ def test_sync_bill_degrades_gracefully_when_summaries_fetch_fails(
     assert policy_area == "Health"
     assert crs_summary is None
     assert _get_bill_subjects(pg_conn, bill_id) == ["Health"]
+
+
+def test_sync_bill_preserves_prior_subjects_when_subjects_response_is_empty(
+    pg_conn, test_bill_number, monkeypatch,
+):
+    # Regression test: an empty/degraded /subjects response on a refresh
+    # must not wipe a bill's real, previously-synced subjects.
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("A Title", "Health", ["Health", "Insurance"], []),
+    )
+    bill_id = bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+    )
+    assert _get_bill_subjects(pg_conn, bill_id) == ["Health", "Insurance"]
+
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("A Title", "Health", [], []),
+    )
+    bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+    )
+
+    assert _get_bill_subjects(pg_conn, bill_id) == ["Health", "Insurance"]

@@ -139,12 +139,20 @@ def sync_bill(
         )
         bill_id = cursor.fetchone()[0]
 
-        cursor.execute("DELETE FROM bill_subjects WHERE bill_id = %s", (bill_id,))
         # Deduped defensively -- the /subjects sub-resource's own
         # pagination.count was observed live to not match its actual
-        # legislativeSubjects array length.
+        # legislativeSubjects array length. The delete+reinsert only runs
+        # when there's something to replace it with: an empty response is
+        # far more likely a transient/degraded /subjects fetch (this
+        # sub-resource is already known to be inconsistent) than a bill
+        # legitimately losing every subject term at once, and this
+        # function now runs repeatedly against the same bill (bills_etl's
+        # daily refresh), not just once, so a single bad response would
+        # otherwise permanently wipe a bill's real subjects until some
+        # later refresh happened to restore them.
         subject_names = list(dict.fromkeys(s.name for s in subjects.legislative_subjects))
         if subject_names:
+            cursor.execute("DELETE FROM bill_subjects WHERE bill_id = %s", (bill_id,))
             execute_values(
                 cursor, BILL_SUBJECTS_INSERT_SQL,
                 [(bill_id, name) for name in subject_names],
