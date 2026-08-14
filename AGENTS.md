@@ -123,24 +123,40 @@ though a bill's `policy_area` can be reassigned and its `legislativeSubjects`
 can be added or removed over its lifetime. `bills_etl` is the missing
 refresh path, on its own `@daily` schedule:
 
-1. `get_current_congress` — same query every other DAG's task of the same
-   name uses.
+1. `get_current_congress` — delegates to `congress_api.get_current_congress()`,
+   shared with `house_votes_etl`'s identical task (both take no upstream
+   argument, unlike `members_etl`'s own copy -- see that module's task of
+   the same name).
 2. `extract_known_bills` — `SELECT bill_type, bill_number FROM bills WHERE
-   congress = %s`. Deliberately refresh-only, not a discovery DAG: it only
-   re-syncs bills already present in the `bills` table, the same "only sync
-   bills something actually references" precedent `house_votes_etl`'s own
-   module docstring already established (of 18,140 bills in the 119th
-   Congress, only a few hundred are ever referenced by a vote --
-   proactively discovering every bill in a Congress via a new
-   `/bill/{congress}` list call would reintroduce that exact
-   wasted-API-call problem). New-bill discovery stays where it already is:
-   `house_votes_etl`'s (and, eventually, a future `senate_votes_etl`'s)
-   on-demand `get_or_sync_bill()` path.
-3. `refresh_bills` — calls `bills_common.sync_bill()` for each known bill,
-   sequentially (each bill's own upsert already commits independently, and
-   unlike `house_votes_etl`'s `resolve_bills`, there's no shared
-   not-yet-existing row two entries in the same batch could race to
-   insert). One bill's failure is logged and skipped, not fatal to the run.
+   congress = %s AND synced_at < NOW() - (%s * INTERVAL '1 day')`, the
+   second parameter being `REFRESH_MIN_INTERVAL_DAYS` (7). Deliberately
+   refresh-only, not a discovery DAG: it only re-syncs bills already
+   present in the `bills` table, the same "only sync bills something
+   actually references" precedent `house_votes_etl`'s own module docstring
+   already established (of 18,140 bills in the 119th Congress, only a few
+   hundred are ever referenced by a vote -- proactively discovering every
+   bill in a Congress via a new `/bill/{congress}` list call would
+   reintroduce that exact wasted-API-call problem). New-bill discovery
+   stays where it already is: `house_votes_etl`'s (and, eventually, a
+   future `senate_votes_etl`'s) on-demand `get_or_sync_bill()` path. The
+   `synced_at` cutoff is a coarse staleness backoff on top of that: most
+   bills settle down once enacted/failed/vetoed and won't meaningfully
+   change again, but this schema has no bill-status field to detect that
+   directly, so a bill simply isn't re-checked again until at least
+   `REFRESH_MIN_INTERVAL_DAYS` have passed since its last successful sync
+   -- caps the recurring daily API/DB-write volume at the cost of up to
+   that many days' staleness on a genuinely-still-active bill.
+3. `refresh_bills` — calls `bills_common.sync_bill()` for each known bill
+   via `congress_api.fetch_concurrently` (`REFRESH_BATCH_WORKERS`, 5 at
+   once), each worker opening and closing its own connection rather than
+   sharing one -- `sync_bill`'s cursor/commit calls aren't safe to run
+   concurrently on a single psycopg2 connection, unlike the pure-HTTP
+   concurrent fetches this pattern is normally used for elsewhere
+   (`fetch_vote_details`, `fetch_member_votes`). Unlike `house_votes_etl`'s
+   `resolve_bills` (which stays sequential specifically to avoid two votes
+   in the same batch racing to insert the *same* not-yet-existing bill),
+   there's no such race here -- every row in `known_bills` already exists.
+   One bill's failure is logged and skipped, not fatal to the run.
 
 `bills_etl` is deliberately **not** triggered by or triggering
 `house_votes_etl`/a future `senate_votes_etl`, and there's no ordering
@@ -160,7 +176,17 @@ same fetch+upsert function, `bills_common.sync_bill()` -- it fetches a
 bill's detail, `/subjects`, and `/summaries` sub-resources concurrently,
 storing `title`, `policy_area`, the most recent CRS summary (by
 `actionDate`, since Congress.gov issues a new one at each legislative
-stage), and a full replace of `bill_subjects`.
+stage, and skipping any entry with null/empty `text` rather than picking
+one that has none), and a full replace of `bill_subjects`. `/summaries`'s
+own failure degrades to "no CRS summary this sync" rather than failing
+the whole call -- only detail/subjects are load-bearing for `bill_id`, a
+hard FK target for `roll_calls`. Both the `bills` upsert (via `COALESCE`
+against the existing row) and the `bill_subjects` replace (skipped
+entirely when the fetched list is empty) are guarded against a
+degraded/empty response nulling out or wiping previously-good data --
+`sync_bill` now runs repeatedly against the same bill (`bills_etl`'s
+daily refresh), not just once, so a single bad response can no longer
+overwrite good data until some later refresh happens to restore it.
 
 ### Data model notes (`cd-etl/migrations/versions/0001_initial_schema.py`)
 
