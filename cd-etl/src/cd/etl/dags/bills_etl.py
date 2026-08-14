@@ -33,10 +33,9 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import bills_common
-import congress_api
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
+from cd.etl import bills_common, congress_api
 
 POSTGRES_CONN_ID = "congressional_postgres"
 

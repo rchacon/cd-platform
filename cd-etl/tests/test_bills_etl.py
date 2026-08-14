@@ -1,6 +1,6 @@
 import threading
 
-import bills_etl as etl
+from cd.etl.dags import bills_etl as etl
 
 
 class _FakeExtractHook:

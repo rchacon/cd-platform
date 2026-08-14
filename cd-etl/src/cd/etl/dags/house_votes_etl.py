@@ -32,12 +32,11 @@ from datetime import datetime
 from itertools import batched
 from typing import Any
 
-import bills_common
-import congress_api
 import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from congress_models import (
+from cd.etl import bills_common, congress_api
+from cd.etl.congress_models import (
     AmendmentResponse,
     HouseVoteDetailResponse,
     HouseVoteListItem,

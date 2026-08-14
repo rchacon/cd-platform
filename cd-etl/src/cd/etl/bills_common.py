@@ -19,9 +19,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any
 
-import congress_api
 import requests
-from congress_models import (
+from cd.etl import congress_api
+from cd.etl.congress_models import (
     BillDetailResponse,
     BillSubjectsResponse,
     BillSummariesResponse,

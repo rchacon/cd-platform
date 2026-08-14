@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from psycopg2.extras import Json, execute_values
 
-import members_etl as etl
+from cd.etl.dags import members_etl as etl
 
 # pg_conn fixture lives in conftest.py, shared across every real-Postgres
 # test module.

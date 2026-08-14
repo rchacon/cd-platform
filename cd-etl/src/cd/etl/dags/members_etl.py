@@ -4,11 +4,11 @@ import logging
 from datetime import date, datetime
 from typing import Any
 
-import congress_api
 import yaml
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from congress_models import (
+from cd.etl import congress_api
+from cd.etl.congress_models import (
     CongressCurrent,
     CongressCurrentResponse,
     MemberDetail,
