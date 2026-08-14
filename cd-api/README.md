@@ -7,7 +7,7 @@ lookups, replacing its current GovTrack HTML scrape. Exposes the
 
 ## What it does
 
-`src/app.py` defines a FastAPI app with one route:
+`src/cd/api/app.py` defines a FastAPI app with one route:
 
 ```
 GET /members?state=GA&district=5
@@ -30,7 +30,7 @@ seat (DC, American Samoa, Guam, Northern Mariana Islands, or the US
 Virgin Islands), or `"Resident Commissioner"` specifically for Puerto
 Rico's non-voting seat), `party`, `phone`, `website`, `photo_url`. An unknown state returns `404`. A `district`
 that doesn't exist for that state (validated against real House
-apportionment, see `src/apportionment.py`) also returns `404` -- e.g.
+apportionment, see `src/cd/api/apportionment.py`) also returns `404` -- e.g.
 `district=99` for a 14-district state. A `district` that *does* exist but
 currently has no representative (a genuine vacancy) still returns `200` with
 an empty `representatives` list, distinct from the `404` above.
@@ -40,19 +40,22 @@ Details for HTTP APIs") -- `Content-Type: application/problem+json`, body
 shaped `{"type", "title", "status", "detail", ...}`. Handled uniformly for
 unknown states (`404`), request validation failures like a malformed `state`
 (`422`, with a JSON-serialized `errors` list), and any unhandled server error
-(`500`), via `src/problem.py`'s `problem_response` and the exception handlers
-registered in `src/app.py`.
+(`500`), via `src/cd/api/problem.py`'s `problem_response` and the exception
+handlers registered in `src/cd/api/app.py`.
 
-`src/db.py` queries `current_members` directly with `psycopg2` -- no
+`src/cd/api/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
-issue #4). `src/transform.py` holds the pure row -> JSON-shape functions.
-`src/models.py` holds the Pydantic models documenting those same
-request/response shapes (`response_model=`/`responses=` on each route in
-`src/app.py`), so the OpenAPI spec exported on release (see Releasing
-below) actually reflects what the API returns, including error bodies.
+issue #4). `src/cd/api/transform.py` holds the pure row -> JSON-shape
+functions. `src/cd/api/models.py` holds the Pydantic models documenting
+those same request/response shapes (`response_model=`/`responses=` on each
+route in `src/cd/api/app.py`), so the OpenAPI spec exported on release (see
+Releasing below) actually reflects what the API returns, including error
+bodies.
 
-`handler = Mangum(app)` in `app.py` is what an AWS Lambda config points to;
-it's untouched for local development.
+`handler = Mangum(app)` in `app.py` is what an AWS Lambda config points to
+(as the dotted path `cd.api.app.handler` -- see Releasing below for why the
+`cd.api` package structure has to be preserved, not flattened, in the
+deploy zip); it's untouched for local development.
 
 `GET /version` returns `{"version": ...}`, read from a `VERSION` file next
 to `app.py` -- only present in a deployed Lambda zip (written by
@@ -83,7 +86,7 @@ locally.
 3. Run it:
 
    ```bash
-   uv run uvicorn app:app --reload --app-dir src
+   uv run uvicorn cd.api.app:app --reload --app-dir src
    ```
 
    Then, e.g.:
@@ -104,10 +107,11 @@ against Postgres, and skips itself if `docker compose up -d postgres` hasn't
 been run.
 
 Tests target a dedicated `congressional_app_test` database (`cd-platform#16`),
-not the real dev database -- `tests/conftest.py` sets this before `db`/`app`
-are first imported, so both the fixture's own seeding and the app code under
-test (via `TestClient`) consistently hit the same isolated database. That
-database's schema is owned by `cd-etl` (see `../cd-etl/README.md`), so run
+not the real dev database -- `tests/conftest.py` sets this before
+`cd.api.db`/`cd.api.app` are first imported, so both the fixture's own
+seeding and the app code under test (via `TestClient`) consistently hit the
+same isolated database. That database's schema is owned by `cd-etl` (see
+`../cd-etl/README.md`), so run
 `make test-etl` from the repo root at least once first -- otherwise these
 tests fail with "relation does not exist" rather than skipping, since the
 database itself already exists (just without the schema yet).
@@ -117,14 +121,27 @@ database itself already exists (just without the schema yet).
 Pushing a tag matching `cd-api-v*` (e.g. `cd-api-v0.1.0`) triggers
 `.github/workflows/cd-api-deploy.yml`, which builds a Lambda zip package
 (production dependencies via `uv export`, cross-installed for Lambda's
-x86_64/Python 3.12 runtime, at the zip root; `src/` copied in as-is
-alongside them) and ships it directly to the `cd-platform-cd-api` Lambda
-function via `aws lambda update-function-code`. The build also writes a
-`VERSION` file (the tag with its `cd-api-v` prefix stripped, e.g. `0.1.0`)
-into `src/`, which `GET /version` reads back -- the simplest way to confirm
-what's actually live behind Lambda's mutable `$LATEST`, without needing
-Lambda's own PublishVersion/alias machinery. Authenticates via GitHub OIDC
-to a scoped IAM role (`cd-platform-cd-api-deploy`, provisioned in
+x86_64/Python 3.12 runtime, at the zip root; `src/cd/` copied in alongside
+them, preserving its `cd/api/` structure rather than flattening it -- see
+`cd-infra#12`: Lambda's runtime only puts the zip root on `sys.path`, so
+`app.py`'s own absolute imports, e.g. `from cd.api.db import ...`, need the
+`cd` package to sit directly there) and ships it directly to the
+`cd-platform-cd-api` Lambda function via `aws lambda update-function-code`.
+The build also writes a `VERSION` file (the tag with its `cd-api-v` prefix
+stripped, e.g. `0.1.0`) into `package/cd/api/` (alongside `app.py`, since
+`GET /version` reads it via `Path(__file__).parent`) -- the simplest way to
+confirm what's actually live behind Lambda's mutable `$LATEST`, without
+needing Lambda's own PublishVersion/alias machinery.
+
+**`cd-infra`'s Terraform still configures the Lambda's `handler` as
+`app.handler`, not `cd.api.app.handler`** -- that has to be updated (and
+applied) to match this workflow's new package structure *before* the next
+`cd-api-v*` tag is cut, or the deploy will ship a zip the configured
+handler can't find, the same class of break `cd-infra#12` fixed once
+already. Not yet done as of this package restructuring landing here.
+
+Authenticates via GitHub OIDC to a scoped IAM role
+(`cd-platform-cd-api-deploy`, provisioned in
 `cd-infra`'s `terraform/cd-api/`) -- no static AWS credentials stored in
 this repo. Environment variables (DB connection info) are owned by
 Terraform, not this workflow. As with `cd-etl`, the workflow's first step

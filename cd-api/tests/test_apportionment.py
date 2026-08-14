@@ -1,4 +1,4 @@
-from apportionment import SEATS_PER_STATE, is_valid_district, max_valid_district
+from cd.api.apportionment import SEATS_PER_STATE, is_valid_district, max_valid_district
 
 TERRITORIES = {"AS", "DC", "GU", "MP", "PR", "VI"}
 

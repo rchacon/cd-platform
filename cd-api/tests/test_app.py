@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg2.extras import Json
 
-from app import app, handler
+from cd.api.app import app, handler
 
 STATE = "ZZ"
 DISTRICT = 1
@@ -89,6 +89,53 @@ def test_openapi_json_has_expected_title_and_version():
     schema = response.json()
     assert schema["info"]["title"] == "cd-api"
     assert schema["info"]["version"] == "dev"
+
+
+def test_openapi_json_description_documents_auth_and_error_contract():
+    # cd-platform#46: this used to live only as hand-written prose in
+    # cd-website's api.astro, disconnected from the code it describes --
+    # pins that the OpenAPI spec itself now carries it.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    description = schema["info"]["description"]
+    assert "X-Api-Key" in description
+    assert "RFC 9457" in description
+    assert "application/problem+json" in description
+
+
+def test_openapi_json_documents_production_server_url():
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    assert schema["servers"] == [
+        {"url": "https://api.civicdog.com/v1", "description": "Production"}
+    ]
+
+
+def test_openapi_json_documents_api_key_security_scheme():
+    # X-Api-Key is enforced by API Gateway, not a FastAPI Security(...)
+    # dependency -- pins that _custom_openapi() still documents it by
+    # hand, since nothing derives it automatically from the routes.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    scheme = schema["components"]["securitySchemes"]["ApiKeyAuth"]
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    assert scheme["name"] == "X-Api-Key"
+    assert schema["security"] == [{"ApiKeyAuth": []}]
+
+
+def test_openapi_members_route_documents_404_vs_vacancy_distinction():
+    # cd-platform#46: this behavior used to only be explained in
+    # cd-website's prose and an internal code comment -- pins that the
+    # route's own OpenAPI description now covers it too.
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    description = schema["paths"]["/members"]["get"]["description"]
+    assert "vacant" in description.lower()
 
 
 def test_openapi_members_response_documents_person_fields():
@@ -182,7 +229,7 @@ def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path)
     # cd-platform#29: local dev/CI never has a VERSION file -- only the
     # deploy workflow writes one into the Lambda zip -- so this is the
     # default a developer actually sees.
-    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
     client = TestClient(app)
     response = client.get("/version")
 
@@ -193,7 +240,7 @@ def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path)
 def test_get_version_returns_file_contents_when_present(monkeypatch, tmp_path):
     version_file = tmp_path / "VERSION"
     version_file.write_text("0.1.0\n")
-    monkeypatch.setattr("app.VERSION_FILE", version_file)
+    monkeypatch.setattr("cd.api.app.VERSION_FILE", version_file)
     client = TestClient(app)
     response = client.get("/version")
 
@@ -223,7 +270,7 @@ def test_handler_strips_v1_base_path(monkeypatch, tmp_path):
     # Mangum() call below. A TestClient-based test against `app` directly
     # (like the two above) would never catch this class of bug, since it
     # never goes through Mangum's event handling at all.
-    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
     response = handler(_api_gateway_event("/v1/version"), None)
 
     assert response["statusCode"] == 200
@@ -234,7 +281,7 @@ def test_handler_leaves_unprefixed_path_unchanged(monkeypatch, tmp_path):
     # The existing execute-api URL never had a /v1 segment (its stage
     # segment is excluded from event["path"] entirely by API Gateway
     # itself) -- api_gateway_base_path must not affect that request shape.
-    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
     response = handler(_api_gateway_event("/version"), None)
 
     assert response["statusCode"] == 200
@@ -247,7 +294,7 @@ def test_handler_returns_decoded_problem_json_not_base64(monkeypatch, tmp_path):
     # was base64-encoded with isBase64Encoded=true, and API Gateway (no
     # matching binaryMediaTypes entry) forwarded the raw base64 string to
     # clients untouched instead of decoding it.
-    monkeypatch.setattr("app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
     response = handler(_api_gateway_event("/v1/members"), None)  # no `state` -> 422
 
     assert response["statusCode"] == 422
@@ -354,7 +401,7 @@ def test_get_members_unhandled_exception_returns_500_problem_detail(monkeypatch,
     def _boom(state, district):
         raise RuntimeError("db exploded")
 
-    monkeypatch.setattr("app.fetch_current_members", _boom)
+    monkeypatch.setattr("cd.api.app.fetch_current_members", _boom)
     client = TestClient(app, raise_server_exceptions=False)
     with caplog.at_level("ERROR"):
         response = client.get("/members", params={"state": "ZZ", "district": 1})

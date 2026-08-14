@@ -38,19 +38,25 @@ jobs:
             --python-platform x86_64-unknown-linux-gnu \
             --python-version 3.12 \
             -r requirements.txt
-          cp src/*.py package/
-          echo "${{ steps.version.outputs.version }}" > package/VERSION
+          # Preserves src/cd/api/'s package structure at the zip root
+          # (cd-infra#12) -- Lambda's runtime only puts the zip root on
+          # sys.path, nothing else, so app.py's own absolute imports
+          # (`from cd.api.db import ...` etc.) only resolve if the `cd`
+          # package sits directly there, not nested a level deeper under
+          # a copied-in src/.
+          cp -r src/cd package/
+          echo "${{ steps.version.outputs.version }}" > package/cd/api/VERSION
           cd package && zip -qr ../lambda.zip .
 
       - name: Sanity-check the built package imports cleanly
         run: |
           cd package
-          python3 -c "from app import handler; print('Imported handler OK:', handler)"
+          python3 -c "from cd.api.app import handler; print('Imported handler OK:', handler)"
 
       - name: Export OpenAPI spec
         run: |
           cd package
-          python3 -c "import json; from app import app; json.dump(app.openapi(), open('../openapi.json', 'w'), indent=2)"
+          python3 -c "import json; from cd.api.app import app; json.dump(app.openapi(), open('../openapi.json', 'w'), indent=2)"
 
       - name: Check package size against Lambda's 50MB direct-upload limit
         run: |

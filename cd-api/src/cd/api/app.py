@@ -11,21 +11,47 @@ from mangum import Mangum
 from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from apportionment import is_valid_district, max_valid_district
-from db import fetch_current_members
-from models import (
+from cd.api.apportionment import is_valid_district, max_valid_district
+from cd.api.db import fetch_current_members
+from cd.api.models import (
     PROBLEM_DETAIL_SCHEMA,
     VALIDATION_PROBLEM_DETAIL_SCHEMA,
     MembersResponse,
     VersionResponse,
 )
-from problem import MEDIA_TYPE, problem_response
-from transform import group_representatives
+from cd.api.problem import MEDIA_TYPE, problem_response
+from cd.api.transform import group_representatives
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 VERSION_FILE = Path(__file__).parent / "VERSION"
+
+# cd-platform#46: this used to live only as hand-written prose in
+# cd-website's api.astro, disconnected from the code it describes and
+# with nothing forcing it to stay in sync. Living here instead means a
+# PR that changes the error contract or the 404/vacancy behavior below
+# has to touch this same description, in the same diff.
+DESCRIPTION = """\
+REST API for `cd-lookup` (the WordPress plugin), replacing its GovTrack \
+HTML scrape with a direct HTTP interface over `current_members`.
+
+**Auth:** every request requires an `X-Api-Key` header. Enforced by API \
+Gateway ahead of this application -- a missing or invalid key never \
+reaches this code, so it isn't reflected in any route's documented \
+responses below.
+
+**Errors:** every non-2xx response follows \
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem Details for \
+HTTP APIs") -- `Content-Type: application/problem+json`, body shaped \
+`{"type", "title", "status", "detail", ...}`, never a bespoke \
+`{"error": "..."}` shape.\
+"""
+
+# Matches api_gateway_base_path below -- API Gateway's custom domain
+# fronts requests at this exact path, so it's what every documented
+# example/client call should actually be made against.
+PRODUCTION_SERVER_URL = "https://api.civicdog.com/v1"
 
 
 def _read_version() -> str:
@@ -35,7 +61,12 @@ def _read_version() -> str:
         return "dev"
 
 
-app = FastAPI(title="cd-api", version=_read_version())
+app = FastAPI(
+    title="cd-api",
+    version=_read_version(),
+    description=DESCRIPTION,
+    servers=[{"url": PRODUCTION_SERVER_URL, "description": "Production"}],
+)
 
 
 def _problem_response(description: str, model_name: str) -> dict:
@@ -51,14 +82,41 @@ def _custom_openapi() -> dict:
     if app.openapi_schema:
         return app.openapi_schema
 
-    schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        servers=app.servers,
+        routes=app.routes,
+    )
+    components = schema.setdefault("components", {})
+
     # ProblemDetail/ValidationProblemDetail are never used as a route's
     # response_model (only referenced by hand-written $refs above), so
     # nothing else registers them as reusable components the way FastAPI
     # does automatically for MembersResponse/Person/VersionResponse.
-    schemas = schema.setdefault("components", {}).setdefault("schemas", {})
+    schemas = components.setdefault("schemas", {})
     schemas["ProblemDetail"] = PROBLEM_DETAIL_SCHEMA
     schemas["ValidationProblemDetail"] = VALIDATION_PROBLEM_DETAIL_SCHEMA
+
+    # X-Api-Key isn't a FastAPI Security(...) dependency -- API Gateway
+    # enforces it ahead of this application (see DESCRIPTION above), so
+    # there's no route-level dependency for FastAPI to derive this from
+    # automatically, the way it does for response models. Added by hand
+    # here instead, applied globally (every route requires it in
+    # production) via the top-level `security` key.
+    components["securitySchemes"] = {
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-Api-Key",
+            "description": (
+                "Required on every request. Enforced by API Gateway in "
+                "front of this application, not by cd-api's own code."
+            ),
+        }
+    }
+    schema["security"] = [{"ApiKeyAuth": []}]
 
     app.openapi_schema = schema
     return app.openapi_schema
@@ -147,6 +205,13 @@ def get_members(
 
     Optionally scoped to one House district via `district` -- see that
     parameter's own description for its omitted/0/1+ semantics.
+
+    `district` draws a distinction between two different kinds of "no
+    representative": a district number that doesn't exist for the given
+    state (validated against real House apportionment) returns `404`,
+    while a district that does exist but is currently vacant (a real
+    seat between office-holders) still returns `200` with an empty
+    `representatives` list. `senators` is populated either way.
     """
     # Distinguishes "this district doesn't exist" from "this district
     # exists but is currently vacant" (see cd-platform#12) -- without this,
