@@ -158,6 +158,7 @@ class BillDetail(_CamelModel):
     congress: int
     type: str
     number: str
+    title: str | None = None
     policy_area: PolicyArea | None = None
     update_date: datetime
 
@@ -184,6 +185,21 @@ class BillSubjects(_CamelModel):
 
 class BillSubjectsResponse(_CamelModel):
     subjects: BillSubjects
+
+
+class BillSummaryItem(_CamelModel):
+    # Congress.gov issues a new CRS summary at each legislative stage
+    # (introduced, reported, enrolled, ...), not one fixed value per bill
+    # -- action_date is what lets the caller pick the most recent one as
+    # "the" current summary (see bills_common.sync_bill).
+    action_date: date | None = None
+    action_desc: str | None = None
+    text: str | None = None
+    version_code: str | None = None
+
+
+class BillSummariesResponse(_CamelModel):
+    summaries: list[BillSummaryItem] = []
 
 
 class AmendedBill(_CamelModel):

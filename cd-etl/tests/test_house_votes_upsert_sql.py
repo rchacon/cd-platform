@@ -6,6 +6,7 @@ import psycopg2
 import pytest
 from psycopg2.extras import execute_values
 
+import bills_common
 import house_votes_etl as etl
 
 PG_DSN = {
@@ -85,8 +86,8 @@ def test_bill_number(pg_conn):
 def test_bill_id(pg_conn, test_bill_number):
     with pg_conn.cursor() as cursor:
         cursor.execute(
-            etl.BILLS_UPSERT_SQL,
-            (CONGRESS, "HR", test_bill_number, "Health", "hash-bill", None),
+            bills_common.BILLS_UPSERT_SQL,
+            (CONGRESS, "HR", test_bill_number, "Test Bill Title", "Health", None, "hash-bill", None),
         )
         bill_id = cursor.fetchone()[0]
     pg_conn.commit()
@@ -158,33 +159,20 @@ def _get_member_vote_updated_at(pg_conn, roll_call_id, bioguide_id):
         return cursor.fetchone()[0]
 
 
-def test_bills_upsert_returning_yields_bill_id_even_on_unchanged_conflict(
-    pg_conn, test_bill_number,
-):
-    # Pins the deliberate difference from MEMBERS_UPSERT_SQL: this
-    # ON CONFLICT is NOT WHERE-gated, so RETURNING always yields bill_id
-    # even when re-run with an identical row.
-    row = (CONGRESS, "HR", test_bill_number, "Health", "hash-a", None)
-    with pg_conn.cursor() as cursor:
-        cursor.execute(etl.BILLS_UPSERT_SQL, row)
-        first_bill_id = cursor.fetchone()[0]
-    pg_conn.commit()
-
-    with pg_conn.cursor() as cursor:
-        cursor.execute(etl.BILLS_UPSERT_SQL, row)
-        second_bill_id = cursor.fetchone()[0]
-    pg_conn.commit()
-
-    assert first_bill_id == second_bill_id
-
-
 def test_get_or_sync_bill_is_cached_after_first_sync(pg_conn, test_bill_number, monkeypatch):
+    # bills_common.sync_bill's own fetch+upsert behavior (including the
+    # 3-way detail/subjects/summaries fetch) is covered directly by
+    # test_bills_common.py -- this test only pins get_or_sync_bill's own
+    # cache-check layer: a hit must short-circuit before ever calling
+    # sync_bill (and therefore before any HTTP call at all).
     call_count = {"n": 0}
 
     def fake_api_get(session, url, params=None):
         call_count["n"] += 1
         if url.endswith("/subjects"):
             return {"subjects": {"legislativeSubjects": [{"name": "Health"}]}}
+        if url.endswith("/summaries"):
+            return {"summaries": []}
         return {
             "bill": {
                 "congress": CONGRESS, "type": "HR", "number": str(test_bill_number),
@@ -198,7 +186,7 @@ def test_get_or_sync_bill_is_cached_after_first_sync(pg_conn, test_bill_number, 
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
     )
     calls_after_first_sync = call_count["n"]
-    assert calls_after_first_sync == 2  # one detail call, one subjects call
+    assert calls_after_first_sync == 3  # detail, subjects, and summaries calls
 
     with pg_conn.cursor() as cursor:
         cursor.execute("SELECT subject_name FROM bill_subjects WHERE bill_id = %s", (first_bill_id,))
@@ -210,28 +198,6 @@ def test_get_or_sync_bill_is_cached_after_first_sync(pg_conn, test_bill_number, 
 
     assert second_bill_id == first_bill_id
     assert call_count["n"] == calls_after_first_sync  # no new HTTP calls on the cache-hit path
-
-
-def test_bill_subjects_delete_and_reinsert_replaces_prior_set(pg_conn, test_bill_id):
-    # Exercises the delete+reinsert pattern get_or_sync_bill uses for a
-    # bill's subjects directly, since get_or_sync_bill itself only ever
-    # syncs a bill once (no resync path) and so never re-triggers this
-    # through its own normal flow.
-    with pg_conn.cursor() as cursor:
-        execute_values(
-            cursor, etl.BILL_SUBJECTS_INSERT_SQL,
-            [(test_bill_id, "Health"), (test_bill_id, "Insurance")],
-        )
-    pg_conn.commit()
-
-    with pg_conn.cursor() as cursor:
-        cursor.execute("DELETE FROM bill_subjects WHERE bill_id = %s", (test_bill_id,))
-        execute_values(cursor, etl.BILL_SUBJECTS_INSERT_SQL, [(test_bill_id, "Tax Policy")])
-    pg_conn.commit()
-
-    with pg_conn.cursor() as cursor:
-        cursor.execute("SELECT subject_name FROM bill_subjects WHERE bill_id = %s", (test_bill_id,))
-        assert [row[0] for row in cursor.fetchall()] == ["Tax Policy"]
 
 
 def test_roll_calls_upsert_skips_update_when_source_hash_unchanged(
