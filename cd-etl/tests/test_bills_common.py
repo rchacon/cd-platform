@@ -197,3 +197,36 @@ def test_sync_bill_refreshes_an_already_synced_bill_when_source_data_changed(
     assert crs_summary == "Updated summary"
     assert _get_bill_subjects(pg_conn, second_bill_id) == ["Immigration status and procedures"]
     assert second_updated_at > first_updated_at
+
+
+def test_sync_bill_degrades_gracefully_when_summaries_fetch_fails(
+    pg_conn, test_bill_number, monkeypatch,
+):
+    # Regression test: /summaries is metadata enrichment, not load-bearing
+    # for bill_id the way detail/subjects are -- its failure must not sink
+    # the whole sync (it did, when all three futures' .result() calls were
+    # unguarded).
+    def fake_api_get(session, url, params=None):
+        if url.endswith("/subjects"):
+            return {"subjects": {"legislativeSubjects": [{"name": "Health"}]}}
+        if url.endswith("/summaries"):
+            raise RuntimeError("simulated /summaries failure")
+        return {
+            "bill": {
+                "congress": CONGRESS, "type": "HR", "number": str(test_bill_number),
+                "title": "A Title", "policyArea": {"name": "Health"},
+                "updateDate": "2025-01-01T00:00:00Z",
+            }
+        }
+
+    monkeypatch.setattr(bills_common.congress_api, "api_get", fake_api_get)
+
+    bill_id = bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+    )
+
+    title, policy_area, crs_summary, _ = _get_bill_row(pg_conn, bill_id)
+    assert title == "A Title"
+    assert policy_area == "Health"
+    assert crs_summary is None
+    assert _get_bill_subjects(pg_conn, bill_id) == ["Health"]

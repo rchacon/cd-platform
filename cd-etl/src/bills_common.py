@@ -14,6 +14,7 @@ cache-check of its own. That makes it reusable two ways:
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any
@@ -29,6 +30,8 @@ from congress_models import (
 from psycopg2.extras import execute_values
 
 CONGRESS_BILL_API = "https://api.congress.gov/v3/bill/"
+
+logger = logging.getLogger(__name__)
 
 BILLS_UPSERT_SQL = """
     INSERT INTO bills (
@@ -102,9 +105,23 @@ def sync_bill(
         summaries_future = executor.submit(
             congress_api.api_get_model, session, f"{bill_url}/summaries", BillSummariesResponse,
         )
+        # detail/subjects are load-bearing (bill_id is a hard FK target
+        # for roll_calls, via house_votes_etl's on-demand path) -- a
+        # failure here should fail the whole sync, same as before this
+        # function grew a third endpoint. /summaries is purely metadata
+        # enrichment for #9's semantic search, unrelated to that FK, so a
+        # failure there degrades to "no CRS summary this sync" instead of
+        # sinking bill_id resolution for a vote that's otherwise fine.
         bill = detail_future.result().bill
         subjects = subjects_future.result().subjects
-        summaries = summaries_future.result().summaries
+        try:
+            summaries = summaries_future.result().summaries
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch /summaries for %s %s %d: %s -- syncing without a CRS summary",
+                congress, bill_type, bill_number, exc,
+            )
+            summaries = []
 
     policy_area = bill.policy_area_name
     crs_summary = _latest_crs_summary(summaries)
