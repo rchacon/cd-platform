@@ -1,38 +1,14 @@
-import os
 import time
 import uuid
 from datetime import datetime, timezone
 
-import psycopg2
 import pytest
 from psycopg2.extras import Json, execute_values
 
 import members_etl as etl
 
-PG_DSN = {
-    "host": os.environ.get("PGHOST", "localhost"),
-    "port": os.environ.get("PGPORT", "5432"),
-    # Dedicated test database (cd-platform#16) -- kept as the default even
-    # outside `make test-etl` (which sets PGDATABASE explicitly), so a
-    # stray bare pytest invocation still lands on the safe, isolated
-    # database rather than real dev-seeded data.
-    "dbname": os.environ.get("PGDATABASE", "congressional_app_test"),
-    "user": os.environ.get("PGUSER", "postgres"),
-    "password": os.environ.get("PGPASSWORD", "postgres"),
-}
-
-
-@pytest.fixture
-def pg_conn():
-    try:
-        conn = psycopg2.connect(connect_timeout=3, **PG_DSN)
-    except psycopg2.OperationalError as exc:
-        pytest.skip(
-            f"Postgres not reachable at {PG_DSN['host']}:{PG_DSN['port']} "
-            f"(run `docker compose up -d postgres` to enable this test): {exc}"
-        )
-    yield conn
-    conn.close()
+# pg_conn fixture lives in conftest.py, shared across every real-Postgres
+# test module.
 
 
 def _member_row(bioguide_id: str, source_hash: str, source_updated_at=None) -> tuple:

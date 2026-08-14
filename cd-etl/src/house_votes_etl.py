@@ -11,6 +11,15 @@ voted on a policy area -- a bill nobody voted on doesn't serve that,
 so proactively syncing all 18,140 was rejected as wasted API calls
 (see rchacon/cd-platform#8).
 
+get_or_sync_bill() is deliberately sync-once, not a refresh path: on a
+cache hit it returns the existing bill_id without re-fetching. Keeping
+an already-synced bill's policy_area/subjects/CRS summary current is
+bills_etl's job (see bills_etl.py, resolving rchacon/cd-platform#52) --
+a separate, independently-scheduled DAG rather than a trigger off this
+one, since staleness of an already-known bill is a downstream reader's
+problem, not a vote-sync correctness problem. Both DAGs call the same
+fetch+upsert logic in bills_common.sync_bill().
+
 Purely procedural votes with no bill or amendment reference at all
 (e.g. "Elected Speaker") are excluded entirely, same treatment as
 nominations.
@@ -19,19 +28,17 @@ nominations.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from itertools import batched
 from typing import Any
 
+import bills_common
 import congress_api
 import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
 from congress_models import (
     AmendmentResponse,
-    BillDetailResponse,
-    BillSubjectsResponse,
     HouseVoteDetailResponse,
     HouseVoteListItem,
     HouseVoteMemberVote,
@@ -40,7 +47,6 @@ from congress_models import (
 from psycopg2.extras import execute_values
 from pydantic import ValidationError
 
-CONGRESS_BILL_API = "https://api.congress.gov/v3/bill/"
 CONGRESS_AMENDMENT_API = "https://api.congress.gov/v3/amendment/"
 CONGRESS_HOUSE_VOTE_API = "https://api.congress.gov/v3/house-vote/"
 
@@ -67,38 +73,6 @@ VOTE_CAST_MAP = {
     "present": "PRESENT",
     "not voting": "NOT_VOTING",
 }
-
-BILLS_UPSERT_SQL = """
-    INSERT INTO bills (
-        congress, bill_type, bill_number, policy_area, source_hash, source_updated_at
-    )
-    VALUES (%s, %s, %s, %s, %s, %s)
-    ON CONFLICT (congress, bill_type, bill_number) DO UPDATE SET
-        policy_area = EXCLUDED.policy_area,
-        source_hash = EXCLUDED.source_hash,
-        source_updated_at = EXCLUDED.source_updated_at,
-        synced_at = NOW(),
-        updated_at = CASE
-            WHEN bills.source_hash IS DISTINCT FROM EXCLUDED.source_hash
-            THEN NOW()
-            ELSE bills.updated_at
-        END
-    -- Deliberately no WHERE guard here (unlike MEMBERS_UPSERT_SQL) --
-    -- this runs once per bill via get_or_sync_bill and RETURNING must
-    -- always yield bill_id, even on a race between two overlapping
-    -- syncs of the same not-yet-seen bill.
-    RETURNING bill_id
-"""
-
-BILL_SUBJECTS_INSERT_SQL = """
-    -- Plain insert, not an upsert -- the caller DELETEs a bill's
-    -- existing subject rows first (full replace, per the schema's
-    -- stated intent). ON CONFLICT DO NOTHING is a defensive backstop
-    -- against a duplicate subject name within one fetch (the live API's
-    -- own pagination.count was observed to be unreliable here).
-    INSERT INTO bill_subjects (bill_id, subject_name) VALUES %s
-    ON CONFLICT (bill_id, subject_name) DO NOTHING
-"""
 
 ROLL_CALLS_UPSERT_SQL = """
     INSERT INTO roll_calls (
@@ -141,11 +115,11 @@ def get_or_sync_bill(
     bill_number: int,
 ) -> int:
     # Sync-once, not a refresh path: once a bill is stored, this helper
-    # never re-fetches it, even though bills.source_hash/source_updated_at
-    # exist on the table (unused by this helper -- they're there for a
-    # future bills-refresh path, not exercised here). Only bills actually
-    # referenced by a vote are ever synced at all -- see house_votes_etl's
-    # module docstring for why a full proactive bill sync was rejected.
+    # never re-fetches it. Only bills actually referenced by a vote are
+    # ever synced at all -- see house_votes_etl's module docstring for
+    # why a full proactive bill sync was rejected, and for where the
+    # refresh path lives instead (bills_etl.py, via the same
+    # bills_common.sync_bill this calls on a cache miss).
     with conn.cursor() as cursor:
         cursor.execute(
             "SELECT bill_id FROM bills WHERE congress = %s AND bill_type = %s AND bill_number = %s",
@@ -155,55 +129,7 @@ def get_or_sync_bill(
     if row is not None:
         return row[0]
 
-    # Detail and subjects are two independent endpoints -- fetched
-    # concurrently rather than sequentially, since this whole helper
-    # already runs once per not-yet-seen bill inside resolve_bills's own
-    # sequential per-vote loop, so there's no race to avoid here (unlike
-    # that outer loop, which stays sequential for a different reason --
-    # see its own comment).
-    bill_url = f"{CONGRESS_BILL_API}{congress}/{bill_type.lower()}/{bill_number}"
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        detail_future = executor.submit(
-            congress_api.api_get_model, session, bill_url, BillDetailResponse,
-        )
-        subjects_future = executor.submit(
-            congress_api.api_get_model, session, f"{bill_url}/subjects", BillSubjectsResponse,
-        )
-        bill = detail_future.result().bill
-        subjects = subjects_future.result().subjects
-
-    policy_area = bill.policy_area_name
-
-    with conn.cursor() as cursor:
-        cursor.execute(
-            BILLS_UPSERT_SQL,
-            (
-                congress, bill_type, bill_number, policy_area,
-                congress_api.source_hash(congress, bill_type, bill_number, policy_area),
-                bill.update_date,
-            ),
-        )
-        bill_id = cursor.fetchone()[0]
-
-        cursor.execute("DELETE FROM bill_subjects WHERE bill_id = %s", (bill_id,))
-        # Deduped defensively -- the /subjects sub-resource's own
-        # pagination.count was observed live to not match its actual
-        # legislativeSubjects array length.
-        subject_names = list(dict.fromkeys(s.name for s in subjects.legislative_subjects))
-        if subject_names:
-            execute_values(
-                cursor, BILL_SUBJECTS_INSERT_SQL,
-                [(bill_id, name) for name in subject_names],
-            )
-
-    # Committed here, per bill, rather than once at the end of the
-    # caller's loop over many votes -- so one bill's failure doesn't roll
-    # back bills already synced earlier in the same run, and so a second
-    # call for the same bill later in the same run sees this row via its
-    # own SELECT instead of racing an INSERT (see resolve_bills, which
-    # processes votes sequentially specifically because of this).
-    conn.commit()
-    return bill_id
+    return bills_common.sync_bill(session, conn, congress, bill_type, bill_number)
 
 
 def resolve_amendment_bill(
@@ -238,14 +164,7 @@ def house_votes_etl():
 
     @task
     def get_current_congress() -> int:
-        # Same query members_etl.py's task of the same name uses --
-        # Postgres's own current_congress() function is the single place
-        # every ETL agrees on "which Congress is current."
-        hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-        row = hook.get_first("SELECT current_congress()")
-        if row is None or row[0] is None:
-            raise ValueError("No current congress found in congresses table")
-        return row[0]
+        return congress_api.get_current_congress(POSTGRES_CONN_ID)
 
     @task
     def extract_house_vote_summaries(congress: int) -> list[dict[str, Any]]:
@@ -624,9 +543,9 @@ def house_votes_etl():
                         # update -- a follow-up SELECT on the natural key
                         # is used instead to reliably get every
                         # roll_call_id this chunk needs (unlike
-                        # BILLS_UPSERT_SQL, which is single-row and can
-                        # safely use RETURNING because its ON CONFLICT is
-                        # deliberately unconditional).
+                        # bills_common.BILLS_UPSERT_SQL, which is
+                        # single-row and can safely use RETURNING because
+                        # its ON CONFLICT is deliberately unconditional).
                         congress = chunk[0][1]
                         sessions = [row[2] for row in chunk]
                         vote_numbers = [row[3] for row in chunk]
