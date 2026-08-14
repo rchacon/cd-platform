@@ -24,6 +24,7 @@ from congress_models import (
     BillDetailResponse,
     BillSubjectsResponse,
     BillSummariesResponse,
+    BillSummaryItem,
 )
 from psycopg2.extras import execute_values
 
@@ -66,7 +67,7 @@ BILL_SUBJECTS_INSERT_SQL = """
 """
 
 
-def _latest_crs_summary(summaries: list[Any]) -> str | None:
+def _latest_crs_summary(summaries: list[BillSummaryItem]) -> str | None:
     # Congress.gov issues a new CRS summary at each legislative stage
     # (introduced, reported, enrolled, ...) -- the one with the latest
     # actionDate is treated as "the" current summary. Entries with no
