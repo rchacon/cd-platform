@@ -1,4 +1,4 @@
-import house_votes_etl as etl
+from cd.etl.dags import house_votes_etl as etl
 
 
 class _FakeHook:

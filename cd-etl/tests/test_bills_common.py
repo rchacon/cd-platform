@@ -1,10 +1,10 @@
 import time
 
 import pytest
-from congress_models import BillSummaryItem
 from psycopg2.extras import execute_values
 
-import bills_common
+from cd.etl import bills_common
+from cd.etl.congress_models import BillSummaryItem
 from conftest import random_number
 
 # The 119th Congress is seeded by migration 0001, so bill fixtures below

@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-import congress_api
+from cd.etl import congress_api
 
 
 class _FakeResponse:

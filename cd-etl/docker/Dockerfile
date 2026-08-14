@@ -20,12 +20,21 @@ RUN chmod +x /entrypoint.sh
 # production) the moment entrypoint.sh's `uv run airflow db migrate` runs.
 # With this set, every stage's venv stays exactly what its own build-time
 # `uv sync` produced.
+#
+# PYTHONPATH is needed because of how Airflow parses DAG files: it adds
+# only that specific file's own directory to sys.path, not the configured
+# DAGS_FOLDER root -- fine when every module lived flat in src/, but
+# src/cd/etl/dags/*.py's own absolute imports (e.g. `from cd.etl import
+# bills_common`) need src/ itself on the path to resolve the `cd` package.
+# pytest doesn't need this (pyproject.toml's own `pythonpath = ["src"]`
+# handles it for the test run), so this only matters for the app itself.
 ENV AIRFLOW_HOME=/app/.airflow \
     AIRFLOW__CORE__DAGS_FOLDER=/app/src \
     AIRFLOW__CORE__EXECUTOR=LocalExecutor \
     AIRFLOW__CORE__LOAD_EXAMPLES=False \
     PATH="/app/.venv/bin:${PATH}" \
-    UV_NO_SYNC=1
+    UV_NO_SYNC=1 \
+    PYTHONPATH=/app/src
 
 # Runs as root -- a dedicated non-root user needs a privilege-drop
 # entrypoint (gosu/su-exec) to fix ownership of Docker-created named

@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 
 from psycopg2.extras import Json
 
-import members_etl as etl
+from cd.etl.dags import members_etl as etl
 
 
 def _kiley_party_history(order: str) -> list[dict]:
