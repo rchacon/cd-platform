@@ -1,38 +1,19 @@
-import os
 import time
 import uuid
 
-import psycopg2
 import pytest
 from psycopg2.extras import execute_values
 
 import bills_common
 import house_votes_etl as etl
-
-PG_DSN = {
-    "host": os.environ.get("PGHOST", "localhost"),
-    "port": os.environ.get("PGPORT", "5432"),
-    "dbname": os.environ.get("PGDATABASE", "congressional_app_test"),
-    "user": os.environ.get("PGUSER", "postgres"),
-    "password": os.environ.get("PGPASSWORD", "postgres"),
-}
+from conftest import random_number
 
 # The 119th Congress is seeded by migration 0001, so bill/roll_call
 # fixtures below don't need their own congresses row.
 CONGRESS = 119
 
-
-@pytest.fixture
-def pg_conn():
-    try:
-        conn = psycopg2.connect(connect_timeout=3, **PG_DSN)
-    except psycopg2.OperationalError as exc:
-        pytest.skip(
-            f"Postgres not reachable at {PG_DSN['host']}:{PG_DSN['port']} "
-            f"(run `docker compose up -d postgres` to enable this test): {exc}"
-        )
-    yield conn
-    conn.close()
+# pg_conn fixture lives in conftest.py, shared across every real-Postgres
+# test module.
 
 
 class _NonClosingConnWrapper:
@@ -64,15 +45,11 @@ class _RealConnHook:
         return _NonClosingConnWrapper(self._conn)
 
 
-def _random_number(low: int, high: int) -> int:
-    return low + (uuid.uuid4().int % (high - low))
-
-
 @pytest.fixture
 def test_bill_number(pg_conn):
     # Kept well above any real bill's current range, and under
     # bill_number's SMALLINT max (32767).
-    bill_number = _random_number(20000, 29000)
+    bill_number = random_number(20000, 29000)
     yield bill_number
     with pg_conn.cursor() as cursor:
         cursor.execute(
@@ -112,7 +89,7 @@ def test_bioguide_id(pg_conn):
 
 @pytest.fixture
 def test_vote_number(pg_conn):
-    vote_number = _random_number(20000, 29000)
+    vote_number = random_number(20000, 29000)
     yield vote_number
     with pg_conn.cursor() as cursor:
         cursor.execute(
@@ -310,8 +287,8 @@ def test_load_attributes_member_votes_to_the_correct_roll_call(
     # Guards against a key-mixup bug in load()'s natural-key ->
     # roll_call_id join: two roll calls upserted in one batch must each
     # get their own, correctly-attributed member votes.
-    vote_number_a = _random_number(20000, 24000)
-    vote_number_b = _random_number(24000, 28000)
+    vote_number_a = random_number(20000, 24000)
+    vote_number_b = random_number(24000, 28000)
 
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
 
@@ -366,9 +343,9 @@ def test_load_chunk_failure_does_not_block_other_chunks(
     monkeypatch.setattr(etl, "LOAD_CHUNK_SIZE", 2)
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
 
-    good_vote_number_1 = _random_number(20000, 22000)
-    good_vote_number_2 = _random_number(22000, 24000)
-    bad_vote_number = _random_number(24000, 26000)
+    good_vote_number_1 = random_number(20000, 22000)
+    good_vote_number_2 = random_number(22000, 24000)
+    bad_vote_number = random_number(24000, 26000)
     nonexistent_bill_id = 999_999_999  # violates roll_calls_bill_congress_fk
 
     dag = etl.house_votes_etl()
