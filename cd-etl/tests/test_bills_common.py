@@ -1,6 +1,7 @@
 import time
 
 import pytest
+from congress_models import BillSummaryItem
 from psycopg2.extras import execute_values
 
 import bills_common
@@ -91,6 +92,26 @@ def test_bill_subjects_delete_and_reinsert_replaces_prior_set(pg_conn, test_bill
     pg_conn.commit()
 
     assert _get_bill_subjects(pg_conn, test_bill_id) == ["Tax Policy"]
+
+
+def test_latest_crs_summary_prefers_non_empty_text_over_merely_latest_dated():
+    # Regression test: the most-recently-dated entry having null/empty
+    # text shouldn't discard an earlier entry's real, usable text.
+    summaries = [
+        BillSummaryItem(action_date="2025-01-01", text="Introduced summary"),
+        BillSummaryItem(action_date="2025-06-01", text=None),
+    ]
+
+    assert bills_common._latest_crs_summary(summaries) == "Introduced summary"
+
+
+def test_latest_crs_summary_returns_none_when_no_entry_has_text():
+    summaries = [
+        BillSummaryItem(action_date="2025-01-01", text=None),
+        BillSummaryItem(action_date="2025-06-01", text=""),
+    ]
+
+    assert bills_common._latest_crs_summary(summaries) is None
 
 
 def _fake_api_get(bill_title, policy_area, subject_names, summaries):

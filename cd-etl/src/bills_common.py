@@ -70,12 +70,16 @@ BILL_SUBJECTS_INSERT_SQL = """
 def _latest_crs_summary(summaries: list[BillSummaryItem]) -> str | None:
     # Congress.gov issues a new CRS summary at each legislative stage
     # (introduced, reported, enrolled, ...) -- the one with the latest
-    # actionDate is treated as "the" current summary. Entries with no
-    # actionDate sort first (never picked over a dated one).
-    if not summaries:
+    # actionDate is treated as "the" current summary. Restricted to
+    # entries that actually have text first: a data-quality issue in the
+    # most-recently-dated entry (null/empty text -- this sub-resource has
+    # already been observed elsewhere to have inconsistencies, see
+    # BILL_SUBJECTS_INSERT_SQL's own comment) shouldn't discard an
+    # earlier stage's perfectly usable summary.
+    usable = [s for s in summaries if s.text]
+    if not usable:
         return None
-    latest = max(summaries, key=lambda s: s.action_date or date.min)
-    return latest.text
+    return max(usable, key=lambda s: s.action_date or date.min).text
 
 
 def sync_bill(
