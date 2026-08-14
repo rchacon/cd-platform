@@ -550,9 +550,9 @@ def house_votes_etl():
                         # update -- a follow-up SELECT on the natural key
                         # is used instead to reliably get every
                         # roll_call_id this chunk needs (unlike
-                        # BILLS_UPSERT_SQL, which is single-row and can
-                        # safely use RETURNING because its ON CONFLICT is
-                        # deliberately unconditional).
+                        # bills_common.BILLS_UPSERT_SQL, which is
+                        # single-row and can safely use RETURNING because
+                        # its ON CONFLICT is deliberately unconditional).
                         congress = chunk[0][1]
                         sessions = [row[2] for row in chunk]
                         vote_numbers = [row[3] for row in chunk]
