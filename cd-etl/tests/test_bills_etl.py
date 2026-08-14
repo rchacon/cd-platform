@@ -79,6 +79,18 @@ def test_refresh_bills_skips_failed_bill_without_failing_the_batch(monkeypatch):
     assert fake_conn.closed
 
 
+def test_get_current_congress_delegates_to_the_shared_helper(monkeypatch):
+    monkeypatch.setattr(
+        etl.congress_api, "get_current_congress",
+        lambda postgres_conn_id: 119 if postgres_conn_id == etl.POSTGRES_CONN_ID else None,
+    )
+
+    dag = etl.bills_etl()
+    get_current_congress = dag.task_dict["get_current_congress"].python_callable
+
+    assert get_current_congress() == 119
+
+
 def test_dag_has_expected_tasks_wired_in_the_expected_order():
     dag = etl.bills_etl()
 

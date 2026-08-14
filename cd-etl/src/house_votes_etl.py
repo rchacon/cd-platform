@@ -164,14 +164,7 @@ def house_votes_etl():
 
     @task
     def get_current_congress() -> int:
-        # Same query members_etl.py's task of the same name uses --
-        # Postgres's own current_congress() function is the single place
-        # every ETL agrees on "which Congress is current."
-        hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-        row = hook.get_first("SELECT current_congress()")
-        if row is None or row[0] is None:
-            raise ValueError("No current congress found in congresses table")
-        return row[0]
+        return congress_api.get_current_congress(POSTGRES_CONN_ID)
 
     @task
     def extract_house_vote_summaries(congress: int) -> list[dict[str, Any]]:
