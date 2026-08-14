@@ -11,7 +11,7 @@ os.environ.setdefault("PGDATABASE", "congressional_app_test")
 import psycopg2
 import pytest
 
-from db import PG_DSN
+from cd.api.db import PG_DSN
 
 
 @pytest.fixture

@@ -11,16 +11,16 @@ from mangum import Mangum
 from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from apportionment import is_valid_district, max_valid_district
-from db import fetch_current_members
-from models import (
+from cd.api.apportionment import is_valid_district, max_valid_district
+from cd.api.db import fetch_current_members
+from cd.api.models import (
     PROBLEM_DETAIL_SCHEMA,
     VALIDATION_PROBLEM_DETAIL_SCHEMA,
     MembersResponse,
     VersionResponse,
 )
-from problem import MEDIA_TYPE, problem_response
-from transform import group_representatives
+from cd.api.problem import MEDIA_TYPE, problem_response
+from cd.api.transform import group_representatives
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
