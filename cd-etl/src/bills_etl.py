@@ -110,7 +110,6 @@ def bills_etl():
                     bills_common.sync_bill(
                         _API_SESSION, conn, congress, bill["bill_type"], bill["bill_number"],
                     )
-                    refreshed_count += 1
                 except Exception as exc:
                     # Broad on purpose, same rationale as resolve_bills:
                     # one bill's failure (HTTP error, validation error,
@@ -125,6 +124,8 @@ def bills_etl():
                         "Failed to refresh bill %s %d: %s",
                         bill["bill_type"], bill["bill_number"], exc,
                     )
+                else:
+                    refreshed_count += 1
         finally:
             conn.close()
 
