@@ -40,6 +40,17 @@ from airflow.sdk import dag, task
 
 POSTGRES_CONN_ID = "congressional_postgres"
 
+# Most bills settle down once their legislative activity ends (enacted,
+# failed, vetoed) -- their policy_area/subjects/summary won't meaningfully
+# change again. This schema has no bill-status field to detect that
+# directly, so as a coarse stand-in, a bill isn't re-checked again until
+# at least this many days have passed since its last successful sync --
+# cuts the recurring daily API/DB-write volume against a known-fixed
+# vocabulary of a few hundred bills (per house_votes_etl's own docstring)
+# at the cost of up to this many days' staleness on a genuinely-still-
+# active bill.
+REFRESH_MIN_INTERVAL_DAYS = 7
+
 # refresh_bills processes this many bills concurrently, each fetching via
 # bills_common.sync_bill's own further 3-way fan-out per bill -- sized so
 # the shared session's connection pool comfortably covers both levels at
@@ -70,14 +81,19 @@ def bills_etl():
     def extract_known_bills(congress: int) -> list[dict[str, Any]]:
         # Only bills already in the table -- see this module's own
         # docstring for why this DAG doesn't discover new bills itself.
+        # The synced_at cutoff is REFRESH_MIN_INTERVAL_DAYS's staleness
+        # backoff (see that constant's own comment).
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         rows = hook.get_records(
-            "SELECT bill_type, bill_number FROM bills WHERE congress = %s",
-            parameters=(congress,),
+            """
+            SELECT bill_type, bill_number FROM bills
+            WHERE congress = %s AND synced_at < NOW() - (%s * INTERVAL '1 day')
+            """,
+            parameters=(congress, REFRESH_MIN_INTERVAL_DAYS),
         )
         known_bills = [{"bill_type": row[0], "bill_number": row[1]} for row in rows]
         logger.info(
-            "Found %d already-synced bills to refresh for the %dth Congress",
+            "Found %d already-synced bills due for a refresh for the %dth Congress",
             len(known_bills), congress,
         )
         return known_bills

@@ -6,8 +6,10 @@ import bills_etl as etl
 class _FakeExtractHook:
     def __init__(self, known_bills):
         self._known_bills = known_bills
+        self.calls = []
 
     def get_records(self, sql, parameters=None):
+        self.calls.append((sql, parameters))
         return self._known_bills
 
 
@@ -54,6 +56,24 @@ def test_extract_known_bills_returns_known_bills_for_congress(monkeypatch):
         {"bill_type": "HR", "bill_number": 1},
         {"bill_type": "S", "bill_number": 2},
     ]
+
+
+def test_extract_known_bills_applies_the_staleness_cutoff(monkeypatch):
+    # Regression test: extract_known_bills must actually pass
+    # REFRESH_MIN_INTERVAL_DAYS through to the query, not just define the
+    # constant -- pins the staleness backoff this DAG relies on to avoid
+    # re-syncing every known bill on every single run.
+    fake_hook = _FakeExtractHook([])
+    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: fake_hook)
+
+    dag = etl.bills_etl()
+    extract_known_bills = dag.task_dict["extract_known_bills"].python_callable
+
+    extract_known_bills(119)
+
+    sql, parameters = fake_hook.calls[0]
+    assert "synced_at" in sql
+    assert parameters == (119, etl.REFRESH_MIN_INTERVAL_DAYS)
 
 
 def test_refresh_bills_skips_failed_bill_without_failing_the_batch(monkeypatch):
