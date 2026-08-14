@@ -40,12 +40,13 @@ from airflow.sdk import dag, task
 
 POSTGRES_CONN_ID = "congressional_postgres"
 
-# bills_common.sync_bill fetches a bill's detail/subjects/summaries
-# concurrently (3 requests per bill) -- matches that fan-out, same as
-# house_votes_etl sizing its own session to MEMBER_VOTES_FETCH_WORKERS.
-REFRESH_FETCH_WORKERS = 3
+# refresh_bills processes this many bills concurrently, each fetching via
+# bills_common.sync_bill's own further 3-way fan-out per bill -- sized so
+# the shared session's connection pool comfortably covers both levels at
+# once.
+REFRESH_BATCH_WORKERS = 5
 
-_API_SESSION = congress_api.build_session(pool_maxsize=REFRESH_FETCH_WORKERS)
+_API_SESSION = congress_api.build_session(pool_maxsize=REFRESH_BATCH_WORKERS * 3)
 
 logger = logging.getLogger(__name__)
 
@@ -83,47 +84,40 @@ def bills_etl():
 
     @task
     def refresh_bills(known_bills: list[dict[str, Any]], congress: int) -> None:
-        # Sequential, not congress_api.fetch_concurrently: each bill's
-        # own sync_bill call already commits independently (see
-        # bills_common.sync_bill), and unlike house_votes_etl's
-        # resolve_bills, there's no shared not-yet-existing row two
-        # entries in this batch could race to insert -- every row here
-        # already exists. Sequential is simply the simplest thing that
-        # works at the volume this refresh set actually reaches (a few
-        # hundred bills, per house_votes_etl's own docstring).
+        # Concurrent via congress_api.fetch_concurrently, unlike
+        # house_votes_etl's resolve_bills (which stays sequential because
+        # two votes in the same batch there can race to insert the *same*
+        # not-yet-existing bill). Neither race applies here -- every row
+        # in known_bills already exists -- so what's actually needed is a
+        # separate connection per worker: sync_bill's own cursor/commit
+        # calls aren't safe to share across threads on one psycopg2
+        # connection, unlike the pure-HTTP concurrent fetches elsewhere in
+        # this codebase (fetch_vote_details, fetch_member_votes).
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-        conn = hook.get_conn()
 
-        refreshed_count = 0
-        failed_count = 0
-        try:
-            for bill in known_bills:
-                try:
-                    bills_common.sync_bill(
-                        _API_SESSION, conn, congress, bill["bill_type"], bill["bill_number"],
-                    )
-                except Exception as exc:
-                    # Broad on purpose, same rationale as resolve_bills:
-                    # one bill's failure (HTTP error, validation error,
-                    # DB error) shouldn't abort refreshing the rest.
-                    # conn.rollback() is required -- a DB-side failure
-                    # leaves the shared connection in an
-                    # aborted-transaction state that would otherwise
-                    # break every subsequent iteration's queries too.
-                    conn.rollback()
-                    failed_count += 1
-                    logger.error(
-                        "Failed to refresh bill %s %d: %s",
-                        bill["bill_type"], bill["bill_number"], exc,
-                    )
-                else:
-                    refreshed_count += 1
-        finally:
-            conn.close()
+        def refresh_one(bill: dict[str, Any]) -> None:
+            conn = hook.get_conn()
+            try:
+                bills_common.sync_bill(
+                    _API_SESSION, conn, congress, bill["bill_type"], bill["bill_number"],
+                )
+            except Exception:
+                # A DB-side failure would otherwise leave this worker's
+                # own connection in an aborted-transaction state -- moot
+                # for any later iteration on this same connection since
+                # it's closed right below, but still needed so the
+                # failure itself commits nothing partial.
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
+        refreshed = congress_api.fetch_concurrently(
+            known_bills, refresh_one, max_workers=REFRESH_BATCH_WORKERS,
+        )
         logger.info(
             "Refreshed %d of %d known bills (%d failed)",
-            refreshed_count, len(known_bills), failed_count,
+            len(refreshed), len(known_bills), len(known_bills) - len(refreshed),
         )
 
     congress = get_current_congress()

@@ -1,3 +1,5 @@
+import threading
+
 import bills_etl as etl
 
 
@@ -22,11 +24,19 @@ class _FakeConn:
 
 
 class _FakeConnHook:
-    def __init__(self, conn):
-        self._conn = conn
+    # Returns a distinct _FakeConn per get_conn() call, same as a real
+    # PostgresHook handing each concurrent worker its own connection --
+    # refresh_bills relies on this (sync_bill's cursor/commit calls
+    # aren't safe to share across threads on one connection).
+    def __init__(self):
+        self.connections = []
+        self._lock = threading.Lock()
 
     def get_conn(self):
-        return self._conn
+        conn = _FakeConn()
+        with self._lock:
+            self.connections.append(conn)
+        return conn
 
 
 def test_extract_known_bills_returns_known_bills_for_congress(monkeypatch):
@@ -49,11 +59,10 @@ def test_extract_known_bills_returns_known_bills_for_congress(monkeypatch):
 def test_refresh_bills_skips_failed_bill_without_failing_the_batch(monkeypatch):
     # Regression-style test, mirrors house_votes_etl's resolve_bills fault
     # isolation: one bill's sync_bill failure shouldn't abort refreshing
-    # the rest of the batch, and the shared connection must be rolled
-    # back so the next iteration's queries aren't left in an
-    # aborted-transaction state.
-    fake_conn = _FakeConn()
-    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _FakeConnHook(fake_conn))
+    # the rest of the batch, and its own connection must be rolled back
+    # so the failure doesn't commit anything partial.
+    fake_hook = _FakeConnHook()
+    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: fake_hook)
 
     synced = []
 
@@ -75,8 +84,10 @@ def test_refresh_bills_skips_failed_bill_without_failing_the_batch(monkeypatch):
     refresh_bills(known_bills, 119)
 
     assert synced == [("S", 2)]
-    assert fake_conn.rolled_back_count == 1
-    assert fake_conn.closed
+    assert len(fake_hook.connections) == 2
+    assert all(conn.closed for conn in fake_hook.connections)
+    # Exactly one of the two per-worker connections saw the failure.
+    assert sorted(conn.rolled_back_count for conn in fake_hook.connections) == [0, 1]
 
 
 def test_get_current_congress_delegates_to_the_shared_helper(monkeypatch):
