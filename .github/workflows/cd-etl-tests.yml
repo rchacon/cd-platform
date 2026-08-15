@@ -105,6 +105,19 @@ jobs:
             exit 1
           fi
 
-          docker exec cd-etl-smoke uv run airflow dags list | grep -q congress_members_etl
+          # Not `airflow dags list` -- confirmed empirically that it reads
+          # DAG state from the metadata DB's serialized-DAG table, which
+          # only a running dag-processor populates. This smoke test only
+          # starts api-server, so that table is empty here even though the
+          # DAG files themselves are perfectly valid. DagBag parses the
+          # files directly instead, independent of any dag-processor
+          # having ever run -- the actual thing this check needs to prove.
+          docker exec cd-etl-smoke uv run python -c "
+          from airflow.models import DagBag
+          bag = DagBag(dag_folder='/app/src')
+          assert not bag.import_errors, bag.import_errors
+          assert 'congress_members_etl' in bag.dag_ids, bag.dag_ids
+          print('DAG discovery OK:', sorted(bag.dag_ids))
+          "
 
           docker rm -f cd-etl-smoke
