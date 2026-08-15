@@ -204,6 +204,13 @@ services:
     depends_on:
       cd-etl-migrate:
         condition: service_completed_successfully
+      # Task subprocesses this forks talk to the Execution API below --
+      # waiting for api-server to report healthy first (not just started)
+      # avoids the first few tasks of a fresh `docker compose up` racing
+      # api-server's own bootstrap and failing their first supervisor
+      # contact.
+      cd-etl-api-server:
+        condition: service_healthy
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
@@ -243,6 +250,9 @@ services:
     depends_on:
       cd-etl-migrate:
         condition: service_completed_successfully
+      # See cd-etl-scheduler's own comment.
+      cd-etl-api-server:
+        condition: service_healthy
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
@@ -273,6 +283,9 @@ services:
     depends_on:
       cd-etl-migrate:
         condition: service_completed_successfully
+      # See cd-etl-scheduler's own comment.
+      cd-etl-api-server:
+        condition: service_healthy
     environment:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
