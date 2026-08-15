@@ -13,7 +13,13 @@ if [ "$#" -eq 0 ]; then
     exit 1
 fi
 
-if [ "$1" = "migrate" ]; then
+# Exact single-arg match, not just "$1 = migrate" -- a real command's
+# first argument is always "uv" (every command below is either this
+# literal sentinel or a `uv run ...` invocation), so this is already a
+# non-issue in practice, but requiring the whole argv to be just this one
+# word rules out even a hypothetical future collision with some other
+# command that happens to take "migrate" as its own first argument.
+if [ "$#" -eq 1 ] && [ "$1" = "migrate" ]; then
     uv run airflow db migrate
     uv run alembic upgrade head
     exit 0
