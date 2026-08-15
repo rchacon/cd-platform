@@ -59,12 +59,27 @@ jobs:
       - name: Smoke test production image
         run: |
           POSTGRES_CID=$(docker compose ps -q postgres)
+          # entrypoint.sh no longer has a no-args "standalone" fallback --
+          # Airflow's components each run as their own service now (see
+          # docker-compose.yml), not bundled sibling subprocesses of one
+          # process (rchacon/cd-infra#22). Mirrors that here: migrate
+          # explicitly first, then start api-server as the smoke target
+          # (matches an actual real invocation of this image).
+          FERNET_KEY=$(python3 -c "import secrets, base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
+          COMMON_ENV=(
+            -e CONGRESS_API_KEY=smoke-test
+            -e AIRFLOW_CONN_CONGRESSIONAL_POSTGRES=postgresql://postgres:postgres@localhost:5432/congressional_app
+            -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@localhost:5432/airflow_metadata
+            -e AIRFLOW__API_AUTH__JWT_SECRET=smoke-test-jwt-secret
+            -e AIRFLOW__CORE__FERNET_KEY="$FERNET_KEY"
+            -e AIRFLOW__API__SECRET_KEY=smoke-test-api-secret-key
+          )
+
+          docker run --rm --network container:$POSTGRES_CID "${COMMON_ENV[@]}" cd-etl:production migrate
+
           docker run --rm -d --name cd-etl-smoke \
-            --network container:$POSTGRES_CID \
-            -e CONGRESS_API_KEY=smoke-test \
-            -e AIRFLOW_CONN_CONGRESSIONAL_POSTGRES=postgresql://postgres:postgres@localhost:5432/congressional_app \
-            -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@localhost:5432/airflow_metadata \
-            cd-etl:production
+            --network container:$POSTGRES_CID "${COMMON_ENV[@]}" \
+            cd-etl:production uv run airflow api-server
 
           for i in $(seq 1 30); do
             docker exec cd-etl-smoke uv run python -c \

@@ -23,20 +23,28 @@ services:
       - ./cd-etl/docker/init-airflow-metadata-db.sh:/docker-entrypoint-initdb.d/init-airflow-metadata-db.sh
       # Dedicated database `make test-etl` points at (see the Makefile) --
       # isolates tests from the real dev-seeded data and from `make
-      # start-etl`'s long-running service, rather than racing the same
+      # start-etl`'s long-running services, rather than racing the same
       # database (cd-platform#16).
       - ./cd-etl/docker/init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh
 
+  # No restart policy, no published port, no long-running default command
+  # -- kept only as a base for ad-hoc one-off commands against this image
+  # (`docker compose run --rm cd-etl <cmd>`), e.g. `make test-etl`. The 4
+  # real Airflow components live in their own services below, not this
+  # one -- see AGENTS.md for why (rchacon/cd-infra#22: `airflow standalone`
+  # bundles them as unsupervised sibling subprocesses of one process, so a
+  # crashed scheduler doesn't crash the container and `restart:
+  # unless-stopped` never notices).
   cd-etl:
     # Explicit tag (rather than Compose's default project-derived name) so
     # CI can pre-build this exact image with GHA layer caching and have
-    # this service reuse it without rebuilding.
+    # this service reuse it without rebuilding. Every other cd-etl-*
+    # service below reuses this same image/build.
     image: cd-etl:dev
     build:
       context: ./cd-etl
       dockerfile: docker/Dockerfile
       target: development
-    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,8 +62,6 @@ services:
       # service -- only PGHOST needs overriding, every other PG_DSN
       # default already matches the postgres service's own config above.
       PGHOST: postgres
-    ports:
-      - "8080:8080"
     volumes:
       # Bind-mounted so DAG/test edits show up without rebuilding the
       # image, even though both are already baked into the `development`
@@ -65,6 +71,193 @@ services:
       # Named volume so Airflow's own logs (and anything else under
       # AIRFLOW_HOME not living in Postgres) persist across restarts.
       - cd_etl_airflow_home:/app/.airflow
+
+  # One-shot: applies both Airflow's own metadata migrations and this
+  # project's own schema migrations (cd-etl/migrations/), then exits 0.
+  # Every real component below depends on this exiting successfully
+  # before it starts (entrypoint.sh's "migrate" branch), so migrations
+  # always run exactly once per `docker compose up`, never redundantly on
+  # every component's own start/restart -- meaningfully faster crash
+  # recovery too, since a restarted cd-etl-scheduler skips straight to
+  # `airflow scheduler` instead of re-running `alembic upgrade head` first.
+  # Re-runs (harmlessly, idempotently) on every `docker compose up`, same
+  # "no forgot-to-migrate state" guarantee the old single-container setup
+  # had.
+  cd-etl-migrate:
+    image: cd-etl:dev
+    build:
+      context: ./cd-etl
+      dockerfile: docker/Dockerfile
+      target: development
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
+      # alembic upgrade head's own DSN (cd-etl/migrations/env.py) is built
+      # from PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, not the Airflow
+      # var above -- only PGHOST needs overriding here, same as cd-etl's
+      # own PGHOST override.
+      PGHOST: postgres
+    volumes:
+      - cd_etl_airflow_home:/app/.airflow
+
+  cd-etl-api-server:
+    image: cd-etl:dev
+    build:
+      context: ./cd-etl
+      dockerfile: docker/Dockerfile
+      target: development
+    command: ["uv", "run", "airflow", "api-server"]
+    restart: unless-stopped
+    depends_on:
+      cd-etl-migrate:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
+      # Shared across every component in this file (generate once per
+      # environment via .env.sample's instructions, not per component) --
+      # sign/verify the Execution API's JWTs, encrypt/decrypt stored
+      # Connection passwords, and sign this api-server's session cookies,
+      # respectively.
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
+      # congress_api.py reads this at *module import time*, not lazily --
+      # every DAG file imports it, and every component below that ever
+      # imports a DAG file (this one included, e.g. rendering the "Code"
+      # view) hits a KeyError without it, confirmed empirically.
+      CONGRESS_API_KEY: ${CONGRESS_API_KEY}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./cd-etl/src:/app/src
+      - cd_etl_airflow_home:/app/.airflow
+    healthcheck:
+      # /api/v2/monitor/health always returns 200 (its body reports
+      # per-component status) -- this only proves the api-server process
+      # itself is alive and can reach the metadata DB, which is exactly
+      # the failure mode this split is meant to catch. Other components'
+      # own health is checked by their own healthcheck below, not this one.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  cd-etl-scheduler:
+    image: cd-etl:dev
+    build:
+      context: ./cd-etl
+      dockerfile: docker/Dockerfile
+      target: development
+    command: ["uv", "run", "airflow", "scheduler"]
+    restart: unless-stopped
+    # Stable, Compose-DNS-resolvable hostname -- LocalExecutor forks task
+    # subprocesses directly from this process, and Airflow records this
+    # hostname per task instance so the api-server knows where to fetch a
+    # *currently running* task's live log from (already-completed tasks'
+    # logs are read straight off the shared cd_etl_airflow_home volume
+    # instead). Docker's default random per-container hostname wouldn't
+    # resolve from the cd-etl-api-server container. Port 8793 is that
+    # log-serving port -- doesn't need `ports:` (only publishes to the
+    # host), just needs to be reachable from other containers on this
+    # compose network, which it already is by default.
+    hostname: cd-etl-scheduler
+    expose:
+      - "8793"
+    depends_on:
+      cd-etl-migrate:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
+      # Task subprocesses this scheduler forks (LocalExecutor) talk to the
+      # api-server's Execution API instead of the metadata DB directly --
+      # defaults to localhost, which won't reach another container.
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://cd-etl-api-server:8080/execution/
+      # The only component that needs this: LocalExecutor runs task code
+      # (including DB access inside @task bodies) as a subprocess of the
+      # scheduler itself, not a separate worker -- api-server, triggerer,
+      # and dag-processor never execute task code, so they never touch
+      # this connection.
+      AIRFLOW_CONN_CONGRESSIONAL_POSTGRES: postgresql://postgres:postgres@postgres:5432/congressional_app
+      # See cd-etl-api-server's own comment -- module-import-time
+      # requirement of every DAG file, not just a task-execution one.
+      CONGRESS_API_KEY: ${CONGRESS_API_KEY}
+    volumes:
+      - ./cd-etl/src:/app/src
+      - cd_etl_airflow_home:/app/.airflow
+    healthcheck:
+      test: ["CMD", "uv", "run", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  cd-etl-triggerer:
+    image: cd-etl:dev
+    build:
+      context: ./cd-etl
+      dockerfile: docker/Dockerfile
+      target: development
+    command: ["uv", "run", "airflow", "triggerer"]
+    restart: unless-stopped
+    depends_on:
+      cd-etl-migrate:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://cd-etl-api-server:8080/execution/
+      # See cd-etl-api-server's own comment -- module-import-time
+      # requirement of every DAG file.
+      CONGRESS_API_KEY: ${CONGRESS_API_KEY}
+    volumes:
+      - ./cd-etl/src:/app/src
+      - cd_etl_airflow_home:/app/.airflow
+    healthcheck:
+      test: ["CMD", "uv", "run", "airflow", "jobs", "check", "--job-type", "TriggererJob", "--local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  cd-etl-dag-processor:
+    image: cd-etl:dev
+    build:
+      context: ./cd-etl
+      dockerfile: docker/Dockerfile
+      target: development
+    command: ["uv", "run", "airflow", "dag-processor"]
+    restart: unless-stopped
+    depends_on:
+      cd-etl-migrate:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow_metadata
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://cd-etl-api-server:8080/execution/
+      # See cd-etl-api-server's own comment -- this is the component that
+      # actually hit this at parse time (dag-processor imports every DAG
+      # file to extract its DAG objects).
+      CONGRESS_API_KEY: ${CONGRESS_API_KEY}
+    volumes:
+      - ./cd-etl/src:/app/src
+      - cd_etl_airflow_home:/app/.airflow
+    healthcheck:
+      test: ["CMD", "uv", "run", "airflow", "jobs", "check", "--job-type", "DagProcessorJob", "--local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 volumes:
   postgres_data:

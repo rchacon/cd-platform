@@ -12,28 +12,48 @@ This file provides guidance to AI coding agents (Claude Code, etc.) when working
 ```
 
 This is the backend for the `cd-lookup` WordPress plugin. `cd-etl` is a set of
-Airflow DAGs -- `cd-etl/src/members_etl.py` syncs House and Senate members of
-the current Congress from api.congress.gov, `cd-etl/src/house_votes_etl.py`
-syncs House roll call votes (syncing whatever bill each vote references on
-demand, via `bills_common.py`), and `cd-etl/src/bills_etl.py` refreshes
+Airflow DAGs -- `cd-etl/src/cd/etl/dags/members_etl.py` syncs House and Senate
+members of the current Congress from api.congress.gov,
+`cd-etl/src/cd/etl/dags/house_votes_etl.py` syncs House roll call votes
+(syncing whatever bill each vote references on demand, via
+`bills_common.py`), and `cd-etl/src/cd/etl/dags/bills_etl.py` refreshes
 already-synced bills' `policy_area`/subjects/title/CRS summary on its own
 schedule (see that file's own DAG pipeline section below) -- all into a
 Postgres schema managed by Alembic migrations (`cd-etl/migrations/`). `cd-api`
-is a FastAPI app (`cd-api/src/app.py`) that exposes the `current_members`
-view over HTTP for `cd-lookup` to consume, replacing its current GovTrack
-HTML scrape -- see `cd-api/README.md`.
-`docker-compose.yml` at the repo root runs Postgres, plus a `cd-etl` service
-built from `cd-etl/docker/Dockerfile` -- the same image also pushed to GHCR (see
-`cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev
-and deployment run identically rather than two commands that could drift.
-Docker is the only local dependency for `cd-etl` -- no `uv`/Python needed on
-the host (see the root `Makefile`'s `start-etl`/`test-etl` targets). The
-container's entrypoint applies both Airflow's own metadata migrations and
-this project's own schema migrations (`cd-etl/migrations/`) on every start,
-so there's no separate manual migration step and no "forgot to migrate"
-failure mode. Airflow's own metadata lives in a separate `airflow_metadata`
-database on the same Postgres instance (not its SQLite default), matching
-how production's RDS instance is designed.
+is a FastAPI app (`cd-api/src/cd/api/app.py`) that exposes the
+`current_members` view over HTTP for `cd-lookup` to consume, replacing its
+current GovTrack HTML scrape -- see `cd-api/README.md`.
+
+`docker-compose.yml` at the repo root runs Postgres, a one-shot
+`cd-etl-migrate` service that applies both Airflow's own metadata migrations
+and this project's own schema migrations (`cd-etl/migrations/`) before
+anything else starts, and Airflow 3's 4 real components -- `cd-etl-api-server`,
+`cd-etl-scheduler`, `cd-etl-triggerer`, `cd-etl-dag-processor` -- as separate
+services, rather than one `airflow standalone` process. This split exists
+because `airflow standalone` runs those 4 components as unsupervised sibling
+subprocesses of a single parent process: a crashed scheduler doesn't crash
+the *container*, so Docker's `restart: unless-stopped` never notices -- a
+real incident, not hypothetical (`rchacon/cd-infra#22`: the scheduler died on
+a transient RDS DNS failure and stayed dead for days while every automated
+signal, including the container's own "Up" status, looked fine). Splitting
+each component into its own service means each one's own process *is* its
+container's PID 1, so the already-in-place `restart: unless-stopped` policy
+recovers a crashed one automatically, no new infrastructure needed. All 5
+`cd-etl-*` services (plus a bare `cd-etl` service kept only for ad-hoc
+`docker compose run --rm cd-etl <cmd>` invocations, e.g. `make test-etl`)
+build from the same `cd-etl/docker/Dockerfile` image -- also pushed to GHCR
+(see `cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local
+dev and deployment run identically rather than two commands that could
+drift. Docker is the only local dependency for `cd-etl` -- no `uv`/Python
+needed on the host (see the root `Makefile`'s `start-etl`/`test-etl`
+targets). Migrations still re-run on every `docker compose up` (via
+`cd-etl-migrate`, `entrypoint.sh`'s `migrate` branch), so there's still no
+separate manual migration step and no "forgot to migrate" failure mode --
+just no longer redundant on every component's own start/restart, since only
+`cd-etl-migrate` runs it, once, before the other 4 depend on it completing.
+Airflow's own metadata lives in a separate `airflow_metadata` database on
+the same Postgres instance (not its SQLite default), matching how
+production's RDS instance is designed.
 A gitignored `local_seed.sql` (a `pg_dump --data-only` snapshot of
 `members`/`member_terms`/`bills`/`bill_subjects`/`roll_calls`/
 `roll_call_member_votes`) can be loaded after the schema exists to seed

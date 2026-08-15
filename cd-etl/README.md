@@ -6,11 +6,12 @@ into the schema defined in `migrations/versions/`.
 
 ## What it does
 
-`src/congress_api.py` (session/pagination/concurrent-fetch HTTP helpers)
-and `src/congress_models.py` (Pydantic models for the API's response
-shapes) are shared, DAG-agnostic modules every DAG below builds on.
+`src/cd/etl/congress_api.py` (session/pagination/concurrent-fetch HTTP
+helpers) and `src/cd/etl/congress_models.py` (Pydantic models for the
+API's response shapes) are shared, DAG-agnostic modules every DAG below
+builds on.
 
-### `congress_members_etl` (`src/members_etl.py`)
+### `congress_members_etl` (`src/cd/etl/dags/members_etl.py`)
 
 1. `sync_current_congress` — fetches `/congress/current` and upserts the
    `congresses` table (so the app never relies on a hardcoded Congress number).
@@ -27,7 +28,7 @@ shapes) are shared, DAG-agnostic modules every DAG below builds on.
 7. `load` — upserts both tables; updates are guarded by `source_hash` so
    `updated_at` only bumps when something actually changed.
 
-### `house_votes_etl` (`src/house_votes_etl.py`)
+### `house_votes_etl` (`src/cd/etl/dags/house_votes_etl.py`)
 
 Syncs House roll call votes into `roll_calls`/`roll_call_member_votes`,
 populating bills on demand rather than proactively -- see the module's
@@ -50,10 +51,10 @@ own docstring for why.
 
 - Docker -- the only local dependency. No `uv`/Python install needed;
   everything (dependencies, Airflow's own metadata migrations, this
-  project's own schema migrations) runs inside the `cd-etl` container
-  defined in `../docker-compose.yml`, built from `docker/Dockerfile` -- the
-  same image (also pushed to GHCR on a `cd-etl-v*` tag, see below) local
-  dev and deployment both run.
+  project's own schema migrations) runs inside the `cd-etl-*` services
+  defined in `../docker-compose.yml`, all built from `docker/Dockerfile` --
+  the same image (also pushed to GHCR on a `cd-etl-v*` tag, see below)
+  local dev and deployment both run.
 - A free API key from [api.congress.gov](https://api.congress.gov)
 
 ## Setup
@@ -70,14 +71,18 @@ own docstring for why.
    make start-etl
    ```
 
-   This builds the image, applies both Airflow's own metadata migrations
-   and this project's schema migrations, then starts the API server,
-   scheduler, and dag-processor together. Open the UI at
-   `http://localhost:8080`, unpause `congress_members_etl`, and trigger it.
-   Once it's synced members, unpause and trigger `house_votes_etl` too --
-   it looks up `members.bioguide_id` for each vote cast, so members needs
-   to run first. `cd-etl/src` is bind-mounted, so DAG edits show up
-   without rebuilding.
+   This builds the image; brings up a one-shot `cd-etl-migrate` service
+   that applies both Airflow's own metadata migrations and this project's
+   schema migrations, then exits; and starts Airflow's 4 real components
+   (`cd-etl-api-server`, `cd-etl-scheduler`, `cd-etl-triggerer`,
+   `cd-etl-dag-processor`) as their own separate, independently-restarting
+   services, rather than one bundled `airflow standalone` process -- see
+   the root `AGENTS.md` for why. Open the UI at `http://localhost:8080`,
+   unpause `congress_members_etl`, and trigger it. Once it's synced
+   members, unpause and trigger `house_votes_etl` too -- it looks up
+   `members.bioguide_id` for each vote cast, so members needs to run
+   first. `cd-etl/src` is bind-mounted, so DAG edits show up without
+   rebuilding.
 
 3. Optionally, seed real data instead of running the DAG. `local_seed.sql`
    is gitignored (not tracked in git -- from a previous run of your own, or
@@ -125,10 +130,14 @@ make test-etl TEST=test_members_etl.py::test_name
 `docker/Dockerfile` is multi-stage: `production` (what actually ships, built above)
 has no test dependencies at all, while `development` (what `make start-etl`/
 `test-etl` build) additionally installs `pytest` and copies `tests/` in --
-so this also doesn't need `uv`/Python on the host. The entrypoint applies
-both Airflow's own and this project's own migrations before every run, so
-the schema is always current -- there's no "forgot to migrate" failure mode
-to worry about here.
+so this also doesn't need `uv`/Python on the host. `make test-etl` runs
+`entrypoint.sh`'s `migrate` step explicitly (against `congressional_app_test`,
+see below) before running `pytest`, so the schema is always current -- there's
+no "forgot to migrate" failure mode to worry about here. (`entrypoint.sh`
+no longer applies migrations on every invocation unconditionally the way it
+once did -- see `AGENTS.md` -- so this explicit step is what keeps that
+guarantee for tests specifically; the 4 real Airflow components each get it
+once, up front, via the dedicated `cd-etl-migrate` service instead.)
 
 `make test-etl` runs against a dedicated `congressional_app_test` database
 (a sibling of `congressional_app` in the same Postgres container, created
