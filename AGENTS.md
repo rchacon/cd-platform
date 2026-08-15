@@ -38,7 +38,16 @@ a transient RDS DNS failure and stayed dead for days while every automated
 signal, including the container's own "Up" status, looked fine). Splitting
 each component into its own service means each one's own process *is* its
 container's PID 1, so the already-in-place `restart: unless-stopped` policy
-recovers a crashed one automatically, no new infrastructure needed. All 5
+recovers a crashed one automatically, no new infrastructure needed. Each of
+the 4 real components also gets a `healthcheck:` (`airflow jobs check` for
+scheduler/triggerer/dag-processor, an HTTP probe for api-server) -- these are
+visibility only (`docker compose ps`/`docker inspect` surface an `unhealthy`
+status), not recovery: `restart: unless-stopped` reacts to the *container's*
+own process exiting, not to `HEALTHCHECK` status, so a component that hangs
+without its process actually dying (as opposed to `rchacon/cd-infra#22`'s
+own incident, a genuine crash) still isn't auto-recovered by this alone --
+same "visibility vs. something acting on it" gap that issue's own Option 1
+describes. All 5
 `cd-etl-*` services (plus a bare `cd-etl` service kept only for ad-hoc
 `docker compose run --rm cd-etl <cmd>` invocations, e.g. `make test-etl`)
 build from the same `cd-etl/docker/Dockerfile` image -- also pushed to GHCR
