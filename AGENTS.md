@@ -290,16 +290,20 @@ git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/cd-api-v*
                                       # another hooks framework (husky,
                                       # lefthook, pre-commit, etc.)
 make start-etl        # docker compose up -d postgres && docker compose up
-                       # --build cd-etl -- builds the image, applies both
-                       # Airflow's own and this project's migrations, starts
-                       # the DAG -- UI at http://localhost:8080
+                       # --build cd-etl-api-server cd-etl-scheduler
+                       # cd-etl-triggerer cd-etl-dag-processor -- builds the
+                       # image, brings up cd-etl-migrate (applies both
+                       # Airflow's own and this project's migrations, then
+                       # exits) as their dependency, starts the 4 real
+                       # components -- UI at http://localhost:8080
 
 # Optionally seed real data instead of running the DAG
 docker compose exec -T postgres psql -U postgres -d congressional_app \
   -f - < local_seed.sql
 
 # Tests (tests/ is bind-mounted, so this doesn't need uv/Python on the host)
-make test-etl                                  # docker compose run --rm -e PGDATABASE=congressional_app_test cd-etl uv run pytest tests/
+make test-etl                                  # docker compose run --rm -e PGDATABASE=congressional_app_test cd-etl migrate
+                                                # && docker compose run --rm -e PGDATABASE=congressional_app_test cd-etl uv run pytest tests/
 make test-etl TEST=test_members_etl.py::test_name
 ```
 
