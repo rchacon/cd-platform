@@ -81,14 +81,30 @@ jobs:
             --network container:$POSTGRES_CID "${COMMON_ENV[@]}" \
             cd-etl:production uv run airflow api-server
 
-          for i in $(seq 1 30); do
-            docker exec cd-etl-smoke uv run python -c \
-              "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health')" \
-              && break
-            sleep 2
+          healthy=false
+          for i in $(seq 1 60); do
+            if docker exec cd-etl-smoke uv run python -c \
+              "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health', timeout=5)" 2>/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 3
           done
+
+          # Always visible, success or failure -- api-server's own stdout is
+          # otherwise only reachable via `docker logs`, and an assertion
+          # failing below would otherwise exit (set -e) before ever
+          # printing it.
+          echo "::group::cd-etl-smoke container logs"
+          docker logs cd-etl-smoke
+          echo "::endgroup::"
+
+          if [ "$healthy" != "true" ]; then
+            echo "::error::api-server never responded to a health check"
+            docker rm -f cd-etl-smoke
+            exit 1
+          fi
 
           docker exec cd-etl-smoke uv run airflow dags list | grep -q congress_members_etl
 
-          docker logs cd-etl-smoke
           docker rm -f cd-etl-smoke
