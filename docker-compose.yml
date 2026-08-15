@@ -48,6 +48,17 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Protects any ad-hoc `docker compose run --rm cd-etl <cmd>`
+      # invocation, not just the two wired into the Makefile, from running
+      # against an unmigrated schema -- entrypoint.sh no longer migrates
+      # unconditionally on every invocation the way it once did. Confirmed
+      # empirically that `docker compose run` re-triggers a fresh
+      # cd-etl-migrate run on *every* invocation of this service, not just
+      # the first (unlike `docker compose up`, which would recognize an
+      # already-exited-0 dependency and skip it) -- a harmless ~1s of
+      # idempotent overhead per ad-hoc command, not a one-time cost.
+      cd-etl-migrate:
+        condition: service_completed_successfully
     environment:
       CONGRESS_API_KEY: ${CONGRESS_API_KEY}
       # Compose's internal DNS resolves service names -- "postgres" here,
