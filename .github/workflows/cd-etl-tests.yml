@@ -121,3 +121,33 @@ jobs:
           "
 
           docker rm -f cd-etl-smoke
+
+          # api-server above is the only one of the 4 real components this
+          # smoke test otherwise exercises against the actual `production`
+          # target (vs. `development`, which is what `test`'s own DAG-run
+          # coverage above uses) -- production has no test dependencies at
+          # all installed, so a missing runtime import specific to one of
+          # these 3 wouldn't be caught by anything else in CI. Not a full
+          # bring-up (no api-server/depends_on chain here), just confirming
+          # each one starts and stays up briefly rather than crashing
+          # immediately.
+          for cmd in scheduler triggerer dag-processor; do
+            name="cd-etl-smoke-$cmd"
+            docker run --rm -d --name "$name" \
+              --network container:$POSTGRES_CID "${COMMON_ENV[@]}" \
+              cd-etl:production uv run airflow "$cmd"
+
+            sleep 5
+
+            echo "::group::$name container logs"
+            docker logs "$name"
+            echo "::endgroup::"
+
+            if [ "$(docker inspect -f '{{.State.Running}}' "$name")" != "true" ]; then
+              echo "::error::$name exited within 5s of starting"
+              docker rm -f "$name"
+              exit 1
+            fi
+
+            docker rm -f "$name"
+          done
