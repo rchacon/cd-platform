@@ -83,6 +83,17 @@ services:
   # Re-runs (harmlessly, idempotently) on every `docker compose up`, same
   # "no forgot-to-migrate state" guarantee the old single-container setup
   # had.
+  #
+  # Known gap in production specifically: this service exits immediately
+  # after a successful run, so on a Watchtower-driven redeploy (see
+  # AGENTS.md's Releasing section) it isn't "running" for Watchtower to
+  # recreate the way the 4 long-running components below are -- a new
+  # image's own schema migration may not get applied automatically by that
+  # path. The old single-container design didn't have this gap (every
+  # Watchtower-triggered restart re-ran migrate unconditionally, since it
+  # was the same container). Needs a cd-infra-side fix (e.g. reviving
+  # stopped containers on update, or a pre-deploy hook that runs this
+  # service explicitly); not fixable from this compose file alone.
   cd-etl-migrate:
     image: cd-etl:dev
     build:
@@ -100,6 +111,18 @@ services:
       # var above -- only PGHOST needs overriding here, same as cd-etl's
       # own PGHOST override.
       PGHOST: postgres
+      # Confirmed empirically: without these, `airflow db migrate` (the
+      # first Airflow invocation against a fresh cd_etl_airflow_home
+      # volume) auto-generates and persists its own random fernet_key/
+      # secret_key/jwt_secret into the shared airflow.cfg -- values the 4
+      # real components below never actually use (their own env vars take
+      # precedence over the file), but a stray, inconsistent set of values
+      # left on disk regardless. Pinned here too so every Airflow
+      # invocation against this volume agrees, full stop, not just the
+      # ones that happen to matter today.
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
     volumes:
       - cd_etl_airflow_home:/app/.airflow
 
