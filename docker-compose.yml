@@ -66,6 +66,44 @@ services:
       # AIRFLOW_HOME not living in Postgres) persist across restarts.
       - cd_etl_airflow_home:/app/.airflow
 
+  # No Postgres dependency yet -- v1 only exposes a health check and a
+  # GraphQL version query, so nothing to migrate. Doubles as the ad-hoc
+  # test runner (`docker compose run --rm cd-server uv run pytest tests/`,
+  # what `make test-server` uses) and the long-running local service
+  # (`docker compose up cd-server`), unlike cd-etl's split into a bare
+  # ad-hoc service plus 4 real ones -- there's no migrate-vs-serve
+  # distinction here to justify that split yet.
+  cd-server:
+    image: cd-server:dev
+    build:
+      # Repo root, not ./cd-server -- cd-server/docker/Dockerfile also
+      # COPYs in cd-lib, a sibling directory Docker can't reach from a
+      # narrower context. See that Dockerfile's own comment.
+      context: .
+      dockerfile: cd-server/docker/Dockerfile
+      target: development
+    restart: unless-stopped
+    environment:
+      # Defaults to enabled for `docker compose up`/plain `run` (dev
+      # convenience -- GraphiQL + introspection, see app.py/schema.py).
+      # `make test-server` overrides this to "false" so tests run
+      # against the same introspection-disabled default the production
+      # image ships with, not the dev-friendly one -- see the Makefile.
+      GRAPHIQL_ENABLED: "${CD_SERVER_GRAPHIQL_ENABLED:-true}"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./cd-server/src:/app/src
+      # Bind-mounted for the same reason cd-etl mounts both src/ and
+      # tests/ (see its own comment above) -- without this, `docker
+      # compose run --rm cd-server uv run pytest tests/` (what `make
+      # test-server` uses) would run against whatever tests/ was baked
+      # into the image at the last --build, not local edits.
+      - ./cd-server/tests:/app/tests
+      # Same live-edit convenience as the src mount above, for the
+      # cd-lib code this service also depends on.
+      - ./cd-lib/src:/cd-lib/src
+
 volumes:
   postgres_data:
   cd_etl_airflow_home:

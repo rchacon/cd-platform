@@ -12,22 +12,56 @@ This file provides guidance to AI coding agents (Claude Code, etc.) when working
 ```
 
 This is the backend for the `cd-lookup` WordPress plugin. `cd-etl` is a set of
-Airflow DAGs -- `cd-etl/src/members_etl.py` syncs House and Senate members of
-the current Congress from api.congress.gov, `cd-etl/src/house_votes_etl.py`
-syncs House roll call votes (syncing whatever bill each vote references on
-demand, via `bills_common.py`), and `cd-etl/src/bills_etl.py` refreshes
+Airflow DAGs -- `cd-etl/src/cd/etl/dags/members_etl.py` syncs House and Senate
+members of the current Congress from api.congress.gov,
+`cd-etl/src/cd/etl/dags/house_votes_etl.py` syncs House roll call votes
+(syncing whatever bill each vote references on demand, via
+`bills_common.py`), and `cd-etl/src/cd/etl/dags/bills_etl.py` refreshes
 already-synced bills' `policy_area`/subjects/title/CRS summary on its own
 schedule (see that file's own DAG pipeline section below) -- all into a
 Postgres schema managed by Alembic migrations (`cd-etl/migrations/`). `cd-api`
-is a FastAPI app (`cd-api/src/app.py`) that exposes the `current_members`
-view over HTTP for `cd-lookup` to consume, replacing its current GovTrack
-HTML scrape -- see `cd-api/README.md`.
+is a FastAPI app (`cd-api/src/cd/api/app.py`) that exposes the
+`current_members` view over HTTP for `cd-lookup` to consume, replacing its
+current GovTrack HTML scrape -- see `cd-api/README.md`. `cd-server` is a
+FastAPI + GraphQL (Strawberry) app (`cd-server/src/cd/server/app.py`) that
+will back `cd-webapp`, a separate React repo -- currently exposing only a
+`version` query, plus plain REST `/health` and `/version` endpoints (the
+latter mirroring `cd-api`'s own `GET /version` shape, for a quick `curl`
+check without a GraphQL client); see `cd-server/README.md`. Down the
+line it will get its own Postgres database, issue and manage API keys,
+handle billing for authenticated users, and make authenticated
+server-to-server calls to `cd-api` on behalf of `cd-webapp`'s anonymous
+users -- none of that exists yet, this is deliberately just the initial
+scaffold. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is containerized
+from day one (see below), since it's expected to hold long-lived
+state/connections once its own database lands; the intended production
+target is an ECS service backed by EC2, provisioned in `cd-infra`.
+`cd-lib` (`cd-lib/src/cd/lib/`) is a shared library the Python services depend
+on as a local, editable path dependency (`[tool.uv.sources]`, not a
+published package, not a `uv` workspace -- each component keeps its own
+independent `pyproject.toml`/`uv.lock`) -- currently just `version.py`'s
+`read_version()`, consumed by `cd-server` today (`cd-api`/`cd-etl` don't
+depend on it yet). Any component that *does* depend on `cd-lib` must have
+no `cd/__init__.py` of its own (an implicit PEP 420 namespace package, not
+a regular one) so its own `cd.<component>` and `cd-lib`'s `cd.lib` --
+installed from two physically separate locations -- merge into one
+importable `cd` namespace instead of only one of them being visible;
+`cd-server` already has this (its `src/cd/__init__.py` was removed when it
+adopted `cd-lib`), `cd-api`/`cd-etl` still have theirs today and would need
+the same removal if/when they adopt `cd-lib` too. See `cd-lib/README.md`
+for the full explanation. A component built in Docker needs its build
+context to be the repo root, not its own directory, so `cd-lib` is
+reachable at all (`cd-server/docker/Dockerfile` is the first example of
+this).
 `docker-compose.yml` at the repo root runs Postgres, plus a `cd-etl` service
 built from `cd-etl/docker/Dockerfile` -- the same image also pushed to GHCR (see
 `cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev
 and deployment run identically rather than two commands that could drift.
 Docker is the only local dependency for `cd-etl` -- no `uv`/Python needed on
-the host (see the root `Makefile`'s `start-etl`/`test-etl` targets). The
+the host (see the root `Makefile`'s `start-etl`/`test-etl` targets). A
+`cd-server` service follows the identical pattern (`cd-server/docker/Dockerfile`,
+pushed to GHCR on a `cd-server-v*` tag, `make start-server`/`test-server`) --
+see `cd-server/README.md`. The
 container's entrypoint applies both Airflow's own metadata migrations and
 this project's own schema migrations (`cd-etl/migrations/`) on every start,
 so there's no separate manual migration step and no "forgot to migrate"
@@ -259,16 +293,17 @@ individual findings separately later.
 Run from the repo root unless noted otherwise. `cd-api/` has its own
 independent, non-Docker command set (`uv sync`, `uv run uvicorn`,
 `uv run pytest`) run from `cd-api/` instead -- see `cd-api/README.md`.
+`cd-server/` needs Docker only, same as `cd-etl` -- see `cd-server/README.md`.
 
 ```bash
 # One-time setup
 cp .env.sample .env   # fill in CONGRESS_API_KEY
-git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/cd-api-v*
-                                      # tag/pyproject.toml version mismatch
-                                      # before CI does. Repoints ALL git hooks
-                                      # to .githooks, so skip this if you use
-                                      # another hooks framework (husky,
-                                      # lefthook, pre-commit, etc.)
+git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/cd-api-v*/
+                                      # cd-server-v* tag/pyproject.toml version
+                                      # mismatch before CI does. Repoints ALL
+                                      # git hooks to .githooks, so skip this if
+                                      # you use another hooks framework
+                                      # (husky, lefthook, pre-commit, etc.)
 make start-etl        # docker compose up -d postgres && docker compose up
                        # --build cd-etl -- builds the image, applies both
                        # Airflow's own and this project's migrations, starts
@@ -281,6 +316,11 @@ docker compose exec -T postgres psql -U postgres -d congressional_app \
 # Tests (tests/ is bind-mounted, so this doesn't need uv/Python on the host)
 make test-etl                                  # docker compose run --rm -e PGDATABASE=congressional_app_test cd-etl uv run pytest tests/
 make test-etl TEST=test_members_etl.py::test_name
+
+make start-server      # docker compose up --build cd-server -- GraphiQL at
+                        # http://localhost:8000/graphql, health check at
+                        # http://localhost:8000/health
+make test-server       # docker compose run --rm cd-server uv run pytest tests/
 ```
 
 `tests/test_upsert_sql.py` needs a live Postgres and skips itself if one
@@ -322,3 +362,8 @@ involved; the EC2 side polls for new images via Watchtower rather than CI
 pushing to it directly.
 `.github/workflows/cd-api-tests.yml` runs an analogous (non-Docker) pipeline
 for `cd-api/`.
+`.github/workflows/cd-server-tests.yml`/`cd-server-deploy.yml` mirror
+`cd-etl`'s own two workflows exactly (Docker/GHCR, `cd-server-v*` tags,
+`scripts/check-tag-version.sh`), since `cd-server` follows `cd-etl`'s
+container-deploy model rather than `cd-api`'s Lambda-zip one -- see the
+Architecture section above for why.
