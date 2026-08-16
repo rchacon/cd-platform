@@ -21,3 +21,10 @@ def test_version_endpoint_returns_dev_when_no_version_file():
     response = client.get("/version")
     assert response.status_code == 200
     assert response.json() == {"version": "dev"}
+
+
+def test_introspection_disabled_by_default():
+    response = client.post("/graphql", json={"query": "{ __schema { queryType { name } } }"})
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "introspection has been disabled" in response.json()["errors"][0]["message"]

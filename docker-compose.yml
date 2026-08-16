@@ -84,9 +84,12 @@ services:
       target: development
     restart: unless-stopped
     environment:
-      # Only set here -- the production image (built without this env
-      # var set) ships with the GraphiQL IDE disabled. See app.py.
-      GRAPHIQL_ENABLED: "true"
+      # Defaults to enabled for `docker compose up`/plain `run` (dev
+      # convenience -- GraphiQL + introspection, see app.py/schema.py).
+      # `make test-server` overrides this to "false" so tests run
+      # against the same introspection-disabled default the production
+      # image ships with, not the dev-friendly one -- see the Makefile.
+      GRAPHIQL_ENABLED: "${CD_SERVER_GRAPHIQL_ENABLED:-true}"
     ports:
       - "8000:8000"
     volumes:

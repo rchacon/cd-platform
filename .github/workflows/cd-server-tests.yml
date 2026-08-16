@@ -74,4 +74,12 @@ jobs:
 
           curl -sf http://localhost:8000/version | grep -q '"version"'
 
+          # Introspection must be off on the production image (schema.py
+          # only adds DisableIntrospection when GRAPHIQL_ENABLED is unset,
+          # which is the case here -- this image was built without it).
+          curl -sf -X POST http://localhost:8000/graphql \
+            -H 'Content-Type: application/json' \
+            -d '{"query":"{ __schema { queryType { name } } }"}' \
+            | grep -q 'introspection has been disabled'
+
           docker rm -f cd-server-smoke

@@ -11,4 +11,4 @@ start-server:
 	docker compose up --build cd-server
 
 test-server:
-	docker compose run --rm cd-server uv run pytest tests/$(TEST)
+	CD_SERVER_GRAPHIQL_ENABLED=false docker compose run --rm cd-server uv run pytest tests/$(TEST)
