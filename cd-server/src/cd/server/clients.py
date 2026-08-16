@@ -1,4 +1,5 @@
 import json
+from abc import ABC, abstractmethod
 
 import boto3
 import httpx
@@ -17,18 +18,28 @@ class ApiClientError(Exception):
         super().__init__(f"cd-api returned {status_code}: {body}")
 
 
-class HttpApiClient:
+class ApiClient(ABC):
+    """Common interface HttpApiClient/LambdaApiClient both implement, so
+    the two can't silently drift apart (a subclass missing get() raises
+    TypeError at instantiation, not just at first call)."""
+
+    @abstractmethod
+    def get(self, path: str, query: dict[str, str]) -> dict:
+        ...
+
+
+class HttpApiClient(ApiClient):
     def __init__(self, base_url: str):
         self.base_url = base_url
 
-    def get(self, path: str, query: dict[str, str]):
+    def get(self, path: str, query: dict[str, str]) -> dict:
         response = httpx.get(f"{self.base_url}{path}", params=query)
         if response.is_error:
             raise ApiClientError(response.status_code, response.text)
         return response.json()
 
 
-class LambdaApiClient:
+class LambdaApiClient(ApiClient):
     """Calls cd-api's real Lambda function directly via boto3, bypassing
     API Gateway entirely -- no network hop, and no X-Api-Key needed
     (cd-api's own code never checks that header; only API Gateway does,
@@ -45,7 +56,7 @@ class LambdaApiClient:
         self.lambda_client = boto3.client("lambda")
         self.function_name = function_name
 
-    def get(self, path: str, query: dict[str, str]):
+    def get(self, path: str, query: dict[str, str]) -> dict:
         # cd-api's Mangum handler strips a leading /v1 (api_gateway_base_path)
         # before routing -- included here so this synthetic event matches
         # what real API Gateway forwards in production (cd-infra#19),
@@ -92,7 +103,7 @@ def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
     }
 
 
-def get_api_client():
+def get_api_client() -> ApiClient:
     if settings.ENVIRONMENT == "local":
         return HttpApiClient(settings.CD_API_BASE_URL)
     return LambdaApiClient(settings.CD_API_FUNCTION_NAME)

@@ -6,12 +6,26 @@ import pytest
 
 from cd.server import settings
 from cd.server.clients import (
+    ApiClient,
     ApiClientError,
     HttpApiClient,
     LambdaApiClient,
     _build_gateway_event,
     get_api_client,
 )
+
+
+def test_both_clients_implement_the_shared_interface():
+    assert issubclass(HttpApiClient, ApiClient)
+    assert issubclass(LambdaApiClient, ApiClient)
+
+
+def test_incomplete_subclass_cannot_be_instantiated():
+    class Incomplete(ApiClient):
+        pass
+
+    with pytest.raises(TypeError):
+        Incomplete()
 
 
 def test_build_gateway_event_shape():
