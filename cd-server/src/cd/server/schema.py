@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 
 import strawberry
+import strawberry.experimental.pydantic as strawberry_pydantic
+from cd.lib.models import MembersResponse, Person
 from cd.lib.version import read_version
 from strawberry.extensions import DisableIntrospection
 
@@ -23,23 +25,14 @@ GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 api_client = get_api_client()
 
 
-# Mirrors cd-api's own Person model (cd-api/src/cd/api/models.py) field
-# for field -- not shared code, since cd-server receives this as plain
-# JSON over HTTP/Lambda, not a live Python object; there's no Pydantic
-# model instance to actually share across that boundary, just a response
-# shape to agree on independently.
-@strawberry.type
+# Derived from cd-lib's shared Person model (also used by cd-api itself
+# to build its own response) rather than hand-rolled -- also carries over
+# each field's Field(description=...) into the generated GraphQL schema
+# for free. from_pydantic() below is what strawberry_pydantic.type
+# generates for converting a validated Person into this GraphQL type.
+@strawberry_pydantic.type(model=Person, all_fields=True)
 class Representative:
-    first_name: str | None
-    middle_name: str | None
-    last_name: str | None
-    nickname: str | None
-    suffix: str | None
-    role: str
-    party: str | None
-    phone: str | None
-    website: str | None
-    photo_url: str | None
+    pass
 
 
 @strawberry.type
@@ -65,12 +58,17 @@ class Query:
     @strawberry.field
     def get_representatives(self, state: str, district: int) -> list[Representative]:
         result = api_client.get("/members", {"state": state, "district": str(district)})
-        return [Representative(**person) for person in result["representatives"]]
+        # MembersResponse(**result) validates cd-api's actual response
+        # against the same shared model cd-api itself built it from,
+        # rather than trusting the JSON shape blindly.
+        members = MembersResponse(**result)
+        return [Representative.from_pydantic(person) for person in members.representatives]
 
     @strawberry.field
     def get_senators(self, state: str) -> list[Representative]:
         result = api_client.get("/members", {"state": state})
-        return [Representative(**person) for person in result["senators"]]
+        members = MembersResponse(**result)
+        return [Representative.from_pydantic(person) for person in members.senators]
 
 
 schema = strawberry.Schema(
