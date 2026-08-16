@@ -46,11 +46,12 @@ handlers registered in `src/cd/api/app.py`.
 `src/cd/api/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
 issue #4). `src/cd/api/transform.py` holds the pure row -> JSON-shape
-functions. `src/cd/api/models.py` holds the Pydantic models documenting
-those same request/response shapes (`response_model=`/`responses=` on each
-route in `src/cd/api/app.py`), so the OpenAPI spec exported on release (see
-Releasing below) actually reflects what the API returns, including error
-bodies.
+functions. `../cd-lib/src/cd/lib/models.py` holds the Pydantic models
+documenting those same request/response shapes (`response_model=`/
+`responses=` on each route in `src/cd/api/app.py`), so the OpenAPI spec
+exported on release (see Releasing below) actually reflects what the API
+returns, including error bodies -- shared with `cd-server` via `cd-lib`
+(see `../cd-lib/README.md`) rather than living only in `cd-api`.
 
 `handler = Mangum(app)` in `app.py` is what an AWS Lambda config points to
 (as the dotted path `cd.api.app.handler` -- see Releasing below for why the

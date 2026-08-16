@@ -13,14 +13,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from cd.api.apportionment import is_valid_district, max_valid_district
 from cd.api.db import fetch_current_members
-from cd.api.models import (
+from cd.api.problem import MEDIA_TYPE, problem_response
+from cd.api.transform import group_representatives
+from cd.lib.models import (
     PROBLEM_DETAIL_SCHEMA,
     VALIDATION_PROBLEM_DETAIL_SCHEMA,
     MembersResponse,
     VersionResponse,
 )
-from cd.api.problem import MEDIA_TYPE, problem_response
-from cd.api.transform import group_representatives
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
