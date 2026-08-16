@@ -52,8 +52,9 @@ make start-server
 Open `http://localhost:8000/graphql` for the GraphiQL IDE,
 `http://localhost:8000/health` for the health check, or `curl
 http://localhost:8000/version` for a quick version check.
-`cd-server/src` and `cd-lib/cd` are both bind-mounted, so edits to
-either show up without rebuilding.
+`cd-server/src` and `cd-lib/src` are both bind-mounted, so edits to
+either show up without rebuilding. `tests/` is bind-mounted too, so
+`make test-server` picks up local test edits without a rebuild.
 
 ## Testing
 
