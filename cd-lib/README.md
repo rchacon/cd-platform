@@ -6,14 +6,22 @@ components as a local path dependency.
 
 ## What it does
 
-`cd/lib/version.py` -- `read_version(package_dir)` reads a component's
+`src/cd/lib/version.py` -- `read_version(package_dir)` reads a component's
 own `VERSION` file (written into its image/zip at release time, never
 committed) and falls back to `"dev"` if it's missing. Each component
 passes its own `Path(__file__).parent`, not this package's -- the
 `VERSION` file lives alongside the *consuming* component's deployed
 package, not alongside `cd-lib`.
 
-## Why the package sits directly under `cd-lib/` (no `src/`)
+`cd-lib` uses the same `src/cd/lib/` layout as `cd-api`/`cd-etl`/`cd-server`'s
+own `src/cd/<component>/`, unlike those three, `cd-lib` genuinely gets
+*installed* (it declares `[build-system]`/hatchling and is pulled in as an
+editable dependency) rather than just run in place, so it never needed
+`src/` to support a `pythonpath` pytest workaround the way they do -- it's
+here for structural consistency with its siblings, not because it was
+technically required.
+
+## Why any consumer needs no `cd/__init__.py` of its own
 
 `cd-api`/`cd-etl`/`cd-server` each own their own top-level `cd` package
 (`cd.api`, `cd.etl`, `cd.server`). Any of them that depends on `cd-lib`
@@ -29,7 +37,7 @@ already has this (its `src/cd/__init__.py` was removed when it adopted
 `cd-lib`); `cd-api`/`cd-etl` don't depend on `cd-lib` yet and still have
 theirs -- harmless as long as that stays true, but they'd need the same
 removal the moment either one adds `cd-lib` as a dependency.
-`cd/lib/__init__.py` itself is a normal package -- only the shared `cd`
+`src/cd/lib/__init__.py` itself is a normal package -- only the shared `cd`
 parent needs to stay namespace-only.
 
 ## Consuming it

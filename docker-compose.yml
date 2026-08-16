@@ -89,7 +89,7 @@ services:
       - ./cd-server/src:/app/src
       # Same live-edit convenience as the src mount above, for the
       # cd-lib code this service also depends on.
-      - ./cd-lib/cd:/cd-lib/cd
+      - ./cd-lib/src:/cd-lib/src
 
 volumes:
   postgres_data:

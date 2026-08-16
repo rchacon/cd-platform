@@ -11,7 +11,7 @@ WORKDIR /app
 # it's declared in) resolves the same way here as it does on a real
 # checkout, where cd-server/pyproject.toml's "../cd-lib" means repo-root/cd-lib.
 COPY cd-lib/pyproject.toml /cd-lib/pyproject.toml
-COPY cd-lib/cd/ /cd-lib/cd/
+COPY cd-lib/src/ /cd-lib/src/
 
 COPY cd-server/pyproject.toml cd-server/uv.lock ./
 RUN uv sync --locked --no-dev

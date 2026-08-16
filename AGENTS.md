@@ -36,7 +36,7 @@ scaffold. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is containerized
 from day one (see below), since it's expected to hold long-lived
 state/connections once its own database lands; the intended production
 target is an ECS service backed by EC2, provisioned in `cd-infra`.
-`cd-lib` (`cd-lib/cd/lib/`) is a shared library the Python services depend
+`cd-lib` (`cd-lib/src/cd/lib/`) is a shared library the Python services depend
 on as a local, editable path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
 independent `pyproject.toml`/`uv.lock`) -- currently just `version.py`'s
