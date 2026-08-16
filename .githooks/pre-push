@@ -10,6 +10,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 packages=(
   "cd-etl-v:cd-etl/pyproject.toml"
   "cd-api-v:cd-api/pyproject.toml"
+  "cd-server-v:cd-server/pyproject.toml"
 )
 
 while read -r local_ref local_sha _remote_ref _remote_sha; do
