@@ -4,10 +4,19 @@ RUN pip install --no-cache-dir uv
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock ./
+# Build context is the repo root (not cd-server/ alone) specifically so
+# cd-lib -- a sibling directory -- is reachable at all; Docker can't COPY
+# from outside its own context. Placed at /cd-lib, one level above /app,
+# so pyproject.toml's `../cd-lib` path source (relative to the pyproject.toml
+# it's declared in) resolves the same way here as it does on a real
+# checkout, where cd-server/pyproject.toml's "../cd-lib" means repo-root/cd-lib.
+COPY cd-lib/pyproject.toml /cd-lib/pyproject.toml
+COPY cd-lib/cd/ /cd-lib/cd/
+
+COPY cd-server/pyproject.toml cd-server/uv.lock ./
 RUN uv sync --locked --no-dev
 
-COPY src/ ./src/
+COPY cd-server/src/ ./src/
 
 # UV_NO_SYNC is what makes --no-dev above actually stick: uv run performs
 # its own implicit sync on every invocation regardless of what a prior
@@ -39,4 +48,4 @@ FROM base AS production
 # base's venv before tests/ is copied in.
 FROM base AS development
 RUN uv sync --locked
-COPY tests/ ./tests/
+COPY cd-server/tests/ ./tests/

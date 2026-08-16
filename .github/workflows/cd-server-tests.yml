@@ -15,7 +15,7 @@ jobs:
       - name: Build development image (cached)
         uses: docker/build-push-action@v6
         with:
-          context: cd-server
+          context: .
           file: cd-server/docker/Dockerfile
           target: development
           tags: cd-server:dev
@@ -37,7 +37,7 @@ jobs:
       - name: Build production image (cached)
         uses: docker/build-push-action@v6
         with:
-          context: cd-server
+          context: .
           file: cd-server/docker/Dockerfile
           target: production
           tags: cd-server:production

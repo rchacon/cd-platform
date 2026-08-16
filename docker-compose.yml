@@ -76,14 +76,20 @@ services:
   cd-server:
     image: cd-server:dev
     build:
-      context: ./cd-server
-      dockerfile: docker/Dockerfile
+      # Repo root, not ./cd-server -- cd-server/docker/Dockerfile also
+      # COPYs in cd-lib, a sibling directory Docker can't reach from a
+      # narrower context. See that Dockerfile's own comment.
+      context: .
+      dockerfile: cd-server/docker/Dockerfile
       target: development
     restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
       - ./cd-server/src:/app/src
+      # Same live-edit convenience as the src mount above, for the
+      # cd-lib code this service also depends on.
+      - ./cd-lib/cd:/cd-lib/cd
 
 volumes:
   postgres_data:
