@@ -50,6 +50,17 @@ component keeps its own independent `pyproject.toml`/`uv.lock` -- this is
 a plain path dependency, not a `uv` workspace, so adding `cd-lib` to one
 component doesn't merge its lockfile with anyone else's.
 
+`pyproject.toml`'s own `version` field (`0.1.0`) is nominal, not a real
+release marker -- unlike `cd-api`/`cd-etl`/`cd-server`, nothing ever
+resolves `cd-lib` against that number (no registry, no `cd-lib-v*` tag, no
+`check-tag-version.sh`). An editable path dependency always uses whatever
+code is on disk at build time, so the version a consumer actually embeds
+is implicitly the git commit it was built from. Don't bother bumping this
+field on changes; it'd be cosmetic. Worth revisiting only if `cd-lib` ever
+needs two simultaneously-deployed consumers to depend on genuinely
+incompatible versions of the same function -- the scenario where a real
+version and a compatibility policy would start to matter.
+
 A component whose build runs in Docker needs `cd-lib` reachable from its
 own build context, which means using the repo root as that context (not
 the component's own directory) and explicitly `COPY`ing `cd-lib` in --
