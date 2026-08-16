@@ -1,15 +1,13 @@
 from pathlib import Path
 
 import strawberry
+from cd.lib.version import read_version
 
-VERSION_FILE = Path(__file__).parent / "VERSION"
+PACKAGE_DIR = Path(__file__).parent
 
 
 def _read_version() -> str:
-    try:
-        return VERSION_FILE.read_text().strip()
-    except FileNotFoundError:
-        return "dev"
+    return read_version(PACKAGE_DIR)
 
 
 @strawberry.type

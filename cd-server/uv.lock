@@ -34,10 +34,21 @@ wheels = [
 ]
 
 [[package]]
+name = "cd-lib"
+version = "0.1.0"
+source = { editable = "../cd-lib" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
 name = "cd-server"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cd-lib" },
     { name = "fastapi" },
     { name = "strawberry-graphql", extra = ["fastapi"] },
     { name = "uvicorn" },
@@ -51,6 +62,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cd-lib", editable = "../cd-lib" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "strawberry-graphql", extras = ["fastapi"], specifier = ">=0.240.0" },
     { name = "uvicorn", specifier = ">=0.34.0" },
