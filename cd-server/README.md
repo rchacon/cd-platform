@@ -10,11 +10,14 @@ the schema in `src/cd/server/schema.py`) plus two plain REST endpoints:
 `GET /health` (used by CI and, eventually, an ECS/ALB target group) and
 `GET /version`.
 
-Currently the schema exposes a single query:
+The schema (`src/cd/server/schema.py`) currently exposes:
 
 ```graphql
 {
   version
+  getSenators(state: "CA") { firstName lastName role party }
+  getRepresentatives(state: "CA", district: 12) { firstName lastName role }
+  getDistrict(address: "...") { state district }  # not implemented yet
 }
 ```
 
@@ -28,10 +31,38 @@ written into the image at release time) via `../cd-lib`'s shared
 piece of code shared across `cd-platform`'s Python services, and the
 `cd`-namespace-package detail that makes it work.
 
-Down the line, `cd-server` will get its own Postgres database, issue and
-manage API keys, handle billing for authenticated users, and make
-authenticated server-to-server calls to `cd-api` on behalf of
-`cd-webapp`'s anonymous users -- none of that is built yet.
+`getSenators`/`getRepresentatives` are cd-server's first real
+server-to-server calls to `cd-api` -- `src/cd/server/clients.py`
+provides two interchangeable implementations picked by
+`settings.ENVIRONMENT`: `HttpApiClient` (plain HTTP, for local dev) and
+`LambdaApiClient` (direct `boto3` invoke of the real deployed function,
+bypassing API Gateway entirely -- no network hop, no `X-Api-Key` needed,
+since cd-api's own code never checks that header). `LambdaApiClient`
+builds a synthetic API-Gateway-shaped event and calls cd-api's actual
+Mangum handler with it, so routing/validation/error-formatting all get
+exercised exactly as they would over real HTTP rather than reaching
+around cd-api's HTTP layer to call its internal functions directly.
+`getDistrict` (resolving a free-text address to a state/district, e.g.
+via the Census Bureau's geocoding API) is a separate integration,
+deliberately left unimplemented rather than guessed at.
+
+Down the line, `cd-server` will also get its own Postgres database and
+issue/manage API keys and billing for authenticated users -- not built
+yet.
+
+### Calling cd-api locally
+
+`HttpApiClient`'s default target is `http://host.docker.internal:8000`
+(overridable via `CD_API_BASE_URL`) -- reachable from cd-server's own
+container via the `extra_hosts` entry in `../docker-compose.yml` (Linux
+doesn't resolve `host.docker.internal` by default the way Docker
+Desktop does). Start `cd-api` yourself first, bound to all interfaces
+(uvicorn's own default, `127.0.0.1`, isn't reachable from inside a
+container):
+
+```bash
+cd ../cd-api && uv run uvicorn cd.api.app:app --app-dir src --host 0.0.0.0 --port 8000
+```
 
 ## Prerequisites
 

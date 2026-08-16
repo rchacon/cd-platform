@@ -24,18 +24,21 @@ is a FastAPI app (`cd-api/src/cd/api/app.py`) that exposes the
 `current_members` view over HTTP for `cd-lookup` to consume, replacing its
 current GovTrack HTML scrape -- see `cd-api/README.md`. `cd-server` is a
 FastAPI + GraphQL (Strawberry) app (`cd-server/src/cd/server/app.py`) that
-will back `cd-webapp`, a separate React repo -- currently exposing only a
-`version` query, plus plain REST `/health` and `/version` endpoints (the
-latter mirroring `cd-api`'s own `GET /version` shape, for a quick `curl`
-check without a GraphQL client); see `cd-server/README.md`. Down the
-line it will get its own Postgres database, issue and manage API keys,
-handle billing for authenticated users, and make authenticated
-server-to-server calls to `cd-api` on behalf of `cd-webapp`'s anonymous
-users -- none of that exists yet, this is deliberately just the initial
-scaffold. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is containerized
-from day one (see below), since it's expected to hold long-lived
-state/connections once its own database lands; the intended production
-target is an ECS service backed by EC2, provisioned in `cd-infra`.
+will back `cd-webapp`, a separate React repo -- besides a `version` query
+and plain REST `/health`/`/version` endpoints (the latter mirroring
+`cd-api`'s own `GET /version` shape), it now makes real server-to-server
+calls to `cd-api` (`getSenators`/`getRepresentatives`, mirroring
+`cd-lookup`'s functionality) via `cd-server/src/cd/server/clients.py` --
+two interchangeable client implementations (`HttpApiClient` for local
+dev, `LambdaApiClient` bypassing API Gateway via a direct `boto3` invoke
+of the real function in production) picked by `settings.ENVIRONMENT`; see
+`cd-server/README.md`. Down the line it will also get its own Postgres
+database and issue/manage API keys and billing for authenticated users --
+not built yet. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is
+containerized from day one (see below), since it's expected to hold
+long-lived state/connections once its own database lands; the intended
+production target is an ECS service backed by EC2, provisioned in
+`cd-infra`.
 `cd-lib` (`cd-lib/src/cd/lib/`) is a shared library the Python services depend
 on as a local, editable path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
