@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "GraphQL backend for cd-webapp"
 requires-python = ">=3.12"
 dependencies = [
+    "boto3>=1.35.0",
     "cd-lib",
     "fastapi>=0.115.0",
+    "httpx>=0.28.0",
     "strawberry-graphql[fastapi]>=0.240.0",
     "uvicorn>=0.34.0",
 ]
@@ -16,7 +18,6 @@ cd-lib = { path = "../cd-lib", editable = true }
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
-    "httpx>=0.28.0",
 ]
 
 [tool.pytest.ini_options]
