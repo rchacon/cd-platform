@@ -6,10 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class Person(BaseModel):
-    # Guards against transform.py's _person() growing a field this model
-    # doesn't know about -- response validation then fails loudly (a 500
-    # via the catch-all Exception handler) instead of the exported spec
-    # silently drifting out of sync with the real response shape again.
+    # Guards against cd-api's transform.py (_person()) growing a field
+    # this model doesn't know about -- response validation then fails
+    # loudly (a 500 via cd-api's catch-all Exception handler) instead of
+    # the exported spec silently drifting out of sync with the real
+    # response shape again.
     model_config = ConfigDict(extra="forbid")
 
     first_name: str | None = Field(None, description="Given name.")
