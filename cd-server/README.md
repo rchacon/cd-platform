@@ -32,15 +32,29 @@ piece of code shared across `cd-platform`'s Python services, and the
 
 `getSenators`/`getRepresentatives` are cd-server's first real
 server-to-server calls to `cd-api` -- `src/cd/server/clients.py`
-provides two interchangeable implementations picked by
-`settings.ENVIRONMENT`: `HttpApiClient` (plain HTTP, for local dev) and
-`LambdaApiClient` (direct `boto3` invoke of the real deployed function,
-bypassing API Gateway entirely -- no network hop, no `X-Api-Key` needed,
-since cd-api's own code never checks that header). `LambdaApiClient`
-builds a synthetic API-Gateway-shaped event and calls cd-api's actual
-Mangum handler with it, so routing/validation/error-formatting all get
+provides two interchangeable implementations (a shared `ApiClient` ABC,
+so they can't silently drift apart) picked by `settings.ENVIRONMENT`:
+`HttpApiClient` (plain HTTP, for local dev) and `LambdaApiClient`
+(direct `boto3` invoke of the real deployed function, bypassing API
+Gateway entirely -- no network hop, no `X-Api-Key` needed, since
+cd-api's own code never checks that header). `LambdaApiClient` builds a
+synthetic API-Gateway-shaped event and calls cd-api's actual Mangum
+handler with it, so routing/validation/error-formatting all get
 exercised exactly as they would over real HTTP rather than reaching
 around cd-api's HTTP layer to call its internal functions directly.
+
+Both `get()`s and the two GraphQL resolvers above are `async` --
+`HttpApiClient` holds a single `httpx.AsyncClient` connection pool
+(closed via `app.py`'s FastAPI `lifespan` on shutdown), and
+`LambdaApiClient` wraps `boto3`'s own invoke call (boto3 has no async
+API at all) in `asyncio.to_thread()` rather than pulling in a
+third-party async-boto3 wrapper for what's currently a single call.
+This matters concretely for a query requesting both fields at once --
+strawberry runs independent async resolvers concurrently, so
+`{ getSenators(...) getRepresentatives(...) }` in one request makes both
+cd-api calls in parallel rather than one after the other. Verified
+directly: with an injected 0.5s delay per call, the combined query
+completed in ~0.5s total, not ~1.0s.
 
 Down the line, `cd-server` will also get its own Postgres database,
 issue/manage API keys and billing for authenticated users, and resolve

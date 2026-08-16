@@ -19,9 +19,10 @@ VERSION = read_version(Path(__file__).parent)
 # hiding the IDE would still let any POST client walk the full schema.
 GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 
-# One client, reused across requests -- no per-request state (no auth
-# token, no connection to hold open), same singleton-at-import-time
+# One client, reused across requests -- same singleton-at-import-time
 # pattern cd-etl's congress_api.py already uses for its own HTTP session.
+# get()/aclose() are both async (see clients.py); app.py's lifespan
+# closes this on shutdown.
 api_client = get_api_client()
 
 
@@ -62,8 +63,8 @@ class Query:
         return VERSION
 
     @strawberry.field
-    def get_representatives(self, state: str, district: int) -> list[Representative]:
-        result = api_client.get("/members", {"state": state, "district": str(district)})
+    async def get_representatives(self, state: str, district: int) -> list[Representative]:
+        result = await api_client.get("/members", {"state": state, "district": str(district)})
         # MembersResponse(**result) validates cd-api's actual response
         # against the same shared model cd-api itself built it from,
         # rather than trusting the JSON shape blindly.
@@ -71,8 +72,8 @@ class Query:
         return [Representative.from_pydantic(member) for member in members.representatives]
 
     @strawberry.field
-    def get_senators(self, state: str) -> list[Senator]:
-        result = api_client.get("/members", {"state": state})
+    async def get_senators(self, state: str) -> list[Senator]:
+        result = await api_client.get("/members", {"state": state})
         members = MembersResponse(**result)
         return [Senator.from_pydantic(member) for member in members.senators]
 

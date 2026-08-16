@@ -1,3 +1,4 @@
+import asyncio
 import json
 from abc import ABC, abstractmethod
 
@@ -24,19 +25,32 @@ class ApiClient(ABC):
     TypeError at instantiation, not just at first call)."""
 
     @abstractmethod
-    def get(self, path: str, query: dict[str, str]) -> dict:
+    async def get(self, path: str, query: dict[str, str]) -> dict:
         ...
+
+    async def aclose(self) -> None:
+        """Release any held resources (e.g. an open connection pool).
+        Default no-op -- only HttpApiClient currently needs this."""
 
 
 class HttpApiClient(ApiClient):
     def __init__(self, base_url: str):
         self.base_url = base_url
+        # One client, reused across every get() call rather than opening
+        # a fresh connection per request -- httpx's own docs recommend
+        # against a new client per call for exactly this reason
+        # (connection-pool/TCP-handshake overhead). Closed via aclose(),
+        # called from app.py's lifespan on shutdown.
+        self._client = httpx.AsyncClient()
 
-    def get(self, path: str, query: dict[str, str]) -> dict:
-        response = httpx.get(f"{self.base_url}{path}", params=query)
+    async def get(self, path: str, query: dict[str, str]) -> dict:
+        response = await self._client.get(f"{self.base_url}{path}", params=query)
         if response.is_error:
             raise ApiClientError(response.status_code, response.text)
         return response.json()
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
 
 class LambdaApiClient(ApiClient):
@@ -56,7 +70,7 @@ class LambdaApiClient(ApiClient):
         self.lambda_client = boto3.client("lambda")
         self.function_name = function_name
 
-    def get(self, path: str, query: dict[str, str]) -> dict:
+    async def get(self, path: str, query: dict[str, str]) -> dict:
         # cd-api's Mangum handler strips a leading /v1 (api_gateway_base_path)
         # before routing -- included here so this synthetic event matches
         # what real API Gateway forwards in production (cd-infra#19),
@@ -64,7 +78,13 @@ class LambdaApiClient(ApiClient):
         # otherwise never touch.
         event = _build_gateway_event(f"/v1{path}", query)
 
-        response = self.lambda_client.invoke(
+        # boto3 has no async API at all -- invoke() is a genuinely
+        # blocking network call. asyncio.to_thread() runs it in a thread
+        # pool so it doesn't block the event loop, without needing a
+        # third-party async-boto3 wrapper (aioboto3/aiobotocore) for what
+        # this class does with just this one call.
+        response = await asyncio.to_thread(
+            self.lambda_client.invoke,
             FunctionName=self.function_name,
             Payload=json.dumps(event),
         )

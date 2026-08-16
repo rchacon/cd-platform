@@ -29,10 +29,14 @@ and plain REST `/health`/`/version` endpoints (the latter mirroring
 `cd-api`'s own `GET /version` shape), it now makes real server-to-server
 calls to `cd-api` (`getSenators`/`getRepresentatives`, mirroring
 `cd-lookup`'s functionality) via `cd-server/src/cd/server/clients.py` --
-two interchangeable client implementations (`HttpApiClient` for local
-dev, `LambdaApiClient` bypassing API Gateway via a direct `boto3` invoke
-of the real function in production) picked by `settings.ENVIRONMENT`; see
-`cd-server/README.md`. Down the line it will also get its own Postgres
+two interchangeable async client implementations sharing an `ApiClient`
+ABC (`HttpApiClient` for local dev, `LambdaApiClient` bypassing API
+Gateway via a direct `boto3` invoke -- wrapped in `asyncio.to_thread()`
+since `boto3` itself has no async API -- of the real function in
+production) picked by `settings.ENVIRONMENT`; both GraphQL resolvers are
+`async` too, so a query requesting multiple fields makes their cd-api
+calls concurrently rather than sequentially. See `cd-server/README.md`.
+Down the line it will also get its own Postgres
 database and issue/manage API keys and billing for authenticated users --
 not built yet. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is
 containerized from day one (see below), since it's expected to hold
