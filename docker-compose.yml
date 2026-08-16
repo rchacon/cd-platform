@@ -83,6 +83,10 @@ services:
       dockerfile: cd-server/docker/Dockerfile
       target: development
     restart: unless-stopped
+    environment:
+      # Only set here -- the production image (built without this env
+      # var set) ships with the GraphiQL IDE disabled. See app.py.
+      GRAPHIQL_ENABLED: "true"
     ports:
       - "8000:8000"
     volumes:
