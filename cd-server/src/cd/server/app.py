@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from strawberry.fastapi import GraphQLRouter
 
-from cd.server.schema import _read_version, schema
+from cd.server.schema import VERSION, schema
 
 app = FastAPI(title="cd-server")
 
@@ -18,4 +18,4 @@ def health() -> dict:
 # client/curl -X POST just to confirm what's running.
 @app.get("/version")
 def version() -> dict:
-    return {"version": _read_version()}
+    return {"version": VERSION}
