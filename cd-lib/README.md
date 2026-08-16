@@ -13,13 +13,22 @@ passes its own `Path(__file__).parent`, not this package's -- the
 `VERSION` file lives alongside the *consuming* component's deployed
 package, not alongside `cd-lib`.
 
-`src/cd/lib/models.py` -- Pydantic response models (`Member`,
-`MembersResponse`, `VersionResponse`, `ProblemDetail`,
-`ValidationProblemDetail`), moved here from `cd-api` so `cd-server` can
-validate/parse cd-api's actual HTTP/Lambda responses against the same
-model cd-api itself built them from, instead of trusting the JSON shape
-blindly. `cd-server`'s GraphQL `Representative` and `Senator` types are
-both derived from the same `Member` via
+`src/cd/lib/models.py` -- Pydantic models `Member` and `MembersResponse`
+only, moved here from `cd-api` because `cd-server` actually consumes
+them: it validates/parses cd-api's real HTTP/Lambda responses against
+the same model cd-api itself built them from
+(`MembersResponse(**result)`), instead of trusting the JSON shape
+blindly. `cd-api`'s own `VersionResponse`/`ProblemDetail`/
+`ValidationProblemDetail` deliberately stayed in
+`cd-api/src/cd/api/models.py` -- `cd-server` never touches them, and
+`cd-lib` is for code that's actually shared, not everywhere cd-api's
+own models happen to live. `cd-api` still owns *building* `Member`s
+(`transform.py`'s row -> dict functions, `response_model=`/`responses=`
+in `app.py`) -- only the `Member`/`MembersResponse` *definitions*
+moved, not the logic that populates them.
+
+`cd-server`'s GraphQL `Representative` and `Senator` types are both
+derived from the same `Member` via
 `strawberry.experimental.pydantic.type` -- also carries each field's
 `Field(description=...)` into the generated GraphQL schema for free.
 `Senator` deliberately excludes `role` (every Senator's is always
@@ -30,10 +39,6 @@ chamber) -- the two GraphQL types abstract away that cd-api's own
 `Member`/`current_members` don't actually separate senators and
 representatives into different tables, only a `chamber` column does
 (`cd-api/src/cd/api/transform.py`'s `group_representatives()`).
-`cd-api` still owns
-building these (`transform.py`'s row -> dict functions,
-`response_model=`/`responses=` in `app.py`) -- only the model
-*definitions* moved, not the logic that populates them.
 
 `cd-lib` uses the same `src/cd/lib/` layout as `cd-api`/`cd-etl`/`cd-server`'s
 own `src/cd/<component>/`, unlike those three, `cd-lib` genuinely gets

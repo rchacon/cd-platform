@@ -43,11 +43,15 @@ production target is an ECS service backed by EC2, provisioned in
 depend on as a local path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
 independent `pyproject.toml`/`uv.lock`): `version.py`'s `read_version()`
-(consumed by `cd-server`), and `models.py`'s Pydantic response models
-(`Member`, `MembersResponse`, etc., moved out of `cd-api` so `cd-server`
+(consumed by `cd-server`), and `models.py`'s `Member`/`MembersResponse`
+Pydantic models -- only those two, moved out of `cd-api` so `cd-server`
 can validate cd-api's actual responses against the same model cd-api
-itself built them from -- see `cd-lib/README.md`). `cd-etl` doesn't
-depend on `cd-lib` yet. Whether to use `editable = true` on the
+itself built them from (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
+`ValidationProblemDetail` deliberately stayed in `cd-api/src/cd/api/models.py`,
+since `cd-server` never touches them -- `cd-lib` is for code that's
+actually shared, not a dumping ground for every model cd-api happens to
+have; see `cd-lib/README.md`). `cd-etl` doesn't depend on `cd-lib` yet.
+Whether to use `editable = true` on the
 `[tool.uv.sources]` entry is a real, load-bearing choice, not a style
 preference: `cd-server` uses it (fine -- its whole life happens inside a
 container whose filesystem is stable between build and run), `cd-api`
