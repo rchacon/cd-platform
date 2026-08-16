@@ -1,0 +1,75 @@
+name: cd-server tests
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build development image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: cd-server
+          file: cd-server/docker/Dockerfile
+          target: development
+          tags: cd-server:dev
+          load: true
+          cache-from: type=gha,scope=cd-server-development
+          cache-to: type=gha,mode=max,scope=cd-server-development
+
+      - name: Run tests
+        run: make test-server
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: cd-server
+          file: cd-server/docker/Dockerfile
+          target: production
+          tags: cd-server:production
+          load: true
+          cache-from: type=gha,scope=cd-server-production
+          cache-to: type=gha,mode=max,scope=cd-server-production
+
+      - name: Smoke test production image
+        run: |
+          docker run --rm -d --name cd-server-smoke -p 8000:8000 cd-server:production
+
+          healthy=false
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health >/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+
+          echo "::group::cd-server-smoke container logs"
+          docker logs cd-server-smoke
+          echo "::endgroup::"
+
+          if [ "$healthy" != "true" ]; then
+            echo "::error::cd-server never responded to a health check"
+            docker rm -f cd-server-smoke
+            exit 1
+          fi
+
+          curl -sf -X POST http://localhost:8000/graphql \
+            -H 'Content-Type: application/json' \
+            -d '{"query":"{ version }"}' | grep -q '"version"'
+
+          docker rm -f cd-server-smoke
