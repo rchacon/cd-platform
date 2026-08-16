@@ -17,7 +17,6 @@ The schema (`src/cd/server/schema.py`) currently exposes:
   version
   getSenators(state: "CA") { firstName lastName party }
   getRepresentatives(state: "CA", district: 12) { firstName lastName role }
-  getDistrict(address: "...") { state district }  # not implemented yet
 }
 ```
 
@@ -42,13 +41,11 @@ builds a synthetic API-Gateway-shaped event and calls cd-api's actual
 Mangum handler with it, so routing/validation/error-formatting all get
 exercised exactly as they would over real HTTP rather than reaching
 around cd-api's HTTP layer to call its internal functions directly.
-`getDistrict` (resolving a free-text address to a state/district, e.g.
-via the Census Bureau's geocoding API) is a separate integration,
-deliberately left unimplemented rather than guessed at.
 
-Down the line, `cd-server` will also get its own Postgres database and
-issue/manage API keys and billing for authenticated users -- not built
-yet.
+Down the line, `cd-server` will also get its own Postgres database,
+issue/manage API keys and billing for authenticated users, and resolve
+a free-text address to a state/district (e.g. via the Census Bureau's
+geocoding API) -- a separate integration from cd-api, not built yet.
 
 ### Calling cd-api locally
 

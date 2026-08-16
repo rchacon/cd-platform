@@ -56,24 +56,10 @@ class Senator:
 
 
 @strawberry.type
-class District:
-    state: str
-    district: int
-
-
-@strawberry.type
 class Query:
     @strawberry.field
     def version(self) -> str:
         return VERSION
-
-    @strawberry.field
-    def get_district(self, address: str) -> District:
-        # Resolving a free-text address to a state/district (e.g. via the
-        # Census Bureau's geocoding API) is a separate integration from
-        # cd-api entirely -- not implemented yet, deliberately, rather
-        # than guessed at without a confirmed API contract.
-        raise NotImplementedError("Address-to-district lookup isn't implemented yet.")
 
     @strawberry.field
     def get_representatives(self, state: str, district: int) -> list[Representative]:
