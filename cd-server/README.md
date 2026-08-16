@@ -23,7 +23,10 @@ Currently the schema exposes a single query:
 for a quick `curl` check without a GraphQL client. Both read from the
 same `VERSION`-file-driven source of truth (`"dev"` when no `VERSION`
 file is present, true for every local/test run since it's only ever
-written into the image at release time).
+written into the image at release time) via `../cd-lib`'s shared
+`read_version()` -- see `cd-lib/README.md` for why that's the first
+piece of code shared across `cd-platform`'s Python services, and the
+`cd`-namespace-package detail that makes it work.
 
 Down the line, `cd-server` will get its own Postgres database, issue and
 manage API keys, handle billing for authenticated users, and make
@@ -49,7 +52,8 @@ make start-server
 Open `http://localhost:8000/graphql` for the GraphiQL IDE,
 `http://localhost:8000/health` for the health check, or `curl
 http://localhost:8000/version` for a quick version check.
-`cd-server/src` is bind-mounted, so edits show up without rebuilding.
+`cd-server/src` and `cd-lib/cd` are both bind-mounted, so edits to
+either show up without rebuilding.
 
 ## Testing
 

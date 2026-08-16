@@ -36,6 +36,23 @@ scaffold. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is containerized
 from day one (see below), since it's expected to hold long-lived
 state/connections once its own database lands; the intended production
 target is an ECS service backed by EC2, provisioned in `cd-infra`.
+`cd-lib` (`cd-lib/cd/lib/`) is a shared library the Python services depend
+on as a local, editable path dependency (`[tool.uv.sources]`, not a
+published package, not a `uv` workspace -- each component keeps its own
+independent `pyproject.toml`/`uv.lock`) -- currently just `version.py`'s
+`read_version()`, consumed by `cd-server` today (`cd-api`/`cd-etl` don't
+depend on it yet). Any component that *does* depend on `cd-lib` must have
+no `cd/__init__.py` of its own (an implicit PEP 420 namespace package, not
+a regular one) so its own `cd.<component>` and `cd-lib`'s `cd.lib` --
+installed from two physically separate locations -- merge into one
+importable `cd` namespace instead of only one of them being visible;
+`cd-server` already has this (its `src/cd/__init__.py` was removed when it
+adopted `cd-lib`), `cd-api`/`cd-etl` still have theirs today and would need
+the same removal if/when they adopt `cd-lib` too. See `cd-lib/README.md`
+for the full explanation. A component built in Docker needs its build
+context to be the repo root, not its own directory, so `cd-lib` is
+reachable at all (`cd-server/docker/Dockerfile` is the first example of
+this).
 `docker-compose.yml` at the repo root runs Postgres, plus a `cd-etl` service
 built from `cd-etl/docker/Dockerfile` -- the same image also pushed to GHCR (see
 `cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev
