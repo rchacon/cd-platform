@@ -18,10 +18,19 @@ package, not alongside `cd-lib`.
 `ValidationProblemDetail`), moved here from `cd-api` so `cd-server` can
 validate/parse cd-api's actual HTTP/Lambda responses against the same
 model cd-api itself built them from, instead of trusting the JSON shape
-blindly. `cd-server`'s GraphQL `Representative` type is derived directly
-from `Person` via `strawberry.experimental.pydantic.type(model=Person,
-all_fields=True)` -- also carries each field's `Field(description=...)`
-into the generated GraphQL schema for free. `cd-api` still owns
+blindly. `cd-server`'s GraphQL `Representative` and `Senator` types are
+both derived from the same `Person` via
+`strawberry.experimental.pydantic.type` -- also carries each field's
+`Field(description=...)` into the generated GraphQL schema for free.
+`Senator` deliberately excludes `role` (every Senator's is always
+"Senator", redundant with `getSenators` itself; `Representative` keeps
+it, since that's cd-api's only way to distinguish an actual
+Representative from a Delegate/Resident Commissioner within the House
+chamber) -- the two GraphQL types abstract away that cd-api's own
+`Person`/`current_members` don't actually separate senators and
+representatives into different tables, only a `chamber` column does
+(`cd-api/src/cd/api/transform.py`'s `group_representatives()`).
+`cd-api` still owns
 building these (`transform.py`'s row -> dict functions,
 `response_model=`/`responses=` in `app.py`) -- only the model
 *definitions* moved, not the logic that populates them.

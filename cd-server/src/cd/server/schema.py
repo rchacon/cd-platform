@@ -35,6 +35,26 @@ class Representative:
     pass
 
 
+# `role` deliberately omitted (not just hidden -- absent from the
+# generated schema entirely) rather than all_fields=True: it's how
+# cd-api's own /members response distinguishes Representative from
+# Delegate/Resident Commissioner within the House chamber, but every
+# Senator's role is always "Senator" -- redundant with getSenators
+# itself, and a GraphQL client shouldn't need to know both roles come
+# from the same underlying Person/table to make sense of the field.
+@strawberry_pydantic.type(model=Person)
+class Senator:
+    first_name: strawberry.auto
+    middle_name: strawberry.auto
+    last_name: strawberry.auto
+    nickname: strawberry.auto
+    suffix: strawberry.auto
+    party: strawberry.auto
+    phone: strawberry.auto
+    website: strawberry.auto
+    photo_url: strawberry.auto
+
+
 @strawberry.type
 class District:
     state: str
@@ -65,10 +85,10 @@ class Query:
         return [Representative.from_pydantic(person) for person in members.representatives]
 
     @strawberry.field
-    def get_senators(self, state: str) -> list[Representative]:
+    def get_senators(self, state: str) -> list[Senator]:
         result = api_client.get("/members", {"state": state})
         members = MembersResponse(**result)
-        return [Representative.from_pydantic(person) for person in members.senators]
+        return [Senator.from_pydantic(person) for person in members.senators]
 
 
 schema = strawberry.Schema(

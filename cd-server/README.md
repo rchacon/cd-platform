@@ -15,7 +15,7 @@ The schema (`src/cd/server/schema.py`) currently exposes:
 ```graphql
 {
   version
-  getSenators(state: "CA") { firstName lastName role party }
+  getSenators(state: "CA") { firstName lastName party }
   getRepresentatives(state: "CA", district: 12) { firstName lastName role }
   getDistrict(address: "...") { state district }  # not implemented yet
 }
