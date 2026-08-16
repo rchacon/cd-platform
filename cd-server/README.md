@@ -6,8 +6,9 @@ lets users research representatives, legislation, and voting records.
 ## What it does
 
 `src/cd/server/app.py` mounts a GraphQL endpoint at `/graphql` (built from
-the schema in `src/cd/server/schema.py`) plus a plain `GET /health` check
-used by CI and, eventually, an ECS/ALB target group.
+the schema in `src/cd/server/schema.py`) plus two plain REST endpoints:
+`GET /health` (used by CI and, eventually, an ECS/ALB target group) and
+`GET /version`.
 
 Currently the schema exposes a single query:
 
@@ -17,10 +18,12 @@ Currently the schema exposes a single query:
 }
 ```
 
-returning the running build's version (same `VERSION`-file-driven source
-of truth `cd-api`'s `GET /version` uses -- `"dev"` when no `VERSION` file
-is present, true for every local/test run since it's only ever written
-into the image at release time).
+`GET /version` returns the same value as a plain REST call --
+`{"version": "..."}`, same shape as `cd-api`'s own `GET /version` --
+for a quick `curl` check without a GraphQL client. Both read from the
+same `VERSION`-file-driven source of truth (`"dev"` when no `VERSION`
+file is present, true for every local/test run since it's only ever
+written into the image at release time).
 
 Down the line, `cd-server` will get its own Postgres database, issue and
 manage API keys, handle billing for authenticated users, and make
@@ -43,9 +46,10 @@ From the repo root:
 make start-server
 ```
 
-Open `http://localhost:8000/graphql` for the GraphiQL IDE, or
-`http://localhost:8000/health` for the health check. `cd-server/src` is
-bind-mounted, so edits show up without rebuilding.
+Open `http://localhost:8000/graphql` for the GraphiQL IDE,
+`http://localhost:8000/health` for the health check, or `curl
+http://localhost:8000/version` for a quick version check.
+`cd-server/src` is bind-mounted, so edits show up without rebuilding.
 
 ## Testing
 

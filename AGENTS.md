@@ -25,7 +25,9 @@ is a FastAPI app (`cd-api/src/cd/api/app.py`) that exposes the
 current GovTrack HTML scrape -- see `cd-api/README.md`. `cd-server` is a
 FastAPI + GraphQL (Strawberry) app (`cd-server/src/cd/server/app.py`) that
 will back `cd-webapp`, a separate React repo -- currently exposing only a
-`version` query and a `/health` check; see `cd-server/README.md`. Down the
+`version` query, plus plain REST `/health` and `/version` endpoints (the
+latter mirroring `cd-api`'s own `GET /version` shape, for a quick `curl`
+check without a GraphQL client); see `cd-server/README.md`. Down the
 line it will get its own Postgres database, issue and manage API keys,
 handle billing for authenticated users, and make authenticated
 server-to-server calls to `cd-api` on behalf of `cd-webapp`'s anonymous
