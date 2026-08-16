@@ -44,7 +44,7 @@ depend on as a local path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
 independent `pyproject.toml`/`uv.lock`): `version.py`'s `read_version()`
 (consumed by `cd-server`), and `models.py`'s Pydantic response models
-(`Person`, `MembersResponse`, etc., moved out of `cd-api` so `cd-server`
+(`Member`, `MembersResponse`, etc., moved out of `cd-api` so `cd-server`
 can validate cd-api's actual responses against the same model cd-api
 itself built them from -- see `cd-lib/README.md`). `cd-etl` doesn't
 depend on `cd-lib` yet. Whether to use `editable = true` on the

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import strawberry
 import strawberry.experimental.pydantic as strawberry_pydantic
-from cd.lib.models import MembersResponse, Person
+from cd.lib.models import Member, MembersResponse
 from cd.lib.version import read_version
 from strawberry.extensions import DisableIntrospection
 
@@ -25,12 +25,12 @@ GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 api_client = get_api_client()
 
 
-# Derived from cd-lib's shared Person model (also used by cd-api itself
+# Derived from cd-lib's shared Member model (also used by cd-api itself
 # to build its own response) rather than hand-rolled -- also carries over
 # each field's Field(description=...) into the generated GraphQL schema
 # for free. from_pydantic() below is what strawberry_pydantic.type
-# generates for converting a validated Person into this GraphQL type.
-@strawberry_pydantic.type(model=Person, all_fields=True)
+# generates for converting a validated Member into this GraphQL type.
+@strawberry_pydantic.type(model=Member, all_fields=True)
 class Representative:
     pass
 
@@ -41,8 +41,8 @@ class Representative:
 # Delegate/Resident Commissioner within the House chamber, but every
 # Senator's role is always "Senator" -- redundant with getSenators
 # itself, and a GraphQL client shouldn't need to know both roles come
-# from the same underlying Person/table to make sense of the field.
-@strawberry_pydantic.type(model=Person)
+# from the same underlying Member/table to make sense of the field.
+@strawberry_pydantic.type(model=Member)
 class Senator:
     first_name: strawberry.auto
     middle_name: strawberry.auto
@@ -82,13 +82,13 @@ class Query:
         # against the same shared model cd-api itself built it from,
         # rather than trusting the JSON shape blindly.
         members = MembersResponse(**result)
-        return [Representative.from_pydantic(person) for person in members.representatives]
+        return [Representative.from_pydantic(member) for member in members.representatives]
 
     @strawberry.field
     def get_senators(self, state: str) -> list[Senator]:
         result = api_client.get("/members", {"state": state})
         members = MembersResponse(**result)
-        return [Senator.from_pydantic(person) for person in members.senators]
+        return [Senator.from_pydantic(member) for member in members.senators]
 
 
 schema = strawberry.Schema(

@@ -13,13 +13,13 @@ passes its own `Path(__file__).parent`, not this package's -- the
 `VERSION` file lives alongside the *consuming* component's deployed
 package, not alongside `cd-lib`.
 
-`src/cd/lib/models.py` -- Pydantic response models (`Person`,
+`src/cd/lib/models.py` -- Pydantic response models (`Member`,
 `MembersResponse`, `VersionResponse`, `ProblemDetail`,
 `ValidationProblemDetail`), moved here from `cd-api` so `cd-server` can
 validate/parse cd-api's actual HTTP/Lambda responses against the same
 model cd-api itself built them from, instead of trusting the JSON shape
 blindly. `cd-server`'s GraphQL `Representative` and `Senator` types are
-both derived from the same `Person` via
+both derived from the same `Member` via
 `strawberry.experimental.pydantic.type` -- also carries each field's
 `Field(description=...)` into the generated GraphQL schema for free.
 `Senator` deliberately excludes `role` (every Senator's is always
@@ -27,7 +27,7 @@ both derived from the same `Person` via
 it, since that's cd-api's only way to distinguish an actual
 Representative from a Delegate/Resident Commissioner within the House
 chamber) -- the two GraphQL types abstract away that cd-api's own
-`Person`/`current_members` don't actually separate senators and
+`Member`/`current_members` don't actually separate senators and
 representatives into different tables, only a `chamber` column does
 (`cd-api/src/cd/api/transform.py`'s `group_representatives()`).
 `cd-api` still owns
@@ -103,6 +103,20 @@ import time in Lambda, since that path doesn't exist there. Without
 `editable = true`, the same command produces real copied files
 (`package/cd/lib/version.py`, `models.py`, `__init__.py`), which is what
 actually needs to happen for a self-contained deploy artifact.
+
+**Local-dev gotcha, non-editable consumers only**: a non-editable
+`cd-lib` install is a real, static copy taken at `uv sync` time -- a
+plain `uv sync` in a consumer that already has a populated `.venv`
+does *not* reliably notice that `cd-lib`'s own source changed and
+rebuild it (confirmed empirically while renaming a model: `cd-api`'s
+existing `.venv` kept serving the old class name until
+`uv sync --reinstall-package cd-lib` forced a rebuild). A CI run isn't
+at risk of this -- `actions/checkout` + `uv sync --locked` always
+starts from a fresh `.venv` reflecting whatever was just checked out --
+but a local edit-`cd-lib`-then-test-`cd-api` loop can silently run
+against stale code without it. `cd-server`'s `editable = true` install
+doesn't have this problem, since it always resolves through the
+bind-mounted source directory rather than a point-in-time copy.
 
 `pyproject.toml`'s own `version` field (`0.1.0`) is nominal, not a real
 release marker -- unlike `cd-api`/`cd-etl`/`cd-server`, nothing ever

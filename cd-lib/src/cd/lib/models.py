@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Person(BaseModel):
+class Member(BaseModel):
     # Guards against cd-api's transform.py (_person()) growing a field
     # this model doesn't know about -- response validation then fails
     # loudly (a 500 via cd-api's catch-all Exception handler) instead of
@@ -34,8 +34,8 @@ class Person(BaseModel):
 
 
 class MembersResponse(BaseModel):
-    senators: list[Person]
-    representatives: list[Person]
+    senators: list[Member]
+    representatives: list[Member]
 
 
 class VersionResponse(BaseModel):

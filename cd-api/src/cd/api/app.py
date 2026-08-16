@@ -94,7 +94,7 @@ def _custom_openapi() -> dict:
     # ProblemDetail/ValidationProblemDetail are never used as a route's
     # response_model (only referenced by hand-written $refs above), so
     # nothing else registers them as reusable components the way FastAPI
-    # does automatically for MembersResponse/Person/VersionResponse.
+    # does automatically for MembersResponse/Member/VersionResponse.
     schemas = components.setdefault("schemas", {})
     schemas["ProblemDetail"] = PROBLEM_DETAIL_SCHEMA
     schemas["ValidationProblemDetail"] = VALIDATION_PROBLEM_DETAIL_SCHEMA

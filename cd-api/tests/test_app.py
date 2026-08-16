@@ -138,7 +138,7 @@ def test_openapi_members_route_documents_404_vs_vacancy_distinction():
     assert "vacant" in description.lower()
 
 
-def test_openapi_members_response_documents_person_fields():
+def test_openapi_members_response_documents_member_fields():
     # cd-platform#40: /members' 200 response used to be an undocumented
     # {"type": "object", "additionalProperties": true} placeholder --
     # response_model=MembersResponse should make the real shape show up.
@@ -147,9 +147,9 @@ def test_openapi_members_response_documents_person_fields():
 
     schemas = schema["components"]["schemas"]
     assert "MembersResponse" in schemas
-    assert "Person" in schemas
-    assert schemas["Person"]["required"] == ["role"]
-    assert set(schemas["Person"]["properties"]) == {
+    assert "Member" in schemas
+    assert schemas["Member"]["required"] == ["role"]
+    assert set(schemas["Member"]["properties"]) == {
         "first_name", "middle_name", "last_name", "nickname", "suffix",
         "role", "party", "phone", "website", "photo_url",
     }
@@ -158,7 +158,7 @@ def test_openapi_members_response_documents_person_fields():
     # Commissioner" applies to any DC/territory seat, but member_type only
     # ever uses it for Puerto Rico -- DC and other territories use
     # "Delegate" (see test_transform.py's role tests).
-    role_description = schemas["Person"]["properties"]["role"]["description"]
+    role_description = schemas["Member"]["properties"]["role"]["description"]
     assert "Puerto Rico" in role_description
 
 
@@ -183,7 +183,7 @@ def test_openapi_error_schemas_are_shared_ref_components():
     # Regression test: ProblemDetail/ValidationProblemDetail used to be
     # inlined in full at every use (404/422/500 on /members, 500 on
     # /version) instead of being registered once under components.schemas
-    # and referenced by $ref, unlike MembersResponse/Person/VersionResponse.
+    # and referenced by $ref, unlike MembersResponse/Member/VersionResponse.
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
