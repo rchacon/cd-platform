@@ -66,6 +66,25 @@ services:
       # AIRFLOW_HOME not living in Postgres) persist across restarts.
       - cd_etl_airflow_home:/app/.airflow
 
+  # No Postgres dependency yet -- v1 only exposes a health check and a
+  # GraphQL version query, so nothing to migrate. Doubles as the ad-hoc
+  # test runner (`docker compose run --rm cd-server uv run pytest tests/`,
+  # what `make test-server` uses) and the long-running local service
+  # (`docker compose up cd-server`), unlike cd-etl's split into a bare
+  # ad-hoc service plus 4 real ones -- there's no migrate-vs-serve
+  # distinction here to justify that split yet.
+  cd-server:
+    image: cd-server:dev
+    build:
+      context: ./cd-server
+      dockerfile: docker/Dockerfile
+      target: development
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./cd-server/src:/app/src
+
 volumes:
   postgres_data:
   cd_etl_airflow_home:
