@@ -87,6 +87,12 @@ services:
       - "8000:8000"
     volumes:
       - ./cd-server/src:/app/src
+      # Bind-mounted for the same reason cd-etl mounts both src/ and
+      # tests/ (see its own comment above) -- without this, `docker
+      # compose run --rm cd-server uv run pytest tests/` (what `make
+      # test-server` uses) would run against whatever tests/ was baked
+      # into the image at the last --build, not local edits.
+      - ./cd-server/tests:/app/tests
       # Same live-edit convenience as the src mount above, for the
       # cd-lib code this service also depends on.
       - ./cd-lib/src:/cd-lib/src
