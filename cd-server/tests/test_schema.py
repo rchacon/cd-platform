@@ -69,6 +69,68 @@ def test_version_endpoint_returns_dev_when_no_version_file(client):
     assert response.json() == {"version": "dev"}
 
 
+def test_cors_preflight_allows_configured_production_origin(client):
+    response = client.options(
+        "/graphql",
+        headers={
+            "Origin": "https://app.civicdog.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://app.civicdog.com"
+
+
+def test_cors_preflight_allows_local_dev_origin(client):
+    response = client.options(
+        "/graphql",
+        headers={
+            "Origin": "http://localhost:5183",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5183"
+
+
+def test_cors_preflight_rejects_unknown_origin(client):
+    response = client.options(
+        "/graphql",
+        headers={
+            "Origin": "https://evil.example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_preflight_allows_authorization_and_content_type_headers(client):
+    response = client.options(
+        "/graphql",
+        headers={
+            "Origin": "https://app.civicdog.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 200
+    allowed = response.headers["access-control-allow-headers"].lower()
+    assert "authorization" in allowed
+    assert "content-type" in allowed
+
+
+def test_cors_does_not_allow_credentials(client):
+    response = client.options(
+        "/graphql",
+        headers={
+            "Origin": "https://app.civicdog.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert "access-control-allow-credentials" not in response.headers
+
+
 def test_introspection_disabled_by_default(client):
     response = client.post("/graphql", json={"query": "{ __schema { queryType { name } } }"})
     assert response.status_code == 200

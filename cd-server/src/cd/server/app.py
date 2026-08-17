@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from strawberry.fastapi import GraphQLRouter
 
+from cd.server import settings
 from cd.server.schema import GRAPHIQL_ENABLED, VERSION, cd_api_service, geocoder_service, schema
 
 
@@ -20,6 +22,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)
+
+# cd-webapp is the only browser client this needs to allow -- POST is all
+# it needs (GraphQL queries/mutations both go over POST; GraphiQL's own
+# in-browser requests are same-origin, not subject to CORS at all).
+# allow_credentials=False since there's no cookie/session auth yet (see
+# AGENTS.md's cd-server section) -- a future API-key scheme would use the
+# Authorization header, already allowed below, not credentialed cookies.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ALLOWED_ORIGINS,
+    allow_methods=["POST"],
+    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=False,
+)
 
 # GRAPHIQL_ENABLED (read in schema.py, imported here) is off by default --
 # only docker-compose's dev service sets it. The production image (what's

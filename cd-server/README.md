@@ -10,6 +10,15 @@ the schema in `src/cd/server/schema.py`) plus two plain REST endpoints:
 `GET /health` (used by CI and, eventually, an ECS/ALB target group) and
 `GET /version`.
 
+`app.py` also registers `CORSMiddleware`, restricted to `POST` (all
+GraphQL queries/mutations go over POST) and to the `Authorization`/
+`Content-Type` request headers, with `allow_credentials=False` (no
+cookie/session auth exists yet -- a future API-key scheme would go over
+the already-allowed `Authorization` header instead). Allowed origins
+(`settings.CORS_ALLOWED_ORIGINS`) are `cd-webapp`'s deployed production
+domain and its local Vite dev server -- GraphiQL's own in-browser
+requests are same-origin and unaffected by this either way.
+
 The schema (`src/cd/server/schema.py`) currently exposes:
 
 ```graphql

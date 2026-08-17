@@ -16,3 +16,11 @@ ENVIRONMENT = os.environ.get("CD_SERVER_ENVIRONMENT", "local")
 CD_API_BASE_URL = os.environ.get("CD_API_BASE_URL", "http://host.docker.internal:8001")
 
 CD_API_FUNCTION_NAME = os.environ.get("CD_API_FUNCTION_NAME", "")
+
+# Browser origins allowed to call the GraphQL endpoint cross-origin --
+# cd-webapp's deployed production domain, plus its local Vite dev server.
+# See app.py's CORSMiddleware setup.
+CORS_ALLOWED_ORIGINS = [
+    "https://app.civicdog.com",
+    "http://localhost:5183",
+]
