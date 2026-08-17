@@ -140,7 +140,8 @@ def _derive_congress_dates(congress: CongressCurrent) -> tuple[int, date, date]:
     # The API's own "endYear" is a generalized label (off by one from
     # the actual term-end date), so the real end date is derived as
     # exactly two years after the earliest session start date -- the
-    # same convention init.sql used to seed the 119th Congress.
+    # same convention migrations/versions/0001_initial_schema.py used to
+    # seed the 119th Congress.
     start_date = min(
         (
             session.start_date
@@ -398,10 +399,11 @@ def congress_members_etl():
     @task
     def get_current_congress(_synced_congress: int) -> int:
         # Determine "current" via the Postgres current_congress()
-        # function (see init.sql) rather than the API's notion of
-        # current, or re-typing the date-range predicate here -- that
-        # function is the single place this ETL and the
-        # current_members view both derive "current" from.
+        # function (see migrations/versions/0001_initial_schema.py)
+        # rather than the API's notion of current, or re-typing the
+        # date-range predicate here -- that function is the single
+        # place this ETL and the current_members view both derive
+        # "current" from.
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         row = hook.get_first("SELECT current_congress()")
         if row is None or row[0] is None:
