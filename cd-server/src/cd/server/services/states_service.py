@@ -1,3 +1,7 @@
+from typing import NamedTuple
+
+from cd.lib.apportionment import NON_VOTING_TERRITORIES, SEATS_PER_STATE
+
 # Maps a USPS state/territory abbreviation (as returned by the Census
 # geocoder's addressComponents.state, e.g. "GA") to its full display name
 # (e.g. "Georgia"). The Census geocoder never spells the name out, even
@@ -23,11 +27,24 @@ STATE_NAMES: dict[str, str] = {
 }
 
 
+class StateInfo(NamedTuple):
+    name: str
+    seats: int
+    voting_seats: bool
+
+
 class StatesService:
     # No I/O, unlike CdApiService/GeocoderService -- kept as a service
     # anyway for consistency (schema.py depends on a uniform services
     # layer regardless of whether an implementation happens to be static
     # today; if getStates ever needs to become dynamic, this is the one
     # place that'd change).
-    def get_states(self) -> dict[str, str]:
-        return STATE_NAMES
+    def get_states(self) -> dict[str, StateInfo]:
+        return {
+            abbr: StateInfo(
+                name=name,
+                seats=SEATS_PER_STATE[abbr],
+                voting_seats=abbr not in NON_VOTING_TERRITORIES,
+            )
+            for abbr, name in STATE_NAMES.items()
+        }

@@ -94,11 +94,25 @@ def test_senator_type_does_not_expose_role(client):
 
 
 def test_get_states_returns_all_states(client):
-    response = client.post("/graphql", json={"query": "{ getStates { abbreviation name } }"})
+    response = client.post(
+        "/graphql",
+        json={"query": "{ getStates { abbreviation name seats votingSeats } }"},
+    )
     assert response.status_code == 200
     states = response.json()["data"]["getStates"]
     assert len(states) == 56
-    assert {"abbreviation": "CA", "name": "California"} in states
+    assert {
+        "abbreviation": "CA",
+        "name": "California",
+        "seats": 52,
+        "votingSeats": True,
+    } in states
+    assert {
+        "abbreviation": "DC",
+        "name": "District of Columbia",
+        "seats": 1,
+        "votingSeats": False,
+    } in states
 
 
 def test_get_district_returns_state_and_district(client, monkeypatch):
