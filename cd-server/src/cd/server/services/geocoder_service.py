@@ -111,7 +111,7 @@ class GeocoderService:
             )
 
         match = matches[0]
-        state = match.get("addressComponents", {}).get("state")
+        state = (match.get("addressComponents") or {}).get("state")
         district = _extract_congressional_district(match.get("geographies") or {})
 
         if state is None:

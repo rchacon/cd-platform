@@ -131,6 +131,22 @@ def test_get_district_raises_geocoder_error_on_missing_state(monkeypatch):
         asyncio.run(GeocoderService().get_district("some address"))
 
 
+def test_get_district_raises_geocoder_error_on_null_address_components(monkeypatch):
+    payload = {
+        "result": {
+            "addressMatches": [
+                {
+                    "addressComponents": None,
+                    "geographies": {"119th Congressional Districts": [{"CD119": "11"}]},
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
+    with pytest.raises(GeocoderError, match="addressComponents.state"):
+        asyncio.run(GeocoderService().get_district("some address"))
+
+
 def test_get_district_raises_geocoder_error_on_missing_district(monkeypatch):
     payload = {
         "result": {
