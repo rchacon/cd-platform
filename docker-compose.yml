@@ -90,6 +90,15 @@ services:
       # against the same introspection-disabled default the production
       # image ships with, not the dev-friendly one -- see the Makefile.
       GRAPHIQL_ENABLED: "${CD_SERVER_GRAPHIQL_ENABLED:-true}"
+    # host.docker.internal doesn't resolve by default on Linux (unlike
+    # Docker Desktop's Mac/Windows builds) -- this is Docker's own
+    # documented workaround (Engine 20.10+), needed for
+    # settings.CD_API_BASE_URL's default to reach cd-api's own
+    # `uv run uvicorn` dev server running on the host, not in
+    # docker-compose (it has no Dockerfile). Confirmed empirically:
+    # without this, the hostname doesn't resolve at all.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:

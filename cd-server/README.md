@@ -10,11 +10,13 @@ the schema in `src/cd/server/schema.py`) plus two plain REST endpoints:
 `GET /health` (used by CI and, eventually, an ECS/ALB target group) and
 `GET /version`.
 
-Currently the schema exposes a single query:
+The schema (`src/cd/server/schema.py`) currently exposes:
 
 ```graphql
 {
   version
+  getSenators(state: "CA") { firstName lastName party }
+  getRepresentatives(state: "CA", district: 12) { firstName lastName role }
 }
 ```
 
@@ -28,10 +30,52 @@ written into the image at release time) via `../cd-lib`'s shared
 piece of code shared across `cd-platform`'s Python services, and the
 `cd`-namespace-package detail that makes it work.
 
-Down the line, `cd-server` will get its own Postgres database, issue and
-manage API keys, handle billing for authenticated users, and make
-authenticated server-to-server calls to `cd-api` on behalf of
-`cd-webapp`'s anonymous users -- none of that is built yet.
+`getSenators`/`getRepresentatives` are cd-server's first real
+server-to-server calls to `cd-api` -- `src/cd/server/clients.py`
+provides two interchangeable implementations (a shared `ApiClient` ABC,
+so they can't silently drift apart) picked by `settings.ENVIRONMENT`:
+`HttpApiClient` (plain HTTP, for local dev) and `LambdaApiClient`
+(direct `boto3` invoke of the real deployed function, bypassing API
+Gateway entirely -- no network hop, no `X-Api-Key` needed, since
+cd-api's own code never checks that header). `LambdaApiClient` builds a
+synthetic API-Gateway-shaped event and calls cd-api's actual Mangum
+handler with it, so routing/validation/error-formatting all get
+exercised exactly as they would over real HTTP rather than reaching
+around cd-api's HTTP layer to call its internal functions directly.
+
+Both `get()`s and the two GraphQL resolvers above are `async` --
+`HttpApiClient` holds a single `httpx.AsyncClient` connection pool
+(closed via `app.py`'s FastAPI `lifespan` on shutdown), and
+`LambdaApiClient` wraps `boto3`'s own invoke call (boto3 has no async
+API at all) in `asyncio.to_thread()` rather than pulling in a
+third-party async-boto3 wrapper for what's currently a single call.
+This matters concretely for a query requesting both fields at once --
+strawberry runs independent async resolvers concurrently, so
+`{ getSenators(...) getRepresentatives(...) }` in one request makes both
+cd-api calls in parallel rather than one after the other. Verified
+directly: with an injected 0.5s delay per call, the combined query
+completed in ~0.5s total, not ~1.0s.
+
+Down the line, `cd-server` will also get its own Postgres database,
+issue/manage API keys and billing for authenticated users, and resolve
+a free-text address to a state/district (e.g. via the Census Bureau's
+geocoding API) -- a separate integration from cd-api, not built yet.
+
+### Calling cd-api locally
+
+`HttpApiClient`'s default target is `http://host.docker.internal:8001`
+(overridable via `CD_API_BASE_URL`) -- reachable from cd-server's own
+container via the `extra_hosts` entry in `../docker-compose.yml` (Linux
+doesn't resolve `host.docker.internal` by default the way Docker
+Desktop does). Port 8001, not cd-api's own README default of 8000 --
+that's cd-server's own published port, so running cd-api on 8000 too
+would collide with it. Start `cd-api` yourself first, bound to all
+interfaces (uvicorn's own default, `127.0.0.1`, isn't reachable from
+inside a container):
+
+```bash
+cd ../cd-api && uv run uvicorn cd.api.app:app --app-dir src --host 0.0.0.0 --port 8001
+```
 
 ## Prerequisites
 

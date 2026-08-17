@@ -1,9 +1,13 @@
 [project]
 name = "cd-lib"
+# Nominal -- nothing resolves cd-lib against this number (path dependency
+# only, no registry/tag). Don't bother bumping it; see README.md.
 version = "0.1.0"
 description = "Shared code for cd-platform's Python services (cd-api, cd-etl, cd-server)"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.9.0",
+]
 
 [build-system]
 requires = ["hatchling"]

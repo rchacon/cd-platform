@@ -4,11 +4,22 @@ version = "0.2.5"
 description = "REST API for cd-lookup, backed by current_members"
 requires-python = ">=3.12"
 dependencies = [
+    "cd-lib",
     "fastapi>=0.115.0",
     "mangum>=0.19.0",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.9.0",
 ]
+
+# Not editable, unlike cd-server's own cd-lib source -- the Lambda zip
+# build (uv export + `uv pip install --target`) needs cd-lib's real files
+# actually copied into the zip. An editable install instead produces only
+# a .pth file pointing at this dev machine's absolute path, which
+# obviously doesn't exist in Lambda's runtime -- confirmed empirically
+# (package/ ended up with no cd/lib/ directory at all, just a dangling
+# _editable_impl_cd_lib.pth).
+[tool.uv.sources]
+cd-lib = { path = "../cd-lib" }
 
 [dependency-groups]
 dev = [

@@ -24,35 +24,59 @@ is a FastAPI app (`cd-api/src/cd/api/app.py`) that exposes the
 `current_members` view over HTTP for `cd-lookup` to consume, replacing its
 current GovTrack HTML scrape -- see `cd-api/README.md`. `cd-server` is a
 FastAPI + GraphQL (Strawberry) app (`cd-server/src/cd/server/app.py`) that
-will back `cd-webapp`, a separate React repo -- currently exposing only a
-`version` query, plus plain REST `/health` and `/version` endpoints (the
-latter mirroring `cd-api`'s own `GET /version` shape, for a quick `curl`
-check without a GraphQL client); see `cd-server/README.md`. Down the
-line it will get its own Postgres database, issue and manage API keys,
-handle billing for authenticated users, and make authenticated
-server-to-server calls to `cd-api` on behalf of `cd-webapp`'s anonymous
-users -- none of that exists yet, this is deliberately just the initial
-scaffold. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is containerized
-from day one (see below), since it's expected to hold long-lived
-state/connections once its own database lands; the intended production
-target is an ECS service backed by EC2, provisioned in `cd-infra`.
-`cd-lib` (`cd-lib/src/cd/lib/`) is a shared library the Python services depend
-on as a local, editable path dependency (`[tool.uv.sources]`, not a
+will back `cd-webapp`, a separate React repo -- besides a `version` query
+and plain REST `/health`/`/version` endpoints (the latter mirroring
+`cd-api`'s own `GET /version` shape), it now makes real server-to-server
+calls to `cd-api` (`getSenators`/`getRepresentatives`, mirroring
+`cd-lookup`'s functionality) via `cd-server/src/cd/server/clients.py` --
+two interchangeable async client implementations sharing an `ApiClient`
+ABC (`HttpApiClient` for local dev, `LambdaApiClient` bypassing API
+Gateway via a direct `boto3` invoke -- wrapped in `asyncio.to_thread()`
+since `boto3` itself has no async API -- of the real function in
+production) picked by `settings.ENVIRONMENT`; both GraphQL resolvers are
+`async` too, so a query requesting multiple fields makes their cd-api
+calls concurrently rather than sequentially. See `cd-server/README.md`.
+Down the line it will also get its own Postgres
+database and issue/manage API keys and billing for authenticated users --
+not built yet. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is
+containerized from day one (see below), since it's expected to hold
+long-lived state/connections once its own database lands; the intended
+production target is an ECS service backed by EC2, provisioned in
+`cd-infra`.
+`cd-lib` (`cd-lib/src/cd/lib/`) is a shared library the Python services
+depend on as a local path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
-independent `pyproject.toml`/`uv.lock`) -- currently just `version.py`'s
-`read_version()`, consumed by `cd-server` today (`cd-api`/`cd-etl` don't
-depend on it yet). Any component that *does* depend on `cd-lib` must have
-no `cd/__init__.py` of its own (an implicit PEP 420 namespace package, not
+independent `pyproject.toml`/`uv.lock`): `version.py`'s `read_version()`
+(consumed by `cd-server`), and `models.py`'s `Member`/`MembersResponse`
+Pydantic models -- only those two, moved out of `cd-api` so `cd-server`
+can validate cd-api's actual responses against the same model cd-api
+itself built them from (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
+`ValidationProblemDetail` deliberately stayed in `cd-api/src/cd/api/models.py`,
+since `cd-server` never touches them -- `cd-lib` is for code that's
+actually shared, not a dumping ground for every model cd-api happens to
+have; see `cd-lib/README.md`). `cd-etl` doesn't depend on `cd-lib` yet.
+Whether to use `editable = true` on the
+`[tool.uv.sources]` entry is a real, load-bearing choice, not a style
+preference: `cd-server` uses it (fine -- its whole life happens inside a
+container whose filesystem is stable between build and run), `cd-api`
+deliberately does not (its Lambda zip build has no persistent source
+tree at runtime -- `editable = true` was confirmed empirically to
+produce only a dangling `.pth` file pointing at the build machine's own
+absolute path, not real copied files, silently breaking the deployed
+zip). See `cd-lib/README.md`'s "Consuming it" section for the full
+explanation. Any component that depends on `cd-lib` must also have no
+`cd/__init__.py` of its own (an implicit PEP 420 namespace package, not
 a regular one) so its own `cd.<component>` and `cd-lib`'s `cd.lib` --
 installed from two physically separate locations -- merge into one
 importable `cd` namespace instead of only one of them being visible;
-`cd-server` already has this (its `src/cd/__init__.py` was removed when it
-adopted `cd-lib`), `cd-api`/`cd-etl` still have theirs today and would need
-the same removal if/when they adopt `cd-lib` too. See `cd-lib/README.md`
-for the full explanation. A component built in Docker needs its build
-context to be the repo root, not its own directory, so `cd-lib` is
-reachable at all (`cd-server/docker/Dockerfile` is the first example of
-this).
+`cd-server` and `cd-api` both already have this (their own
+`src/cd/__init__.py` was removed when each adopted `cd-lib`), `cd-etl`
+still has its and would need the same removal if/when it adopts
+`cd-lib` too. A component built in Docker needs its build context to be
+the repo root, not its own directory, so `cd-lib` is reachable at all
+(`cd-server/docker/Dockerfile` is the first example of this); a
+Lambda-zip-deployed component instead just needs the whole repo checked
+out in CI, no Dockerfile/COPY step involved.
 `docker-compose.yml` at the repo root runs Postgres, plus a `cd-etl` service
 built from `cd-etl/docker/Dockerfile` -- the same image also pushed to GHCR (see
 `cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev
