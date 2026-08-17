@@ -28,14 +28,29 @@ will back `cd-webapp`, a separate React repo -- besides a `version` query
 and plain REST `/health`/`/version` endpoints (the latter mirroring
 `cd-api`'s own `GET /version` shape), it now makes real server-to-server
 calls to `cd-api` (`getSenators`/`getRepresentatives`, mirroring
-`cd-lookup`'s functionality) via `cd-server/src/cd/server/clients.py` --
-two interchangeable async client implementations sharing an `ApiClient`
-ABC (`HttpApiClient` for local dev, `LambdaApiClient` bypassing API
-Gateway via a direct `boto3` invoke -- wrapped in `asyncio.to_thread()`
-since `boto3` itself has no async API -- of the real function in
-production) picked by `settings.ENVIRONMENT`; both GraphQL resolvers are
-`async` too, so a query requesting multiple fields makes their cd-api
-calls concurrently rather than sequentially. See `cd-server/README.md`.
+`cd-lookup`'s functionality). Its resolvers (`cd-server/src/cd/server/schema.py`)
+are thin, each delegating to a service in
+`cd-server/src/cd/server/services/` -- a client wraps a specific external
+system/protocol (thin, named after what it's a client *of*), a service is
+what a resolver actually depends on (may use one or more clients
+internally, but also owns real logic, named after the capability it
+provides). `services/cd_api_service.py`'s `CdApiService` wraps two
+interchangeable async client implementations sharing an `ApiClient` ABC
+(`HttpApiClient` for local dev, `LambdaApiClient` bypassing API Gateway
+via a direct `boto3` invoke -- wrapped in `asyncio.to_thread()` since
+`boto3` itself has no async API -- of the real function in production)
+picked by `settings.ENVIRONMENT`, and is also where cd-api's raw JSON
+response gets validated against `cd-lib`'s shared `Member`/
+`MembersResponse` models before a real `Member` object reaches the
+resolver; both GraphQL resolvers are `async` too, so a query requesting
+multiple fields makes their cd-api calls concurrently rather than
+sequentially. Also exposes `getStates`
+(`services/states_service.py`'s `StatesService`, a static abbreviation ->
+name table) and `getDistrict` (`services/geocoder_service.py`'s
+`GeocoderService`, resolving a free-text address via the Census Bureau's
+geocoding API) -- both ported from `cd-lookup`'s
+`StateNames.php`/`LookupDistrict.php`, same algorithms. See
+`cd-server/README.md`.
 Down the line it will also get its own Postgres
 database and issue/manage API keys and billing for authenticated users --
 not built yet. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is

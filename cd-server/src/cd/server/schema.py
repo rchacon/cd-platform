@@ -3,11 +3,13 @@ from pathlib import Path
 
 import strawberry
 import strawberry.experimental.pydantic as strawberry_pydantic
-from cd.lib.models import Member, MembersResponse
+from cd.lib.models import Member
 from cd.lib.version import read_version
 from strawberry.extensions import DisableIntrospection
 
-from cd.server.clients import get_api_client
+from cd.server.services.cd_api_service import get_cd_api_service
+from cd.server.services.geocoder_service import GeocoderService
+from cd.server.services.states_service import StatesService
 
 # Read once at import time, not per-request -- the VERSION file is baked
 # into the image and never changes for the life of the process.
@@ -19,11 +21,13 @@ VERSION = read_version(Path(__file__).parent)
 # hiding the IDE would still let any POST client walk the full schema.
 GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 
-# One client, reused across requests -- same singleton-at-import-time
+# One instance each, reused across requests -- same singleton-at-import-time
 # pattern cd-etl's congress_api.py already uses for its own HTTP session.
-# get()/aclose() are both async (see clients.py); app.py's lifespan
-# closes this on shutdown.
-api_client = get_api_client()
+# cd_api_service/geocoder_service both hold an open connection pool,
+# closed via app.py's lifespan on shutdown (see each service's aclose()).
+cd_api_service = get_cd_api_service()
+geocoder_service = GeocoderService()
+states_service = StatesService()
 
 
 # Derived from cd-lib's shared Member model (also used by cd-api itself
@@ -57,25 +61,47 @@ class Senator:
 
 
 @strawberry.type
+class State:
+    abbreviation: str
+    name: str
+
+
+@strawberry.type
+class District:
+    state: str
+    district: int
+
+
+@strawberry.type
 class Query:
     @strawberry.field
     def version(self) -> str:
         return VERSION
 
     @strawberry.field
+    def get_states(self) -> list[State]:
+        return [
+            State(abbreviation=abbr, name=name)
+            for abbr, name in states_service.get_states().items()
+        ]
+
+    @strawberry.field
+    async def get_district(self, address: str) -> District:
+        state, district = await geocoder_service.get_district(address)
+        return District(state=state, district=district)
+
+    @strawberry.field
     async def get_representatives(self, state: str, district: int) -> list[Representative]:
-        result = await api_client.get("/members", {"state": state, "district": str(district)})
-        # MembersResponse(**result) validates cd-api's actual response
-        # against the same shared model cd-api itself built it from,
-        # rather than trusting the JSON shape blindly.
-        members = MembersResponse(**result)
-        return [Representative.from_pydantic(member) for member in members.representatives]
+        # cd_api_service already validates cd-api's response against the
+        # shared Member model and returns real Member objects -- no JSON
+        # handling here, just converting to the GraphQL type.
+        members = await cd_api_service.get_representatives(state, district)
+        return [Representative.from_pydantic(member) for member in members]
 
     @strawberry.field
     async def get_senators(self, state: str) -> list[Senator]:
-        result = await api_client.get("/members", {"state": state})
-        members = MembersResponse(**result)
-        return [Senator.from_pydantic(member) for member in members.senators]
+        members = await cd_api_service.get_senators(state)
+        return [Senator.from_pydantic(member) for member in members]
 
 
 schema = strawberry.Schema(

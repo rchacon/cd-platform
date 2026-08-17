@@ -6,13 +6,14 @@ import httpx
 import pytest
 
 from cd.server import settings
-from cd.server.clients import (
+from cd.server.services.cd_api_service import (
     ApiClient,
     ApiClientError,
+    CdApiService,
     HttpApiClient,
     LambdaApiClient,
     _build_gateway_event,
-    get_api_client,
+    get_cd_api_service,
 )
 
 
@@ -191,25 +192,88 @@ def test_lambda_api_client_aclose_is_a_noop(monkeypatch):
     asyncio.run(client.aclose())  # should not raise
 
 
-def test_get_api_client_returns_http_client_for_local(monkeypatch):
+def test_get_cd_api_service_returns_http_client_for_local(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "local")
     monkeypatch.setattr(settings, "CD_API_BASE_URL", "http://example:8000")
-    client = get_api_client()
-    assert isinstance(client, HttpApiClient)
-    assert client.base_url == "http://example:8000"
+    service = get_cd_api_service()
+    assert isinstance(service, CdApiService)
+    assert isinstance(service._transport, HttpApiClient)
+    assert service._transport.base_url == "http://example:8000"
 
 
-def test_get_api_client_returns_lambda_client_otherwise(monkeypatch):
+def test_get_cd_api_service_returns_lambda_client_otherwise(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "CD_API_FUNCTION_NAME", "cd-platform-cd-api")
     monkeypatch.setattr("boto3.client", lambda service: _FakeLambdaClient({}))
-    client = get_api_client()
-    assert isinstance(client, LambdaApiClient)
-    assert client.function_name == "cd-platform-cd-api"
+    service = get_cd_api_service()
+    assert isinstance(service, CdApiService)
+    assert isinstance(service._transport, LambdaApiClient)
+    assert service._transport.function_name == "cd-platform-cd-api"
 
 
-def test_get_api_client_fails_fast_when_function_name_missing(monkeypatch):
+def test_get_cd_api_service_fails_fast_when_function_name_missing(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "CD_API_FUNCTION_NAME", "")
     with pytest.raises(RuntimeError, match="CD_API_FUNCTION_NAME"):
-        get_api_client()
+        get_cd_api_service()
+
+
+class _FakeTransport(ApiClient):
+    def __init__(self, result: dict):
+        self._result = result
+        self.calls: list[tuple[str, dict[str, str]]] = []
+        self.closed = False
+
+    async def get(self, path: str, query: dict[str, str]) -> dict:
+        self.calls.append((path, query))
+        return self._result
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+_MEMBER = {
+    "first_name": "Jane",
+    "middle_name": None,
+    "last_name": "Doe",
+    "nickname": None,
+    "suffix": None,
+    "party": "Democratic",
+    "role": "Representative",
+    "phone": None,
+    "website": None,
+    "photo_url": None,
+}
+
+_SENATOR = {**_MEMBER, "role": "Senator"}
+
+
+def test_cd_api_service_get_representatives_validates_and_returns_members():
+    transport = _FakeTransport({"representatives": [_MEMBER], "senators": []})
+    service = CdApiService(transport)
+
+    members = asyncio.run(service.get_representatives("CA", 12))
+
+    assert transport.calls == [("/members", {"state": "CA", "district": "12"})]
+    assert len(members) == 1
+    assert members[0].last_name == "Doe"
+
+
+def test_cd_api_service_get_senators_validates_and_returns_members():
+    transport = _FakeTransport({"representatives": [], "senators": [_SENATOR]})
+    service = CdApiService(transport)
+
+    members = asyncio.run(service.get_senators("CA"))
+
+    assert transport.calls == [("/members", {"state": "CA"})]
+    assert len(members) == 1
+    assert members[0].last_name == "Doe"
+
+
+def test_cd_api_service_aclose_delegates_to_transport():
+    transport = _FakeTransport({"representatives": [], "senators": []})
+    service = CdApiService(transport)
+
+    asyncio.run(service.aclose())
+
+    assert transport.closed is True
