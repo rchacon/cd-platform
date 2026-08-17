@@ -1,7 +1,7 @@
 # Environment variables
 .env
 
-# Local-only Postgres seed data (see docker-compose.override.yml.sample)
+# Local-only Postgres seed data (see cd-etl/README.md step 3)
 docker-compose.override.yml
 local_seed.sql
 
