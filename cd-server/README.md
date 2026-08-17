@@ -15,7 +15,7 @@ The schema (`src/cd/server/schema.py`) currently exposes:
 ```graphql
 {
   version
-  getStates { abbreviation name }
+  getStates { abbr name seats votingSeats }
   getDistrict(address: "1600 Pennsylvania Ave NW, Washington, DC") { state district }
   getSenators(state: "CA") { firstName lastName party }
   getRepresentatives(state: "CA", district: 12) { firstName lastName role }
@@ -88,6 +88,20 @@ for consistency (`schema.py` depends on a uniform services layer
 regardless of whether an implementation happens to be static today; if
 `getStates` ever needs to become dynamic, this is the one place that'd
 change).
+
+Each `State` also carries `seats` (that state/territory's total House
+seats) and `votingSeats` (whether those seats are full voting
+Representatives rather than a non-voting Delegate/Resident
+Commissioner) -- sourced from `../cd-lib`'s
+`SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` (`cd-lib/src/cd/lib/apportionment.py`),
+the same 2020-census apportionment table `cd-api` already uses to
+validate a `district` query param, shared rather than a second
+hand-transcribed copy. `StatesService.get_states()` returns a `dict[str,
+StateInfo]` (`StateInfo` a plain `NamedTuple`, not a Pydantic model --
+unlike `CdApiService`'s `Member`, there's no external response shape
+here to validate against, just cd-server's own static data joined
+together, so a Pydantic model would be ceremony without a validation
+purpose).
 
 `getDistrict` (`services/geocoder_service.py`'s `GeocoderService`)
 resolves a free-text address to a state/district via the Census Bureau's

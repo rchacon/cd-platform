@@ -46,11 +46,12 @@ resolver; both GraphQL resolvers are `async` too, so a query requesting
 multiple fields makes their cd-api calls concurrently rather than
 sequentially. Also exposes `getStates`
 (`services/states_service.py`'s `StatesService`, a static abbreviation ->
-name table) and `getDistrict` (`services/geocoder_service.py`'s
-`GeocoderService`, resolving a free-text address via the Census Bureau's
-geocoding API) -- both ported from `cd-lookup`'s
-`StateNames.php`/`LookupDistrict.php`, same algorithms. See
-`cd-server/README.md`.
+name table, plus each state/territory's `seats`/`votingSeats` sourced
+from `cd-lib`'s `apportionment.py` -- see below) and `getDistrict`
+(`services/geocoder_service.py`'s `GeocoderService`, resolving a
+free-text address via the Census Bureau's geocoding API) -- both ported
+from `cd-lookup`'s `StateNames.php`/`LookupDistrict.php`, same
+algorithms. See `cd-server/README.md`.
 Down the line it will also get its own Postgres
 database and issue/manage API keys and billing for authenticated users --
 not built yet. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is
@@ -62,14 +63,20 @@ production target is an ECS service backed by EC2, provisioned in
 depend on as a local path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
 independent `pyproject.toml`/`uv.lock`): `version.py`'s `read_version()`
-(consumed by `cd-server`), and `models.py`'s `Member`/`MembersResponse`
+(consumed by `cd-server`), `models.py`'s `Member`/`MembersResponse`
 Pydantic models -- only those two, moved out of `cd-api` so `cd-server`
 can validate cd-api's actual responses against the same model cd-api
 itself built them from (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
 `ValidationProblemDetail` deliberately stayed in `cd-api/src/cd/api/models.py`,
 since `cd-server` never touches them -- `cd-lib` is for code that's
 actually shared, not a dumping ground for every model cd-api happens to
-have; see `cd-lib/README.md`). `cd-etl` doesn't depend on `cd-lib` yet.
+have; see `cd-lib/README.md`), and `apportionment.py`'s
+`SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` -- moved out of
+`cd-api/src/cd/api/apportionment.py` (which still owns the
+`max_valid_district`/`is_valid_district` validation logic built on that
+table, only the data moved) once `cd-server`'s `getStates` needed the
+same seat counts/voting status cd-api already validates `district`
+against. `cd-etl` doesn't depend on `cd-lib` yet.
 Whether to use `editable = true` on the
 `[tool.uv.sources]` entry is a real, load-bearing choice, not a style
 preference: `cd-server` uses it (fine -- its whole life happens inside a

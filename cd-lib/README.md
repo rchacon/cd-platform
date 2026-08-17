@@ -27,6 +27,17 @@ own models happen to live. `cd-api` still owns *building* `Member`s
 in `app.py`) -- only the `Member`/`MembersResponse` *definitions*
 moved, not the logic that populates them.
 
+`src/cd/lib/apportionment.py` -- `SEATS_PER_STATE` (2020 census
+apportionment, 50 states plus DC/PR/VI/GU/AS/MP each with one at-large
+seat) and `NON_VOTING_TERRITORIES` (which of those keys are a non-voting
+Delegate/Resident Commissioner seat rather than a full voting
+Representative). Moved here from `cd-api/src/cd/api/apportionment.py`
+(which still owns `max_valid_district`/`is_valid_district`, the
+validation logic built on top of the table -- only the data moved) once
+`cd-server`'s `getStates` GraphQL field needed the same seat counts and
+voting status cd-api was already using to validate `district` query
+params, rather than a second hand-transcribed copy.
+
 `cd-server`'s GraphQL `Representative` and `Senator` types are both
 derived from the same `Member` via
 `strawberry.experimental.pydantic.type` -- also carries each field's

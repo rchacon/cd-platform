@@ -1,19 +1,8 @@
-from cd.api.apportionment import SEATS_PER_STATE, is_valid_district, max_valid_district
+from cd.api.apportionment import is_valid_district, max_valid_district
 
-TERRITORIES = {"AS", "DC", "GU", "MP", "PR", "VI"}
-
-
-def test_seats_per_state_covers_all_50_states_and_sums_to_435():
-    # The main real risk with 50 hand-transcribed numbers is a typo --
-    # this would catch one without needing to know which state was wrong.
-    states = {k: v for k, v in SEATS_PER_STATE.items() if k not in TERRITORIES}
-    assert len(states) == 50
-    assert sum(states.values()) == 435
-
-
-def test_seats_per_state_includes_non_voting_delegate_territories():
-    assert TERRITORIES <= SEATS_PER_STATE.keys()
-    assert all(SEATS_PER_STATE[t] == 1 for t in TERRITORIES)
+# SEATS_PER_STATE's own data (50-state coverage, non-voting territories)
+# is tested in cd-lib/tests/test_apportionment.py, where the data now
+# lives -- this file only tests the validation logic built on top of it.
 
 
 def test_max_valid_district_unknown_state_returns_none():
