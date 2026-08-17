@@ -67,7 +67,7 @@ def seeded_state(pg_conn):
     _insert_term(pg_conn, rep, "HOUSE", DISTRICT)
     pg_conn.commit()
 
-    yield
+    yield {"senator_a": senator_a, "senator_b": senator_b, "rep": rep}
 
     # member_terms rows cascade-delete via members' ON DELETE CASCADE.
     with pg_conn.cursor() as cur:
@@ -148,10 +148,10 @@ def test_openapi_members_response_documents_member_fields():
     schemas = schema["components"]["schemas"]
     assert "MembersResponse" in schemas
     assert "Member" in schemas
-    assert schemas["Member"]["required"] == ["role"]
+    assert schemas["Member"]["required"] == ["bioguide_id", "role"]
     assert set(schemas["Member"]["properties"]) == {
-        "first_name", "middle_name", "last_name", "nickname", "suffix",
-        "role", "party", "phone", "website", "photo_url",
+        "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
+        "suffix", "role", "party", "phone", "website", "photo_url", "district",
     }
 
     # Regression test: role's description used to claim "Resident
@@ -319,6 +319,13 @@ def test_get_members_returns_senators_and_representative(seeded_state):
     ]
     assert body["senators"][0]["role"] == "Senator"
     assert body["representatives"][0]["role"] == "Representative"
+    assert {p["bioguide_id"] for p in body["senators"]} == {
+        seeded_state["senator_a"],
+        seeded_state["senator_b"],
+    }
+    assert body["representatives"][0]["bioguide_id"] == seeded_state["rep"]
+    assert body["senators"][0]["district"] is None
+    assert body["representatives"][0]["district"] == DISTRICT
 
 
 def test_get_members_returns_member_type_as_role_for_delegate(pg_conn):
