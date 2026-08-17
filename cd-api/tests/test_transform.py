@@ -3,6 +3,7 @@ from cd.api.transform import group_representatives
 
 def _row(**overrides) -> dict:
     row = {
+        "bioguide_id": "C000127",
         "chamber": "SENATE",
         "member_type": "Senator",
         "given_name": "Maria",
@@ -14,9 +15,34 @@ def _row(**overrides) -> dict:
         "phone": "202-224-3441",
         "website_url": "https://www.cantwell.senate.gov",
         "photo_uri": "https://bioguide.congress.gov/photo/C000127.jpg",
+        "district": None,
     }
     row.update(overrides)
     return row
+
+
+def test_person_bioguide_id_passes_through():
+    result = group_representatives([_row(bioguide_id="X000001")])
+    assert result["senators"][0]["bioguide_id"] == "X000001"
+
+
+def test_person_district_is_null_for_senator():
+    result = group_representatives([_row(chamber="SENATE", district=None)])
+    assert result["senators"][0]["district"] is None
+
+
+def test_person_district_passes_through_for_representative():
+    result = group_representatives(
+        [_row(chamber="HOUSE", member_type="Representative", district=5)]
+    )
+    assert result["representatives"][0]["district"] == 5
+
+
+def test_person_district_zero_for_at_large_representative():
+    result = group_representatives(
+        [_row(chamber="HOUSE", member_type="Representative", district=0)]
+    )
+    assert result["representatives"][0]["district"] == 0
 
 
 def test_person_name_fields_pass_through():

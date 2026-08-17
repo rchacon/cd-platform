@@ -21,14 +21,19 @@ GET /members?state=GA
 in it), so omitting `district` returns senators only; a representative is
 only included when `district` is given and matches.
 
-Each person has `first_name`, `middle_name`, `last_name`, `nickname`,
-`suffix` (the individual name parts, passed through as-is -- the API does
-not derive a combined display name; that's left to the client), `role`
-(whatever Congress.gov's `member_type` records for that seat --
-`"Senator"`, `"Representative"`, `"Delegate"` for a non-voting territory
-seat (DC, American Samoa, Guam, Northern Mariana Islands, or the US
-Virgin Islands), or `"Resident Commissioner"` specifically for Puerto
-Rico's non-voting seat), `party`, `phone`, `website`, `photo_url`. An unknown state returns `404`. A `district`
+Each person has `bioguide_id` (Congress.gov's stable identifier for that
+member -- the primary key `members.bioguide_id` is keyed on), `first_name`,
+`middle_name`, `last_name`, `nickname`, `suffix` (the individual name
+parts, passed through as-is -- the API does not derive a combined display
+name; that's left to the client), `role` (whatever Congress.gov's
+`member_type` records for that seat -- `"Senator"`, `"Representative"`,
+`"Delegate"` for a non-voting territory seat (DC, American Samoa, Guam,
+Northern Mariana Islands, or the US Virgin Islands), or `"Resident
+Commissioner"` specifically for Puerto Rico's non-voting seat), `party`,
+`phone`, `website`, `photo_url`, `district` (`member_terms.district`'s own
+`null`/`0`/`1+` convention passed straight through -- `null` for a
+Senator, `0` for an at-large House seat, `1+` for a numbered one). An
+unknown state returns `404`. A `district`
 that doesn't exist for that state (validated against real House
 apportionment via `src/cd/api/apportionment.py`'s
 `max_valid_district`/`is_valid_district`, built on `../cd-lib`'s shared

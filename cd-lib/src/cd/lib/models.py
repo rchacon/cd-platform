@@ -11,6 +11,7 @@ class Member(BaseModel):
     # response shape again.
     model_config = ConfigDict(extra="forbid")
 
+    bioguide_id: str = Field(description="Congress.gov's stable identifier for this member.")
     first_name: str | None = Field(None, description="Given name.")
     middle_name: str | None = None
     last_name: str | None = Field(None, description="Family name.")
@@ -29,6 +30,13 @@ class Member(BaseModel):
     phone: str | None = None
     website: str | None = None
     photo_url: str | None = None
+    district: int | None = Field(
+        None,
+        description=(
+            "House district number -- 0 for an at-large seat, 1+ for a "
+            "numbered district, None for a Senator."
+        ),
+    )
 
 
 class MembersResponse(BaseModel):

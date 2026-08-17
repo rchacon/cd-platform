@@ -46,10 +46,13 @@ derived from the same `Member` via
 "Senator", redundant with `getSenators` itself; `Representative` keeps
 it, since that's cd-api's only way to distinguish an actual
 Representative from a Delegate/Resident Commissioner within the House
-chamber) -- the two GraphQL types abstract away that cd-api's own
-`Member`/`current_members` don't actually separate senators and
-representatives into different tables, only a `chamber` column does
-(`cd-api/src/cd/api/transform.py`'s `group_representatives()`).
+chamber) and `district` (always `null` for a Senator -- senators
+represent the whole state, not a district; `Representative` keeps it,
+since that's the whole point there) -- the two GraphQL types abstract
+away that cd-api's own `Member`/`current_members` don't actually
+separate senators and representatives into different tables, only a
+`chamber` column does (`cd-api/src/cd/api/transform.py`'s
+`group_representatives()`).
 
 `cd-lib` uses the same `src/cd/lib/` layout as `cd-api`/`cd-etl`/`cd-server`'s
 own `src/cd/<component>/`, unlike those three, `cd-lib` genuinely gets
