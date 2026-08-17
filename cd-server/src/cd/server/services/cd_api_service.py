@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
+from cd.lib.models import Member, MembersResponse
 
 from cd.server import settings
 
@@ -12,7 +13,7 @@ from cd.server import settings
 class ApiClientError(Exception):
     """Raised by every ApiClient implementation on a non-2xx response from
     cd-api, so callers get one consistent error type regardless of which
-    implementation get_api_client() picked."""
+    implementation get_cd_api_service() picked."""
 
     def __init__(self, status_code: int, body: str):
         self.status_code = status_code
@@ -21,9 +22,11 @@ class ApiClientError(Exception):
 
 
 class ApiClient(ABC):
-    """Common interface HttpApiClient/LambdaApiClient both implement, so
-    the two can't silently drift apart (a subclass missing get() raises
-    TypeError at instantiation, not just at first call)."""
+    """Transport interface HttpApiClient/LambdaApiClient both implement,
+    so the two can't silently drift apart (a subclass missing get()
+    raises TypeError at instantiation, not just at first call). Internal
+    detail of this module -- callers outside it should go through
+    CdApiService below, not an ApiClient directly."""
 
     @abstractmethod
     async def get(self, path: str, query: dict[str, str]) -> dict:
@@ -150,15 +153,40 @@ def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
     }
 
 
-def get_api_client() -> ApiClient:
+class CdApiService:
+    """The service layer schema.py depends on for cd-api data. Unlike the
+    ApiClient it wraps (which just makes the call and hands back a raw
+    dict), this validates cd-api's response against the shared
+    Member/MembersResponse models from cd-lib and returns real Member
+    objects -- the response-shape trust boundary lives here, not in
+    schema.py's resolvers."""
+
+    def __init__(self, transport: ApiClient):
+        self._transport = transport
+
+    async def get_representatives(self, state: str, district: int) -> list[Member]:
+        result = await self._transport.get(
+            "/members", {"state": state, "district": str(district)}
+        )
+        return MembersResponse(**result).representatives
+
+    async def get_senators(self, state: str) -> list[Member]:
+        result = await self._transport.get("/members", {"state": state})
+        return MembersResponse(**result).senators
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
+
+
+def get_cd_api_service() -> CdApiService:
     if settings.ENVIRONMENT == "local":
-        return HttpApiClient(settings.CD_API_BASE_URL)
+        return CdApiService(HttpApiClient(settings.CD_API_BASE_URL))
     if not settings.CD_API_FUNCTION_NAME:
-        # Called at import time (schema.py's module-level api_client =
-        # get_api_client()), so a misconfigured non-local deploy fails
+        # Called at import time (schema.py's module-level cd_api_service =
+        # get_cd_api_service()), so a misconfigured non-local deploy fails
         # immediately at startup instead of lazily on the first real
         # GraphQL query with a boto3 ParamValidationError.
         raise RuntimeError(
             'CD_API_FUNCTION_NAME must be set when CD_SERVER_ENVIRONMENT is not "local".'
         )
-    return LambdaApiClient(settings.CD_API_FUNCTION_NAME)
+    return CdApiService(LambdaApiClient(settings.CD_API_FUNCTION_NAME))

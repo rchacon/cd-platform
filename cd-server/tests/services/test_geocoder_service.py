@@ -3,13 +3,13 @@ import asyncio
 import httpx
 import pytest
 
-from cd.server.geocoder import (
+from cd.server.services.geocoder_service import (
     AmbiguousAddressError,
     GeocoderError,
+    GeocoderService,
     InvalidAddressError,
     NoAddressMatchError,
     _extract_congressional_district,
-    get_district,
 )
 
 # _extract_congressional_district test cases ported from cd-lookup's
@@ -75,7 +75,7 @@ def test_ambiguous_address_error_is_an_invalid_address_error():
     assert issubclass(AmbiguousAddressError, InvalidAddressError)
 
 
-# get_district() -- mocked HTTP-level tests.
+# GeocoderService.get_district() -- mocked HTTP-level tests.
 
 
 def _fake_response(payload, status_code=200):
@@ -95,21 +95,24 @@ def _match(state="CA", cd_field="CD119", district="11", layer="119th Congression
 def test_get_district_returns_state_and_district_on_success(monkeypatch):
     payload = {"result": {"addressMatches": [_match()]}}
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
-    assert asyncio.run(get_district("1 Dr Carlton B Goodlett Pl, San Francisco, CA")) == ("CA", 11)
+    service = GeocoderService()
+    assert asyncio.run(
+        service.get_district("1 Dr Carlton B Goodlett Pl, San Francisco, CA")
+    ) == ("CA", 11)
 
 
 def test_get_district_raises_no_match_error_on_zero_matches(monkeypatch):
     payload = {"result": {"addressMatches": []}}
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
     with pytest.raises(NoAddressMatchError):
-        asyncio.run(get_district("nonsense"))
+        asyncio.run(GeocoderService().get_district("nonsense"))
 
 
 def test_get_district_raises_ambiguous_error_on_multiple_matches(monkeypatch):
     payload = {"result": {"addressMatches": [_match(), _match(state="CA", district="12")]}}
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
     with pytest.raises(AmbiguousAddressError):
-        asyncio.run(get_district("Main St"))
+        asyncio.run(GeocoderService().get_district("Main St"))
 
 
 def test_get_district_raises_geocoder_error_on_missing_state(monkeypatch):
@@ -125,7 +128,7 @@ def test_get_district_raises_geocoder_error_on_missing_state(monkeypatch):
     }
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
     with pytest.raises(GeocoderError, match="addressComponents.state"):
-        asyncio.run(get_district("some address"))
+        asyncio.run(GeocoderService().get_district("some address"))
 
 
 def test_get_district_raises_geocoder_error_on_missing_district(monkeypatch):
@@ -136,13 +139,13 @@ def test_get_district_raises_geocoder_error_on_missing_district(monkeypatch):
     }
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
     with pytest.raises(GeocoderError, match="Congressional Districts"):
-        asyncio.run(get_district("some address"))
+        asyncio.run(GeocoderService().get_district("some address"))
 
 
 def test_get_district_raises_geocoder_error_on_http_error_status(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response({}, status_code=503))
     with pytest.raises(GeocoderError, match="503"):
-        asyncio.run(get_district("some address"))
+        asyncio.run(GeocoderService().get_district("some address"))
 
 
 def test_get_district_raises_geocoder_error_on_connection_failure(monkeypatch):
@@ -151,10 +154,17 @@ def test_get_district_raises_geocoder_error_on_connection_failure(monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     with pytest.raises(GeocoderError, match="Failed to reach"):
-        asyncio.run(get_district("some address"))
+        asyncio.run(GeocoderService().get_district("some address"))
 
 
 def test_get_district_raises_geocoder_error_on_malformed_response(monkeypatch):
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response({"unexpected": "shape"}))
     with pytest.raises(GeocoderError, match="unexpected response"):
-        asyncio.run(get_district("some address"))
+        asyncio.run(GeocoderService().get_district("some address"))
+
+
+def test_geocoder_service_aclose_closes_underlying_client():
+    service = GeocoderService()
+    assert service._client.is_closed is False
+    asyncio.run(service.aclose())
+    assert service._client.is_closed is True

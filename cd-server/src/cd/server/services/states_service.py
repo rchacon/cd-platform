@@ -21,3 +21,13 @@ STATE_NAMES: dict[str, str] = {
     "DC": "District of Columbia", "PR": "Puerto Rico", "VI": "U.S. Virgin Islands",
     "GU": "Guam", "AS": "American Samoa", "MP": "Northern Mariana Islands",
 }
+
+
+class StatesService:
+    # No I/O, unlike CdApiService/GeocoderService -- kept as a service
+    # anyway for consistency (schema.py depends on a uniform services
+    # layer regardless of whether an implementation happens to be static
+    # today; if getStates ever needs to become dynamic, this is the one
+    # place that'd change).
+    def get_states(self) -> dict[str, str]:
+        return STATE_NAMES

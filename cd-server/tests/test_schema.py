@@ -2,34 +2,53 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from cd.server import geocoder
 from cd.server.app import app
-from cd.server.schema import api_client
+from cd.server.schema import cd_api_service, geocoder_service
 
 
 @pytest.fixture
 def client():
     # Starlette's TestClient only triggers ASGI lifespan startup/shutdown
-    # (app.py's lifespan(), which closes api_client on exit) when used as
-    # a context manager -- a bare TestClient(app) never runs it at all.
+    # (app.py's lifespan(), which closes cd_api_service/geocoder_service on
+    # exit) when used as a context manager -- a bare TestClient(app) never
+    # runs it at all.
     with TestClient(app) as client:
         yield client
 
 
-def test_lifespan_closes_both_clients_on_shutdown():
-    # One test, not two -- api_client/geocoder's own connection pools are
-    # module-level singletons shared across the whole test session, and
-    # aclose() is a one-way transition (idempotent, but not reversible).
-    # Splitting this into separate tests would make the second one
-    # order-dependent on whether some earlier test's own
-    # `with TestClient(app):` already triggered this same shutdown.
-    assert api_client._client.is_closed is False
-    assert geocoder._client.is_closed is False
+def test_lifespan_closes_both_services_on_shutdown(monkeypatch):
+    # Spies on aclose() itself rather than reaching into internal
+    # connection-pool state (e.g. cd_api_service._transport._client.is_closed)
+    # -- cd_api_service/geocoder_service are module-level singletons shared
+    # across the whole test session, so asserting on their actual open/closed
+    # state would make this test's outcome depend on whether some earlier
+    # test's own `with TestClient(app):` already triggered this same
+    # shutdown (aclose() is idempotent but not reversible). Spying on the
+    # call itself sidesteps that ordering fragility entirely.
+    cd_api_service_closed = False
+    geocoder_service_closed = False
+
+    original_cd_api_aclose = cd_api_service.aclose
+    original_geocoder_aclose = geocoder_service.aclose
+
+    async def spy_cd_api_aclose():
+        nonlocal cd_api_service_closed
+        cd_api_service_closed = True
+        await original_cd_api_aclose()
+
+    async def spy_geocoder_aclose():
+        nonlocal geocoder_service_closed
+        geocoder_service_closed = True
+        await original_geocoder_aclose()
+
+    monkeypatch.setattr(cd_api_service, "aclose", spy_cd_api_aclose)
+    monkeypatch.setattr(geocoder_service, "aclose", spy_geocoder_aclose)
+
     with TestClient(app):
-        assert api_client._client.is_closed is False
-        assert geocoder._client.is_closed is False
-    assert api_client._client.is_closed is True
-    assert geocoder._client.is_closed is True
+        assert cd_api_service_closed is False
+        assert geocoder_service_closed is False
+    assert cd_api_service_closed is True
+    assert geocoder_service_closed is True
 
 
 def test_version_query_returns_dev_when_no_version_file(client):
