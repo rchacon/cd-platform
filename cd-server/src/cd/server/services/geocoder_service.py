@@ -44,7 +44,7 @@ def _extract_congressional_district(geographies: dict) -> str | None:
     district: str | None = None
 
     for layer_name, entries in geographies.items():
-        if "Congressional Districts" not in layer_name or not entries:
+        if "Congressional Districts" not in layer_name or not entries or not entries[0]:
             continue
 
         match = _LEADING_DIGITS_RE.match(layer_name)

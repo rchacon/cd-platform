@@ -67,6 +67,11 @@ def test_extract_congressional_district_returns_null_for_non_numeric_value():
     assert _extract_congressional_district(geographies) is None
 
 
+def test_extract_congressional_district_returns_null_for_falsy_first_entry():
+    geographies = {"119th Congressional Districts": [None]}
+    assert _extract_congressional_district(geographies) is None
+
+
 def test_no_address_match_error_is_an_invalid_address_error():
     assert issubclass(NoAddressMatchError, InvalidAddressError)
 
