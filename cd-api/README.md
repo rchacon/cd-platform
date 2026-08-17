@@ -141,12 +141,8 @@ stripped, e.g. `0.1.0`) into `package/cd/api/` (alongside `app.py`, since
 confirm what's actually live behind Lambda's mutable `$LATEST`, without
 needing Lambda's own PublishVersion/alias machinery.
 
-**`cd-infra`'s Terraform still configures the Lambda's `handler` as
-`app.handler`, not `cd.api.app.handler`** -- that has to be updated (and
-applied) to match this workflow's new package structure *before* the next
-`cd-api-v*` tag is cut, or the deploy will ship a zip the configured
-handler can't find, the same class of break `cd-infra#12` fixed once
-already. Not yet done as of this package restructuring landing here.
+`cd-infra`'s Terraform configures the Lambda's `handler` as
+`cd.api.app.handler`, matching this workflow's package structure.
 
 Authenticates via GitHub OIDC to a scoped IAM role
 (`cd-platform-cd-api-deploy`, provisioned in
