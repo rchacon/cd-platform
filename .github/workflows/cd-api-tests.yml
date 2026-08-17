@@ -34,8 +34,12 @@ jobs:
           # migrations there, not the real dev database.
           PGDATABASE: congressional_app_test
         run: |
-          uv sync --locked
-          uv run alembic upgrade head
+          # --no-project skips cd-etl's own lockfile (pulling in the
+          # entire apache-airflow dependency tree cd-api's tests have no
+          # need for) -- migrations/env.py has no ORM models and no
+          # import on cd-etl's own src, so alembic+psycopg2 (via
+          # SQLAlchemy's postgresql+psycopg2 dialect) is all this needs.
+          uv run --no-project --with alembic --with psycopg2-binary alembic upgrade head
 
       - name: Install dependencies
         run: uv sync --locked
