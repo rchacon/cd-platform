@@ -62,7 +62,7 @@ class Senator:
 
 @strawberry.type
 class State:
-    abbreviation: str
+    abbr: str
     name: str
     seats: int
     voting_seats: bool
@@ -84,7 +84,7 @@ class Query:
     def get_states(self) -> list[State]:
         return [
             State(
-                abbreviation=abbr,
+                abbr=abbr,
                 name=info.name,
                 seats=info.seats,
                 voting_seats=info.voting_seats,
