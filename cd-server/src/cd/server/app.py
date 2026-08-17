@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from strawberry.fastapi import GraphQLRouter
 
+from cd.server import geocoder
 from cd.server.schema import GRAPHIQL_ENABLED, VERSION, api_client, schema
 
 
@@ -11,8 +12,10 @@ async def lifespan(app: FastAPI):
     yield
     # HttpApiClient holds an open httpx.AsyncClient connection pool;
     # LambdaApiClient's aclose() is a no-op (boto3 needs no explicit
-    # close). See ApiClient.aclose() in clients.py.
+    # close). See ApiClient.aclose() in clients.py. geocoder.py holds its
+    # own separate connection pool for the (unrelated) Census geocoder.
     await api_client.aclose()
+    await geocoder.aclose()
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)

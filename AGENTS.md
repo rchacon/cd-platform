@@ -35,7 +35,12 @@ Gateway via a direct `boto3` invoke -- wrapped in `asyncio.to_thread()`
 since `boto3` itself has no async API -- of the real function in
 production) picked by `settings.ENVIRONMENT`; both GraphQL resolvers are
 `async` too, so a query requesting multiple fields makes their cd-api
-calls concurrently rather than sequentially. See `cd-server/README.md`.
+calls concurrently rather than sequentially. Also exposes `getStates`
+(`cd-server/src/cd/server/states.py`, a static abbreviation -> name
+table) and `getDistrict` (`cd-server/src/cd/server/geocoder.py`,
+resolving a free-text address via the Census Bureau's geocoding API) --
+both ported from `cd-lookup`'s `StateNames.php`/`LookupDistrict.php`,
+same algorithms. See `cd-server/README.md`.
 Down the line it will also get its own Postgres
 database and issue/manage API keys and billing for authenticated users --
 not built yet. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is

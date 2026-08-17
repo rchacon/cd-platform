@@ -1,6 +1,8 @@
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from cd.server import geocoder
 from cd.server.app import app
 from cd.server.schema import api_client
 
@@ -14,11 +16,20 @@ def client():
         yield client
 
 
-def test_lifespan_closes_api_client_on_shutdown():
+def test_lifespan_closes_both_clients_on_shutdown():
+    # One test, not two -- api_client/geocoder's own connection pools are
+    # module-level singletons shared across the whole test session, and
+    # aclose() is a one-way transition (idempotent, but not reversible).
+    # Splitting this into separate tests would make the second one
+    # order-dependent on whether some earlier test's own
+    # `with TestClient(app):` already triggered this same shutdown.
     assert api_client._client.is_closed is False
+    assert geocoder._client.is_closed is False
     with TestClient(app):
         assert api_client._client.is_closed is False
+        assert geocoder._client.is_closed is False
     assert api_client._client.is_closed is True
+    assert geocoder._client.is_closed is True
 
 
 def test_version_query_returns_dev_when_no_version_file(client):
@@ -61,3 +72,54 @@ def test_senator_type_does_not_expose_role(client):
     assert response.json()["data"] is None
     assert "role" in response.json()["errors"][0]["message"]
     assert "Senator" in response.json()["errors"][0]["message"]
+
+
+def test_get_states_returns_all_states(client):
+    response = client.post("/graphql", json={"query": "{ getStates { abbreviation name } }"})
+    assert response.status_code == 200
+    states = response.json()["data"]["getStates"]
+    assert len(states) == 56
+    assert {"abbreviation": "CA", "name": "California"} in states
+
+
+def test_get_district_returns_state_and_district(client, monkeypatch):
+    payload = {
+        "result": {
+            "addressMatches": [
+                {
+                    "addressComponents": {"state": "CA"},
+                    "geographies": {"119th Congressional Districts": [{"CD119": "11"}]},
+                }
+            ]
+        }
+    }
+
+    async def fake_get(self, url, params=None, timeout=None):
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    response = client.post(
+        "/graphql",
+        json={"query": '{ getDistrict(address: "1 Dr Carlton B Goodlett Pl") { state district } }'},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {"getDistrict": {"state": "CA", "district": 11}}
+
+
+def test_get_district_surfaces_no_match_error(client, monkeypatch):
+    async def fake_get(self, url, params=None, timeout=None):
+        return httpx.Response(
+            200,
+            json={"result": {"addressMatches": []}},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    response = client.post(
+        "/graphql", json={"query": '{ getDistrict(address: "nonsense") { state district } }'}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "No address match found" in response.json()["errors"][0]["message"]

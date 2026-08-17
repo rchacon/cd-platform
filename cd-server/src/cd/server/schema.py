@@ -7,7 +7,9 @@ from cd.lib.models import Member, MembersResponse
 from cd.lib.version import read_version
 from strawberry.extensions import DisableIntrospection
 
+from cd.server import geocoder
 from cd.server.clients import get_api_client
+from cd.server.states import STATE_NAMES
 
 # Read once at import time, not per-request -- the VERSION file is baked
 # into the image and never changes for the life of the process.
@@ -57,10 +59,31 @@ class Senator:
 
 
 @strawberry.type
+class State:
+    abbreviation: str
+    name: str
+
+
+@strawberry.type
+class District:
+    state: str
+    district: int
+
+
+@strawberry.type
 class Query:
     @strawberry.field
     def version(self) -> str:
         return VERSION
+
+    @strawberry.field
+    def get_states(self) -> list[State]:
+        return [State(abbreviation=abbr, name=name) for abbr, name in STATE_NAMES.items()]
+
+    @strawberry.field
+    async def get_district(self, address: str) -> District:
+        state, district = await geocoder.get_district(address)
+        return District(state=state, district=district)
 
     @strawberry.field
     async def get_representatives(self, state: str, district: int) -> list[Representative]:

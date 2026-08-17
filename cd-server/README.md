@@ -15,6 +15,8 @@ The schema (`src/cd/server/schema.py`) currently exposes:
 ```graphql
 {
   version
+  getStates { abbreviation name }
+  getDistrict(address: "1600 Pennsylvania Ave NW, Washington, DC") { state district }
   getSenators(state: "CA") { firstName lastName party }
   getRepresentatives(state: "CA", district: 12) { firstName lastName role }
 }
@@ -56,10 +58,35 @@ cd-api calls in parallel rather than one after the other. Verified
 directly: with an injected 0.5s delay per call, the combined query
 completed in ~0.5s total, not ~1.0s.
 
-Down the line, `cd-server` will also get its own Postgres database,
-issue/manage API keys and billing for authenticated users, and resolve
-a free-text address to a state/district (e.g. via the Census Bureau's
-geocoding API) -- a separate integration from cd-api, not built yet.
+`getStates` (`src/cd/server/states.py`) needs no input -- a static table
+of USPS state/territory abbreviation -> full display name, ported from
+`cd-lookup`'s `StateNames.php` (same 56 entries: 50 states, DC, and 5
+territories; `cd-lookup#15`'s original reasoning still applies here --
+the Census geocoder below never spells a state's name out, even when
+the input address did).
+
+`getDistrict` (`src/cd/server/geocoder.py`) resolves a free-text address
+to a state/district via the Census Bureau's geocoding API -- a separate
+integration from `cd-api` entirely (its own `httpx.AsyncClient`
+connection pool, also closed via `app.py`'s lifespan), also ported from
+`cd-lookup`
+(`LookupDistrict.php`'s `get_district()`/`extract_congressional_district()`,
+same algorithm: match a `geographies` layer by a `"...Congressional
+Districts"` name pattern, extract the embedded Congress number, and
+require the same-numbered `CD<n>` field on that same layer rather than
+trusting any `CD*` field found -- so a stray/legacy layer can't silently
+supply the wrong district, and disagreement between qualifying layers is
+treated as unresolvable rather than guessed at). Raises
+`NoAddressMatchError`/`AmbiguousAddressError` for a problem with the
+address itself, `GeocoderError` for anything else (network failure,
+unexpected response shape) -- both surface as normal GraphQL field
+errors with a clear message, same "let the raised exception's message
+speak for itself" approach `ApiClientError` already uses above, not a
+structured/typed error result.
+
+Down the line, `cd-server` will also get its own Postgres database and
+issue/manage API keys and billing for authenticated users -- not built
+yet.
 
 ### Calling cd-api locally
 
