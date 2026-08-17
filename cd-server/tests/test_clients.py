@@ -80,6 +80,16 @@ def test_http_api_client_raises_on_error_response(monkeypatch):
     assert exc_info.value.status_code == 404
 
 
+def test_http_api_client_wraps_connection_errors(monkeypatch):
+    async def fake_get(self, url, params=None):
+        raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    with pytest.raises(ApiClientError) as exc_info:
+        asyncio.run(HttpApiClient("http://cd-api:8000").get("/version", {}))
+    assert exc_info.value.status_code == 502
+
+
 def test_http_api_client_aclose_closes_underlying_client():
     client = HttpApiClient("http://cd-api:8000")
     assert client._client.is_closed is False
@@ -135,6 +145,46 @@ def test_lambda_api_client_raises_on_function_error(monkeypatch):
     assert exc_info.value.status_code == 500
 
 
+def test_lambda_api_client_wraps_boto_client_error(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _RaisingLambdaClient:
+        def invoke(self, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "no such function"}},
+                "Invoke",
+            )
+
+    monkeypatch.setattr("boto3.client", lambda service: _RaisingLambdaClient())
+    with pytest.raises(ApiClientError) as exc_info:
+        asyncio.run(LambdaApiClient("does-not-exist").get("/version", {}))
+    assert exc_info.value.status_code == 502
+
+
+def test_lambda_api_client_wraps_botocore_error(monkeypatch):
+    from botocore.exceptions import NoCredentialsError
+
+    class _RaisingLambdaClient:
+        def invoke(self, **kwargs):
+            raise NoCredentialsError()
+
+    monkeypatch.setattr("boto3.client", lambda service: _RaisingLambdaClient())
+    with pytest.raises(ApiClientError) as exc_info:
+        asyncio.run(LambdaApiClient("cd-platform-cd-api").get("/version", {}))
+    assert exc_info.value.status_code == 502
+
+
+def test_lambda_api_client_wraps_malformed_response(monkeypatch):
+    # No "statusCode"/"body" keys and no FunctionError set -- an
+    # unexpected/malformed payload Mangum's own contract shouldn't
+    # actually produce, but shouldn't surface as a raw KeyError either.
+    fake = _FakeLambdaClient({"unexpected": "shape"})
+    monkeypatch.setattr("boto3.client", lambda service: fake)
+    with pytest.raises(ApiClientError) as exc_info:
+        asyncio.run(LambdaApiClient("cd-platform-cd-api").get("/version", {}))
+    assert exc_info.value.status_code == 502
+
+
 def test_lambda_api_client_aclose_is_a_noop(monkeypatch):
     monkeypatch.setattr("boto3.client", lambda service: _FakeLambdaClient({}))
     client = LambdaApiClient("cd-platform-cd-api")
@@ -156,3 +206,10 @@ def test_get_api_client_returns_lambda_client_otherwise(monkeypatch):
     client = get_api_client()
     assert isinstance(client, LambdaApiClient)
     assert client.function_name == "cd-platform-cd-api"
+
+
+def test_get_api_client_fails_fast_when_function_name_missing(monkeypatch):
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "CD_API_FUNCTION_NAME", "")
+    with pytest.raises(RuntimeError, match="CD_API_FUNCTION_NAME"):
+        get_api_client()

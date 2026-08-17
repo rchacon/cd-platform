@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 
 import boto3
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 
 from cd.server import settings
 
@@ -44,7 +45,14 @@ class HttpApiClient(ApiClient):
         self._client = httpx.AsyncClient()
 
     async def get(self, path: str, query: dict[str, str]) -> dict:
-        response = await self._client.get(f"{self.base_url}{path}", params=query)
+        try:
+            response = await self._client.get(f"{self.base_url}{path}", params=query)
+        except httpx.HTTPError as e:
+            # Connection refused, timeout, DNS failure, etc. -- there's no
+            # HTTP response here to read a status code from at all, unlike
+            # the is_error branch below. 502 (bad gateway) matches cd-server
+            # acting as a gateway to an unreachable upstream.
+            raise ApiClientError(502, str(e)) from e
         if response.is_error:
             raise ApiClientError(response.status_code, response.text)
         return response.json()
@@ -83,11 +91,20 @@ class LambdaApiClient(ApiClient):
         # pool so it doesn't block the event loop, without needing a
         # third-party async-boto3 wrapper (aioboto3/aiobotocore) for what
         # this class does with just this one call.
-        response = await asyncio.to_thread(
-            self.lambda_client.invoke,
-            FunctionName=self.function_name,
-            Payload=json.dumps(event),
-        )
+        try:
+            response = await asyncio.to_thread(
+                self.lambda_client.invoke,
+                FunctionName=self.function_name,
+                Payload=json.dumps(event),
+            )
+        except (ClientError, BotoCoreError) as e:
+            # ClientError/BotoCoreError don't share a common base besides
+            # Exception -- ClientError covers AWS API-level failures (bad
+            # function name, missing lambda:InvokeFunction permission),
+            # BotoCoreError covers lower-level ones (no credentials,
+            # can't reach the Lambda API endpoint at all). Neither
+            # produces a {statusCode, body} response to inspect below.
+            raise ApiClientError(502, str(e)) from e
 
         # A crash inside the Lambda runtime itself (as opposed to a normal
         # non-2xx HTTP response cd-api's own error handlers produced) sets
@@ -96,11 +113,21 @@ class LambdaApiClient(ApiClient):
         if response.get("FunctionError"):
             raise ApiClientError(500, response["Payload"].read().decode())
 
-        result = json.load(response["Payload"])
-        if result["statusCode"] >= 400:
-            raise ApiClientError(result["statusCode"], result["body"])
+        try:
+            result = json.load(response["Payload"])
+            status_code = result["statusCode"]
+            body = result["body"]
+        except (KeyError, json.JSONDecodeError) as e:
+            # Shouldn't happen given Mangum's own contract, but a
+            # malformed/unexpected payload here shouldn't surface as a
+            # raw KeyError either -- same "one consistent error type"
+            # promise as every other failure path in this class.
+            raise ApiClientError(502, f"Malformed Lambda response: {e}") from e
 
-        return json.loads(result["body"])
+        if status_code >= 400:
+            raise ApiClientError(status_code, body)
+
+        return json.loads(body)
 
 
 def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
@@ -126,4 +153,12 @@ def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
 def get_api_client() -> ApiClient:
     if settings.ENVIRONMENT == "local":
         return HttpApiClient(settings.CD_API_BASE_URL)
+    if not settings.CD_API_FUNCTION_NAME:
+        # Called at import time (schema.py's module-level api_client =
+        # get_api_client()), so a misconfigured non-local deploy fails
+        # immediately at startup instead of lazily on the first real
+        # GraphQL query with a boto3 ParamValidationError.
+        raise RuntimeError(
+            'CD_API_FUNCTION_NAME must be set when CD_SERVER_ENVIRONMENT is not "local".'
+        )
     return LambdaApiClient(settings.CD_API_FUNCTION_NAME)

@@ -5,6 +5,7 @@ description = "GraphQL backend for cd-webapp"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.35.0",
+    "botocore>=1.35.0",
     "cd-lib",
     "fastapi>=0.115.0",
     "httpx>=0.28.0",
