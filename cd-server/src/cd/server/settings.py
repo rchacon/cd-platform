@@ -10,6 +10,9 @@ ENVIRONMENT = os.environ.get("CD_SERVER_ENVIRONMENT", "local")
 # from cd-server's own container via host.docker.internal (see that
 # service's extra_hosts in docker-compose.yml), but only if cd-api is
 # started with --host 0.0.0.0, not uvicorn's 127.0.0.1-only default.
-CD_API_BASE_URL = os.environ.get("CD_API_BASE_URL", "http://host.docker.internal:8000")
+# Port 8001, not cd-api's own README default of 8000 -- that's cd-server's
+# own published port (docker-compose.yml), so running cd-api on 8000 too
+# collides with it.
+CD_API_BASE_URL = os.environ.get("CD_API_BASE_URL", "http://host.docker.internal:8001")
 
 CD_API_FUNCTION_NAME = os.environ.get("CD_API_FUNCTION_NAME", "")

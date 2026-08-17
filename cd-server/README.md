@@ -63,16 +63,18 @@ geocoding API) -- a separate integration from cd-api, not built yet.
 
 ### Calling cd-api locally
 
-`HttpApiClient`'s default target is `http://host.docker.internal:8000`
+`HttpApiClient`'s default target is `http://host.docker.internal:8001`
 (overridable via `CD_API_BASE_URL`) -- reachable from cd-server's own
 container via the `extra_hosts` entry in `../docker-compose.yml` (Linux
 doesn't resolve `host.docker.internal` by default the way Docker
-Desktop does). Start `cd-api` yourself first, bound to all interfaces
-(uvicorn's own default, `127.0.0.1`, isn't reachable from inside a
-container):
+Desktop does). Port 8001, not cd-api's own README default of 8000 --
+that's cd-server's own published port, so running cd-api on 8000 too
+would collide with it. Start `cd-api` yourself first, bound to all
+interfaces (uvicorn's own default, `127.0.0.1`, isn't reachable from
+inside a container):
 
 ```bash
-cd ../cd-api && uv run uvicorn cd.api.app:app --app-dir src --host 0.0.0.0 --port 8000
+cd ../cd-api && uv run uvicorn cd.api.app:app --app-dir src --host 0.0.0.0 --port 8001
 ```
 
 ## Prerequisites
