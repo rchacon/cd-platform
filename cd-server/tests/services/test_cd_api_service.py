@@ -233,6 +233,7 @@ class _FakeTransport(ApiClient):
 
 
 _MEMBER = {
+    "bioguide_id": "D000001",
     "first_name": "Jane",
     "middle_name": None,
     "last_name": "Doe",
@@ -243,9 +244,10 @@ _MEMBER = {
     "phone": None,
     "website": None,
     "photo_url": None,
+    "district": 12,
 }
 
-_SENATOR = {**_MEMBER, "role": "Senator"}
+_SENATOR = {**_MEMBER, "role": "Senator", "district": None}
 
 
 def test_cd_api_service_get_representatives_validates_and_returns_members():
@@ -257,6 +259,8 @@ def test_cd_api_service_get_representatives_validates_and_returns_members():
     assert transport.calls == [("/members", {"state": "CA", "district": "12"})]
     assert len(members) == 1
     assert members[0].last_name == "Doe"
+    assert members[0].bioguide_id == "D000001"
+    assert members[0].district == 12
 
 
 def test_cd_api_service_get_senators_validates_and_returns_members():
@@ -268,6 +272,8 @@ def test_cd_api_service_get_senators_validates_and_returns_members():
     assert transport.calls == [("/members", {"state": "CA"})]
     assert len(members) == 1
     assert members[0].last_name == "Doe"
+    assert members[0].bioguide_id == "D000001"
+    assert members[0].district is None
 
 
 def test_cd_api_service_aclose_delegates_to_transport():

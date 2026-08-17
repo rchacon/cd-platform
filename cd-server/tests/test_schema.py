@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cd.server.app import app
-from cd.server.schema import cd_api_service, geocoder_service
+from cd.server.schema import cd_api_service, geocoder_service, schema
 
 
 @pytest.fixture
@@ -153,6 +153,33 @@ def test_senator_type_does_not_expose_role(client):
     assert response.json()["data"] is None
     assert "role" in response.json()["errors"][0]["message"]
     assert "Senator" in response.json()["errors"][0]["message"]
+
+
+def test_senator_type_does_not_expose_district(client):
+    # Same reasoning as role above -- a Senator's district is always
+    # null (senators represent the whole state), so it's absent from
+    # the schema entirely rather than a field that's always null at
+    # runtime. Representative keeps it, since that's the whole point.
+    response = client.post(
+        "/graphql", json={"query": '{ getSenators(state: "CA") { firstName district } }'}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "district" in response.json()["errors"][0]["message"]
+    assert "Senator" in response.json()["errors"][0]["message"]
+
+
+def test_representative_and_senator_types_expose_bioguide_id():
+    # Checked against the schema's own SDL directly rather than over
+    # HTTP -- introspection is disabled by default (see
+    # test_introspection_disabled_by_default above), and a query that
+    # actually selects bioguideId would reach the resolver and attempt a
+    # real cd-api call this test has no business making.
+    sdl = schema.as_str()
+    representative_type = sdl.split("type Representative {")[1].split("}")[0]
+    senator_type = sdl.split("type Senator {")[1].split("}")[0]
+    assert "bioguideId: String!" in representative_type
+    assert "bioguideId: String!" in senator_type
 
 
 def test_get_states_returns_all_states(client):

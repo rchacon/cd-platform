@@ -40,15 +40,18 @@ class Representative:
     pass
 
 
-# `role` deliberately omitted (not just hidden -- absent from the
-# generated schema entirely) rather than all_fields=True: it's how
-# cd-api's own /members response distinguishes Representative from
+# `role`/`district` deliberately omitted (not just hidden -- absent from
+# the generated schema entirely) rather than all_fields=True: `role` is
+# how cd-api's own /members response distinguishes Representative from
 # Delegate/Resident Commissioner within the House chamber, but every
 # Senator's role is always "Senator" -- redundant with getSenators
-# itself, and a GraphQL client shouldn't need to know both roles come
-# from the same underlying Member/table to make sense of the field.
+# itself. `district` is always null for a Senator (senators represent
+# the whole state, not a district) -- same reasoning, not useful
+# information on this type, unlike Representative where it's the whole
+# point.
 @strawberry_pydantic.type(model=Member)
 class Senator:
+    bioguide_id: strawberry.auto
     first_name: strawberry.auto
     middle_name: strawberry.auto
     last_name: strawberry.auto
