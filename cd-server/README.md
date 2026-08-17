@@ -32,44 +32,68 @@ written into the image at release time) via `../cd-lib`'s shared
 piece of code shared across `cd-platform`'s Python services, and the
 `cd`-namespace-package detail that makes it work.
 
-`getSenators`/`getRepresentatives` are cd-server's first real
-server-to-server calls to `cd-api` -- `src/cd/server/clients.py`
-provides two interchangeable implementations (a shared `ApiClient` ABC,
-so they can't silently drift apart) picked by `settings.ENVIRONMENT`:
-`HttpApiClient` (plain HTTP, for local dev) and `LambdaApiClient`
-(direct `boto3` invoke of the real deployed function, bypassing API
-Gateway entirely -- no network hop, no `X-Api-Key` needed, since
-cd-api's own code never checks that header). `LambdaApiClient` builds a
-synthetic API-Gateway-shaped event and calls cd-api's actual Mangum
-handler with it, so routing/validation/error-formatting all get
-exercised exactly as they would over real HTTP rather than reaching
-around cd-api's HTTP layer to call its internal functions directly.
+`schema.py`'s resolvers are thin -- each one delegates to a service in
+`src/cd/server/services/`, a small layer between the GraphQL resolvers
+and whatever they actually depend on (an external HTTP call, a static
+table). A **client** in this codebase wraps a specific external
+system/protocol and is named after what it's a client *of* -- thin,
+handles connection management/serialization/retries, no business logic.
+A **service** is what a resolver actually depends on: it may use one or
+more clients internally, but also owns real logic (validation,
+orchestration, converting an external response shape into a domain
+shape) and is named after the capability it provides, not the transport
+underneath it. `schema.py` only ever imports from `services/` -- it has
+no direct knowledge of `httpx`/`boto3`/the Census geocoder's response
+shape.
 
-Both `get()`s and the two GraphQL resolvers above are `async` --
-`HttpApiClient` holds a single `httpx.AsyncClient` connection pool
-(closed via `app.py`'s FastAPI `lifespan` on shutdown), and
-`LambdaApiClient` wraps `boto3`'s own invoke call (boto3 has no async
-API at all) in `asyncio.to_thread()` rather than pulling in a
-third-party async-boto3 wrapper for what's currently a single call.
-This matters concretely for a query requesting both fields at once --
-strawberry runs independent async resolvers concurrently, so
+`getSenators`/`getRepresentatives` are backed by
+`services/cd_api_service.py`'s `CdApiService`, cd-server's first real
+server-to-server integration with `cd-api`. Internally it holds an
+`ApiClient` (a shared ABC, so two transport implementations can't
+silently drift apart), picked by `settings.ENVIRONMENT`: `HttpApiClient`
+(plain HTTP, for local dev) and `LambdaApiClient` (direct `boto3` invoke
+of the real deployed function, bypassing API Gateway entirely -- no
+network hop, no `X-Api-Key` needed, since cd-api's own code never checks
+that header). `LambdaApiClient` builds a synthetic API-Gateway-shaped
+event and calls cd-api's actual Mangum handler with it, so
+routing/validation/error-formatting all get exercised exactly as they
+would over real HTTP rather than reaching around cd-api's HTTP layer to
+call its internal functions directly. `CdApiService` itself is where the
+response-shape trust boundary lives: it validates cd-api's raw JSON
+against `cd-lib`'s shared `Member`/`MembersResponse` models and hands
+`schema.py`'s resolvers real `Member` objects, not a dict the resolver
+would otherwise have to parse itself.
+
+Both the transport `get()`s and the two GraphQL resolvers above are
+`async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
+pool (closed via `CdApiService.aclose()`, called from `app.py`'s FastAPI
+`lifespan` on shutdown), and `LambdaApiClient` wraps `boto3`'s own invoke
+call (boto3 has no async API at all) in `asyncio.to_thread()` rather than
+pulling in a third-party async-boto3 wrapper for what's currently a
+single call. This matters concretely for a query requesting both fields
+at once -- strawberry runs independent async resolvers concurrently, so
 `{ getSenators(...) getRepresentatives(...) }` in one request makes both
 cd-api calls in parallel rather than one after the other. Verified
 directly: with an injected 0.5s delay per call, the combined query
 completed in ~0.5s total, not ~1.0s.
 
-`getStates` (`src/cd/server/states.py`) needs no input -- a static table
-of USPS state/territory abbreviation -> full display name, ported from
-`cd-lookup`'s `StateNames.php` (same 56 entries: 50 states, DC, and 5
-territories; `cd-lookup#15`'s original reasoning still applies here --
-the Census geocoder below never spells a state's name out, even when
-the input address did).
+`getStates` (`services/states_service.py`'s `StatesService`) needs no
+input -- a static table of USPS state/territory abbreviation -> full
+display name, ported from `cd-lookup`'s `StateNames.php` (same 56
+entries: 50 states, DC, and 5 territories; `cd-lookup#15`'s original
+reasoning still applies here -- the Census geocoder below never spells a
+state's name out, even when the input address did). `StatesService` has
+no I/O, unlike the other two services -- it's kept as a service anyway
+for consistency (`schema.py` depends on a uniform services layer
+regardless of whether an implementation happens to be static today; if
+`getStates` ever needs to become dynamic, this is the one place that'd
+change).
 
-`getDistrict` (`src/cd/server/geocoder.py`) resolves a free-text address
-to a state/district via the Census Bureau's geocoding API -- a separate
-integration from `cd-api` entirely (its own `httpx.AsyncClient`
-connection pool, also closed via `app.py`'s lifespan), also ported from
-`cd-lookup`
+`getDistrict` (`services/geocoder_service.py`'s `GeocoderService`)
+resolves a free-text address to a state/district via the Census Bureau's
+geocoding API -- a separate integration from `cd-api` entirely (its own
+`httpx.AsyncClient` connection pool, also closed via `app.py`'s
+lifespan), also ported from `cd-lookup`
 (`LookupDistrict.php`'s `get_district()`/`extract_congressional_district()`,
 same algorithm: match a `geographies` layer by a `"...Congressional
 Districts"` name pattern, extract the embedded Congress number, and
