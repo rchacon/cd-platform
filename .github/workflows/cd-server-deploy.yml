@@ -11,6 +11,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -35,3 +36,16 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/cd-server:${{ steps.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/cd-server:latest
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::658430303091:role/cd-platform-cd-server-deploy
+          aws-region: us-west-2
+
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster cd-platform-cd-server \
+            --service cd-platform-cd-server \
+            --force-new-deployment
