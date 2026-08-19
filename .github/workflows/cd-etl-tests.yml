@@ -62,6 +62,7 @@ jobs:
           docker run --rm -d --name cd-etl-smoke \
             --network container:$POSTGRES_CID \
             -e CONGRESS_API_KEY=smoke-test \
+            -e AIRFLOW_ADMIN_PASSWORD=smoke-test \
             -e AIRFLOW_CONN_CONGRESSIONAL_POSTGRES=postgresql://postgres:postgres@localhost:5432/congressional_app \
             -e AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@localhost:5432/airflow_metadata \
             cd-etl:production
@@ -74,6 +75,11 @@ jobs:
           done
 
           docker exec cd-etl-smoke uv run airflow dags list | grep -q congress_members_etl
+
+          # SimpleAuthManager is no longer active -- confirm it never
+          # auto-provisioned its own generated-password file.
+          docker exec cd-etl-smoke sh -c \
+            '[ ! -e /app/.airflow/simple_auth_manager_passwords.json.generated ]'
 
           docker logs cd-etl-smoke
           docker rm -f cd-etl-smoke
