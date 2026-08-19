@@ -1,6 +1,14 @@
 #!/bin/bash
 set -e
 
+# Unconditional -- runs before this script even looks at its arguments,
+# so every invocation of this entrypoint applies both migrations. In
+# production, cd-infra's 4 long-running ECS services (scheduler,
+# triggerer, dag-processor, api-server) deliberately set their own
+# entryPoint (bypassing this script, and these two lines, entirely) so
+# they don't race each other applying migrations on every task
+# start/restart -- only the dedicated one-shot migrate task keeps this
+# image's default entrypoint, specifically so these run.
 uv run airflow db migrate
 uv run alembic upgrade head
 
