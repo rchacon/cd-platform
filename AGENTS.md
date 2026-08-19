@@ -400,8 +400,14 @@ make test-server       # docker compose run --rm cd-server uv run pytest tests/
 `tests/test_upsert_sql.py` needs a live Postgres and skips itself if one
 isn't reachable; every other test is a pure unit test with no external
 dependencies. `tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so
-the module (which reads it at import time) can be imported without a real
-key.
+tests exercising `congress_api.py`'s `api_get()` directly against a fake
+session don't need a real key -- `api_get()` reads it lazily on every call
+(`congress_api.py`'s own `_congress_api_key()`), not at import time, so
+merely importing any DAG file (which every DAG does transitively) never
+requires this var at all (`cd-platform#79` -- this used to be an
+import-time read, which broke `dag-processor` parsing DAGs under
+`cd-infra`'s ECS decomposition, since only `scheduler` is ever given this
+credential).
 
 `make test-etl` targets a dedicated `congressional_app_test` database (a
 sibling of `congressional_app` and `airflow_metadata` in the same Postgres

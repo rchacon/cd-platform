@@ -4,8 +4,10 @@ import uuid
 import psycopg2
 import pytest
 
-# members_etl reads this at import time; tests exercise pure data
-# transforms and never make real API calls, so a placeholder is fine.
+# congress_api.py's api_get() reads this lazily on every call (not at
+# import time, cd-platform#79) -- still needed here since a couple of
+# test_congress_api.py's tests exercise api_get() directly against a
+# fake session and never make real API calls, so a placeholder is fine.
 os.environ.setdefault("CONGRESS_API_KEY", "test-key")
 
 PG_DSN = {

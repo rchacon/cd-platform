@@ -13,8 +13,6 @@ from pydantic import BaseModel
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-CONGRESS_API_KEY = os.environ["CONGRESS_API_KEY"]
-
 logger = logging.getLogger(__name__)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -47,6 +45,19 @@ def build_session(pool_maxsize: int) -> requests.Session:
     return session
 
 
+def _congress_api_key() -> str:
+    # Read lazily, on every actual call, rather than once at module
+    # import time -- every DAG file imports this module transitively, so
+    # an import-time read couples "can this module even be imported" to
+    # "is CONGRESS_API_KEY configured," which broke dag-processor (which
+    # parses DAG files but never calls the Congress API itself under
+    # cd-infra's ECS decomposition, cd-infra#41) even though it never
+    # needed the key at all (cd-platform#79). Only the code path that
+    # actually makes a request pays this cost, and only fails here, not
+    # at parse time.
+    return os.environ["CONGRESS_API_KEY"]
+
+
 def api_get(
     session: requests.Session, url: str, params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -58,7 +69,7 @@ def api_get(
     response = session.get(
         url,
         params={**(params or {}), "format": "json"},
-        headers={"X-Api-Key": CONGRESS_API_KEY},
+        headers={"X-Api-Key": _congress_api_key()},
         timeout=30,
     )
     response.raise_for_status()
