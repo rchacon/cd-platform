@@ -9,6 +9,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Start Postgres
+        run: docker compose up -d postgres
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -31,6 +34,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Start Postgres
+        run: |
+          docker compose up -d postgres
+          for i in $(seq 1 30); do
+            docker compose exec -T postgres pg_isready -U postgres && break
+            sleep 1
+          done
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -47,14 +58,33 @@ jobs:
 
       - name: Smoke test production image
         run: |
-          docker run --rm -d --name cd-server-smoke -p 8000:8000 cd-server:production
+          # --network container:$POSTGRES_CID (not standalone -p 8000:8000)
+          # -- now that the entrypoint unconditionally runs `alembic
+          # upgrade head`, this needs a reachable Postgres to start at
+          # all. PG* env vars deliberately omitted -- settings.py's
+          # defaults (PGHOST=localhost, PGDATABASE=cd_customers,
+          # PGUSER/PGPASSWORD=postgres) already match this
+          # network-namespace-shared postgres service, same trick
+          # cd-etl-tests.yml's own smoke test already uses.
+          # CD_SERVER_ENVIRONMENT/COGNITO_* are also unset -- defaults to
+          # "local", disabling JWT verification, same zero-AWS-setup
+          # posture as local dev.
+          POSTGRES_CID=$(docker compose ps -q postgres)
+          docker run --rm -d --name cd-server-smoke \
+            --network container:$POSTGRES_CID \
+            cd-server:production
 
+          # No published port to curl from the runner anymore (-p and
+          # --network container:X are mutually exclusive, and this slim
+          # image has no `curl` either) -- every check below runs via
+          # `docker exec` + Python's own urllib instead, same as
+          # cd-etl-tests.yml's own smoke test does for the identical
+          # reason.
           healthy=false
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8000/health >/dev/null; then
-              healthy=true
-              break
-            fi
+            docker exec cd-server-smoke uv run python -c \
+              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" \
+              2>/dev/null && { healthy=true; break; }
             sleep 1
           done
 
@@ -68,18 +98,28 @@ jobs:
             exit 1
           fi
 
-          curl -sf -X POST http://localhost:8000/graphql \
-            -H 'Content-Type: application/json' \
-            -d '{"query":"{ version }"}' | grep -q '"version"'
+          docker exec cd-server-smoke uv run python -c "
+          import json
+          import urllib.request
 
-          curl -sf http://localhost:8000/version | grep -q '"version"'
+          def post(query):
+              req = urllib.request.Request(
+                  'http://localhost:8000/graphql',
+                  data=json.dumps({'query': query}).encode(),
+                  headers={'Content-Type': 'application/json'},
+                  method='POST',
+              )
+              return urllib.request.urlopen(req).read().decode()
+
+          assert '\"version\"' in post('{ version }')
+
+          with urllib.request.urlopen('http://localhost:8000/version') as r:
+              assert b'\"version\"' in r.read()
 
           # Introspection must be off on the production image (schema.py
           # only adds DisableIntrospection when GRAPHIQL_ENABLED is unset,
           # which is the case here -- this image was built without it).
-          curl -sf -X POST http://localhost:8000/graphql \
-            -H 'Content-Type: application/json' \
-            -d '{"query":"{ __schema { queryType { name } } }"}' \
-            | grep -q 'introspection has been disabled'
+          assert 'introspection has been disabled' in post('{ __schema { queryType { name } } }')
+          "
 
           docker rm -f cd-server-smoke
