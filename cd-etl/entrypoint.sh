@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 uv run airflow db migrate
@@ -10,6 +10,14 @@ uv run alembic upgrade head
 # already-provisioned metadata DB. No in-script default/fallback for the
 # password -- missing/empty is a hard failure, not a silently generated
 # or weak one.
+#
+# --password is a plaintext CLI arg (briefly visible via `ps`/
+# `/proc/<pid>/cmdline` to anyone with container exec access) --
+# apache-airflow-providers-fab's `users create`/`reset-password` has no
+# stdin/secure-input option. Not a new exposure in practice:
+# AIRFLOW_ADMIN_PASSWORD is already readable via this same container's
+# own environment (`docker exec ... env`) for its whole lifetime, to the
+# same access level this would require.
 create_admin_user() {
     : "${AIRFLOW_ADMIN_PASSWORD:?AIRFLOW_ADMIN_PASSWORD must be set}"
     uv run airflow users create \
@@ -32,11 +40,31 @@ if [ "$#" -eq 0 ]; then
     # AIRFLOW__CORE__AUTH_MANAGER back to SimpleAuthManager before
     # launching its subprocesses, no override flag exists. It otherwise
     # just launches these same 4 processes, so they're started directly
-    # here instead.
+    # here instead -- bash specifically (not dash/#!/bin/sh), since
+    # `wait -n` below needs it.
     uv run airflow scheduler &
+    scheduler_pid=$!
     uv run airflow dag-processor &
+    dag_processor_pid=$!
     uv run airflow triggerer &
-    exec uv run airflow api-server
+    triggerer_pid=$!
+    uv run airflow api-server &
+    api_server_pid=$!
+
+    # Forward `docker stop`'s SIGTERM to all four -- without this, only a
+    # directly exec'd process would receive it, and the rest would be
+    # orphaned and SIGKILL'd ungracefully after the grace period.
+    trap 'kill $scheduler_pid $dag_processor_pid $triggerer_pid $api_server_pid 2>/dev/null' TERM INT
+
+    # `set -e` alone doesn't apply to backgrounded commands -- without an
+    # explicit check, one of these crashing right after `&` would go
+    # unnoticed (the container would keep reporting healthy via
+    # api-server alone). `wait -n` returns as soon as any one of the four
+    # exits, whether from a crash or the trap above killing them during a
+    # graceful shutdown; either way, letting the script exit at that
+    # point (via `set -e`, since a crash's exit code is non-zero) tears
+    # the whole container down rather than continuing to run degraded.
+    wait -n $scheduler_pid $dag_processor_pid $triggerer_pid $api_server_pid
 elif [ "$1" = "create-admin-user" ]; then
     # Invoked by cd-infra's one-shot migrate ECS task (which doesn't
     # override entryPoint, so the unconditional migrate steps above still
