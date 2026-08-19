@@ -432,9 +432,16 @@ gets cut -- a plain `docker build` alone wouldn't catch a container that
 builds fine but fails to actually run.
 `.github/workflows/cd-etl-deploy.yml` builds (`--target production`) and
 pushes `cd-etl/`'s image to GHCR (`ghcr.io/<owner>/cd-etl`, tagged with the
-version and `latest`) on a `cd-etl-v*` tag push -- no AWS credentials
-involved; the EC2 side polls for new images via Watchtower rather than CI
-pushing to it directly.
+version and `latest`) on a `cd-etl-v*` tag push, then (unlike the old
+EC2+Watchtower deploy, which polled for new images on its own -- ECS has
+no equivalent auto-update mechanism) assumes a GitHub OIDC deploy role
+(`cd-infra#43`, mirroring `cd-server-deploy.yml`'s own role) to run
+`cd-infra`'s one-shot `cd-platform-airflow-migrate` ECS task (applies
+migrations, then `entrypoint.sh`'s `create-admin-user` hook -- see #75)
+and wait for it to exit `0` before force-redeploying all 4 decomposed
+Airflow ECS services (`scheduler`/`triggerer`/`dag-processor`/
+`api-server`) so they pick up the new image -- a failed migration stops
+the workflow before any service is redeployed against a stale schema.
 `.github/workflows/cd-api-tests.yml` runs an analogous (non-Docker) pipeline
 for `cd-api/`.
 `.github/workflows/cd-server-tests.yml`/`cd-server-deploy.yml` mirror
