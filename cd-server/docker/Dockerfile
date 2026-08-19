@@ -17,6 +17,10 @@ COPY cd-server/pyproject.toml cd-server/uv.lock ./
 RUN uv sync --locked --no-dev
 
 COPY cd-server/src/ ./src/
+COPY cd-server/alembic.ini ./
+COPY cd-server/migrations/ ./migrations/
+COPY cd-server/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # UV_NO_SYNC is what makes --no-dev above actually stick: uv run performs
 # its own implicit sync on every invocation regardless of what a prior
@@ -37,6 +41,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 
 EXPOSE 8000
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uv", "run", "uvicorn", "cd.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # What actually ships to GHCR -- no test dependencies, no tests/, since
