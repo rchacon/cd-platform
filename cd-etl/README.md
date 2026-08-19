@@ -73,7 +73,9 @@ own docstring for why.
    This builds the image, applies both Airflow's own metadata migrations
    and this project's schema migrations, then starts the API server,
    scheduler, and dag-processor together. Open the UI at
-   `http://localhost:8080`, unpause `congress_members_etl`, and trigger it.
+   `http://localhost:8080` and log in as `admin` (password from
+   `AIRFLOW_ADMIN_PASSWORD` in your `.env`, or `admin` if unset), unpause
+   `congress_members_etl`, and trigger it.
    Once it's synced members, unpause and trigger `house_votes_etl` too --
    it looks up `members.bioguide_id` for each vote cast, so members needs
    to run first. `cd-etl/src` is bind-mounted, so DAG edits show up
