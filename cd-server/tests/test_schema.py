@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cd.server.app import app
-from cd.server.schema import cd_api_service, geocoder_service, schema
+from cd.server.schema import cd_api_service, geocoder_service, schema, users_service
 
 
 @pytest.fixture
@@ -49,6 +49,62 @@ def test_lifespan_closes_both_services_on_shutdown(monkeypatch):
         assert geocoder_service_closed is False
     assert cd_api_service_closed is True
     assert geocoder_service_closed is True
+
+
+def test_lifespan_connects_and_closes_users_service(monkeypatch):
+    # Fully replaces connect()/aclose() rather than calling through to the
+    # real implementation (unlike the spies above, which safely call
+    # through to httpx-backed aclose()) -- the real connect() opens an
+    # actual asyncpg pool against Postgres, which this test has no
+    # business doing, keeping this file's "no real network/DB calls"
+    # convention intact.
+    calls = []
+
+    async def fake_connect():
+        calls.append("connect")
+
+    async def fake_aclose():
+        calls.append("aclose")
+
+    monkeypatch.setattr(users_service, "connect", fake_connect)
+    monkeypatch.setattr(users_service, "aclose", fake_aclose)
+
+    with TestClient(app):
+        assert calls == ["connect"]
+    assert calls == ["connect", "aclose"]
+
+
+def test_graphql_request_without_authorization_header_still_succeeds(client):
+    response = client.post("/graphql", json={"query": "{ version }"})
+    assert response.status_code == 200
+    assert response.json() == {"data": {"version": "dev"}}
+
+
+def test_graphql_request_with_authorization_header_still_succeeds(client, monkeypatch):
+    # Spies on upsert_user_from_authorization_header rather than sending a
+    # real/fake JWT through it -- UsersService's own token-verification
+    # behavior (valid, invalid, missing config, etc.) is covered by
+    # tests/services/test_users_service.py; this just confirms app.py's
+    # context_getter actually wires the header through, and that an
+    # existing resolver keeps working regardless of what that call does.
+    received_headers = []
+
+    async def fake_upsert(header):
+        received_headers.append(header)
+
+    monkeypatch.setattr(
+        users_service, "upsert_user_from_authorization_header", fake_upsert
+    )
+
+    response = client.post(
+        "/graphql",
+        json={"query": "{ version }"},
+        headers={"Authorization": "Bearer not-a-real-jwt"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"data": {"version": "dev"}}
+    assert received_headers == ["Bearer not-a-real-jwt"]
 
 
 def test_version_query_returns_dev_when_no_version_file(client):
