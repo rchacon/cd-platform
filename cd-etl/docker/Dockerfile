@@ -28,7 +28,15 @@ RUN chmod +x /entrypoint.sh
 # bills_common`) need src/ itself on the path to resolve the `cd` package.
 # pytest doesn't need this (pyproject.toml's own `pythonpath = ["src"]`
 # handles it for the test run), so this only matters for the app itself.
+#
+# AUTH_MANAGER picks FabAuthManager over Airflow 3's zero-config default
+# (SimpleAuthManager), which auto-generates and logs a random admin
+# password on every fresh AIRFLOW_HOME -- see entrypoint.sh for the
+# explicit admin account this requires instead. FAB's own metadata tables
+# ride along with `airflow db migrate` automatically (FABDBManager
+# auto-registers once this is set), no separate migration step needed.
 ENV AIRFLOW_HOME=/app/.airflow \
+    AIRFLOW__CORE__AUTH_MANAGER=airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager \
     AIRFLOW__CORE__DAGS_FOLDER=/app/src \
     AIRFLOW__CORE__EXECUTOR=LocalExecutor \
     AIRFLOW__CORE__LOAD_EXAMPLES=False \

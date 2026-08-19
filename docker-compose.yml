@@ -42,6 +42,12 @@ services:
         condition: service_healthy
     environment:
       CONGRESS_API_KEY: ${CONGRESS_API_KEY}
+      # Zero-friction local-dev default (matches SimpleAuthManager's own
+      # former default admin/admin credential) -- override via .env for a
+      # stronger local password. Read by entrypoint.sh to provision
+      # FabAuthManager's admin account; production's own durable value
+      # comes from cd-infra's Secrets Manager, not this default.
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
       # Compose's internal DNS resolves service names -- "postgres" here,
       # not "localhost" -- since cd-etl now runs in its own container on
       # the same compose network rather than on the host.
