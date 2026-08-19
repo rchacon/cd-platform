@@ -121,22 +121,27 @@ auto-generates and logs a random admin password on every fresh
 `AIRFLOW_HOME`, which doesn't survive container/task replacement and isn't
 acceptable once this runs somewhere durable. FabAuthManager needs an
 explicit admin account instead, provisioned idempotently by
-`entrypoint.sh` (`airflow users create` + `airflow users reset-password`,
-so the account's password always matches the current
-`AIRFLOW_ADMIN_PASSWORD` env var even across restarts) rather than relying
-on any built-in auto-provisioning. `docker-compose.yml` defaults
+`entrypoint.sh`'s `create_admin_user` (`airflow users create` +
+`airflow users reset-password`, so the account's password always matches
+the current `AIRFLOW_ADMIN_PASSWORD` env var even across restarts) rather
+than relying on any built-in auto-provisioning. That function is called
+from two places: `make start-etl`/CI's `docker-build` smoke test (neither
+passes a `command:` override, so they hit the no-args branch, which also
+launches `airflow standalone`'s four underlying processes -- `scheduler`,
+`dag-processor`, `triggerer`, `api-server` -- directly, since `standalone`
+itself hardcodes SimpleAuthManager internally with no override flag and
+can no longer be used), and a dedicated `entrypoint.sh create-admin-user`
+subcommand that cd-infra's one-shot migrate ECS task invokes in
+production -- that task doesn't override `entryPoint`, so the
+unconditional migrate steps above still run first. Production's other ECS
+tasks (`scheduler`, `api-server`, ...) each pass their own explicit
+command and land in `entrypoint.sh`'s plain `else` branch instead, never
+provisioning the admin account themselves -- only the migrate task's
+`create-admin-user` invocation does that. `docker-compose.yml` defaults
 `AIRFLOW_ADMIN_PASSWORD` to `admin` for zero-friction local dev
 (overridable via `.env`, same pattern as `CONGRESS_API_KEY`); production's
 own durable value comes from cd-infra's Secrets Manager, outside this
-repo. One consequence: `airflow standalone` (Airflow's single-process dev
-convenience command) hardcodes SimpleAuthManager internally with no
-override, so it can no longer be used -- `entrypoint.sh`'s no-args branch
-(what `make start-etl` and CI's `docker-build` smoke test both hit, since
-neither passes a `command:` override) instead launches `standalone`'s own
-four underlying processes (`scheduler`, `dag-processor`, `triggerer`,
-`api-server`) directly. This doesn't affect production, where each
-decomposed Airflow ECS task passes its own explicit command and lands in
-`entrypoint.sh`'s `else` branch instead, never reaching this code path.
+repo.
 A gitignored `local_seed.sql` (a `pg_dump --data-only` snapshot of
 `members`/`member_terms`/`bills`/`bill_subjects`/`roll_calls`/
 `roll_call_member_votes`) can be loaded after the schema exists to seed
