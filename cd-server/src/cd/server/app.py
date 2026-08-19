@@ -1,15 +1,28 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from strawberry.fastapi import GraphQLRouter
 
 from cd.server import settings
-from cd.server.schema import GRAPHIQL_ENABLED, VERSION, cd_api_service, geocoder_service, schema
+from cd.server.schema import (
+    GRAPHIQL_ENABLED,
+    VERSION,
+    cd_api_service,
+    geocoder_service,
+    schema,
+    users_service,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # users_service's connection pool is the one thing here that must be
+    # opened before serving any request, not just closed after the last
+    # one -- unlike cd_api_service/geocoder_service, whose pools open
+    # synchronously at import time (see schema.py), asyncpg.create_pool()
+    # is a coroutine and has no synchronous equivalent.
+    await users_service.connect()
     yield
     # cd_api_service's aclose() delegates to its underlying ApiClient
     # (HttpApiClient holds an open httpx.AsyncClient connection pool;
@@ -19,6 +32,7 @@ async def lifespan(app: FastAPI):
     # services/geocoder_service.py.
     await cd_api_service.aclose()
     await geocoder_service.aclose()
+    await users_service.aclose()
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)
@@ -43,8 +57,27 @@ app.add_middleware(
 # introspection (see schema.py) disabled, since nothing gates /graphql
 # behind auth yet. Query execution via POST is unaffected either way --
 # this only controls whether a browser GET serves the IDE.
+
+
+# Runs before every GraphQL request (query or mutation) -- upserts the
+# caller into cd_customers if the Authorization header carries a valid
+# Cognito ID token, and silently does nothing otherwise (see
+# UsersService.upsert_user_from_authorization_header's own docstring for
+# why this never raises). No resolver currently requires auth, so this
+# must never block a request either way.
+async def get_graphql_context(request: Request) -> dict:
+    await users_service.upsert_user_from_authorization_header(
+        request.headers.get("Authorization")
+    )
+    return {}
+
+
 app.include_router(
-    GraphQLRouter(schema, graphql_ide="graphiql" if GRAPHIQL_ENABLED else None),
+    GraphQLRouter(
+        schema,
+        graphql_ide="graphiql" if GRAPHIQL_ENABLED else None,
+        context_getter=get_graphql_context,
+    ),
     prefix="/graphql",
 )
 

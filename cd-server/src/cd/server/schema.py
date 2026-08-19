@@ -10,6 +10,7 @@ from strawberry.extensions import DisableIntrospection
 from cd.server.services.cd_api_service import get_cd_api_service
 from cd.server.services.geocoder_service import GeocoderService
 from cd.server.services.states_service import StatesService
+from cd.server.services.users_service import get_users_service
 
 # Read once at import time, not per-request -- the VERSION file is baked
 # into the image and never changes for the life of the process.
@@ -23,11 +24,16 @@ GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 
 # One instance each, reused across requests -- same singleton-at-import-time
 # pattern cd-etl's congress_api.py already uses for its own HTTP session.
-# cd_api_service/geocoder_service both hold an open connection pool,
-# closed via app.py's lifespan on shutdown (see each service's aclose()).
+# cd_api_service/geocoder_service/users_service all hold an open
+# connection pool, closed via app.py's lifespan on shutdown (see each
+# service's aclose()). users_service's pool can't actually be opened yet
+# at this point (asyncpg.create_pool() is a coroutine, unlike
+# httpx.AsyncClient()'s synchronous constructor) -- see its own
+# connect(), also called from app.py's lifespan, this time on startup.
 cd_api_service = get_cd_api_service()
 geocoder_service = GeocoderService()
 states_service = StatesService()
+users_service = get_users_service()
 
 
 # Derived from cd-lib's shared Member model (also used by cd-api itself
