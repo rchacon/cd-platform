@@ -26,6 +26,13 @@ services:
       # start-etl`'s long-running service, rather than racing the same
       # database (cd-platform#16).
       - ./cd-etl/docker/init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh
+      # Dedicated cd_customers database cd-server alone reads/writes --
+      # see cd-server/docker/init-cd-customers-db.sh.
+      - ./cd-server/docker/init-cd-customers-db.sh:/docker-entrypoint-initdb.d/init-cd-customers-db.sh
+      # `make test-server` target -- isolates tests from real dev-seeded
+      # data and from `make start-server`'s long-running service, same
+      # rationale as init-test-db.sh above (cd-platform#16).
+      - ./cd-server/docker/init-cd-customers-test-db.sh:/docker-entrypoint-initdb.d/init-cd-customers-test-db.sh
 
   cd-etl:
     # Explicit tag (rather than Compose's default project-derived name) so
@@ -72,13 +79,16 @@ services:
       # AIRFLOW_HOME not living in Postgres) persist across restarts.
       - cd_etl_airflow_home:/app/.airflow
 
-  # No Postgres dependency yet -- v1 only exposes a health check and a
-  # GraphQL version query, so nothing to migrate. Doubles as the ad-hoc
-  # test runner (`docker compose run --rm cd-server uv run pytest tests/`,
-  # what `make test-server` uses) and the long-running local service
-  # (`docker compose up cd-server`), unlike cd-etl's split into a bare
-  # ad-hoc service plus 4 real ones -- there's no migrate-vs-serve
-  # distinction here to justify that split yet.
+  # v1: Postgres-backed. Every start applies cd-server/migrations/ via
+  # its own entrypoint.sh, then upserts a `users` row on any GraphQL
+  # request carrying a verified Cognito ID token (see
+  # src/cd/server/services/users_service.py). Still just one service,
+  # doubling as the ad-hoc test runner (`docker compose run --rm
+  # cd-server uv run pytest tests/`, what `make test-server` uses) and
+  # the long-running local service (`docker compose up cd-server`) --
+  # unlike cd-etl's split into a bare ad-hoc service plus 4 real ones,
+  # nothing here yet needs a long-running background process the way
+  # cd-etl's scheduler/dag-processor/triggerer do.
   cd-server:
     image: cd-server:dev
     build:
@@ -89,6 +99,9 @@ services:
       dockerfile: cd-server/docker/Dockerfile
       target: development
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       # Defaults to enabled for `docker compose up`/plain `run` (dev
       # convenience -- GraphiQL + introspection, see app.py/schema.py).
@@ -96,6 +109,23 @@ services:
       # against the same introspection-disabled default the production
       # image ships with, not the dev-friendly one -- see the Makefile.
       GRAPHIQL_ENABLED: "${CD_SERVER_GRAPHIQL_ENABLED:-true}"
+      # Compose's internal DNS resolves "postgres" to the service above --
+      # every other PG_DSN default in settings.py already matches its
+      # POSTGRES_USER/PASSWORD, same PGHOST-only-override pattern cd-etl
+      # uses for its own service.
+      PGHOST: postgres
+      PGDATABASE: cd_customers
+      # All three empty by default -- unset disables JWT verification
+      # entirely (see settings.py/services/users_service.py) rather than
+      # failing startup, so `make start-server` keeps working with zero
+      # AWS setup for local representative-lookup dev. Set all three via
+      # .env (from cd-infra's Terraform outputs: cognito_user_pool_id,
+      # var.aws_region, cognito_user_pool_client_id +
+      # cognito_dev_client_id) to exercise the real upsert-into-
+      # cd_customers path locally.
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-}
+      COGNITO_REGION: ${COGNITO_REGION:-}
+      COGNITO_CLIENT_IDS: ${COGNITO_CLIENT_IDS:-}
     # host.docker.internal doesn't resolve by default on Linux (unlike
     # Docker Desktop's Mac/Windows builds) -- this is Docker's own
     # documented workaround (Engine 20.10+), needed for
