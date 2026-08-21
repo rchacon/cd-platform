@@ -9,6 +9,15 @@ from cd.server import settings
 logger = logging.getLogger(__name__)
 
 
+class InvalidTokenError(Exception):
+    """Raised by upsert_user_from_authorization_header when a bearer token
+    was supplied but fails to verify against Cognito -- a missing header
+    stays a silent no-op (see that method's docstring), but a token that's
+    actually present must be valid. app.py's context_getter catches this
+    and turns it into an HTTP 401, rejecting the request before it ever
+    reaches a resolver."""
+
+
 class UsersClient:
     """Thin wrapper around the cd_customers connection pool -- owns the
     raw upsert SQL, no JWT/claims knowledge. Unlike HttpApiClient's
@@ -48,9 +57,13 @@ class UsersService:
     a raw Authorization header against Cognito's JWKS and upserts the
     resulting user via UsersClient -- called unconditionally on every
     GraphQL request (see app.py), not throttled or gated to "new" users
-    specifically, a deliberately simple first pass. Never raises: a
-    missing/invalid/expired token, or a database hiccup, must not break
-    any of the 5 existing public resolvers, none of which require auth."""
+    specifically, a deliberately simple first pass. A missing header (or
+    verification disabled entirely) and a database hiccup during the
+    upsert itself both stay silent no-ops -- neither should break any of
+    the 5 existing public resolvers, none of which require auth. But a
+    bearer token that IS present must actually verify: raises
+    InvalidTokenError otherwise, so app.py can reject the request outright
+    rather than silently downgrading a bad token to an anonymous one."""
 
     def __init__(
         self,
@@ -77,6 +90,9 @@ class UsersService:
             return
         scheme, _, token = header.partition(" ")
         if scheme.lower() != "bearer" or not token:
+            # Not a bearer-JWT attempt at all (missing/empty/other scheme)
+            # -- nothing was "provided" in the sense that requires
+            # validity, so this stays anonymous rather than rejected.
             return
 
         try:
@@ -91,7 +107,7 @@ class UsersService:
             )
         except PyJWTError as e:
             logger.warning("Rejected invalid JWT on GraphQL request: %s", e)
-            return
+            raise InvalidTokenError(str(e)) from e
 
         # Cognito access tokens (as opposed to ID tokens) typically lack
         # aud/email entirely, so they'd usually already fail jwt.decode's
@@ -103,7 +119,9 @@ class UsersService:
                 "Rejected non-ID-token JWT (token_use=%r) on GraphQL request",
                 claims.get("token_use"),
             )
-            return
+            raise InvalidTokenError(
+                f"expected an ID token, got token_use={claims.get('token_use')!r}"
+            )
 
         try:
             await self._client.upsert_user(claims["sub"], claims["email"])

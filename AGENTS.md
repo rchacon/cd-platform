@@ -67,8 +67,15 @@ checking `token_use == "id"` and `aud` against `COGNITO_CLIENT_IDS`,
 covering both cd-webapp's prod and local-dev App Clients sharing that one
 pool) and, if valid, the resulting `sub`/`email` are upserted
 unconditionally -- a deliberately simple first pass, not throttled to
-only new users. A missing or invalid token never blocks the request; no
-resolver requires auth yet. `COGNITO_USER_POOL_ID`/`COGNITO_REGION` unset
+only new users. A missing token never blocks the request (no resolver
+requires auth yet, so an anonymous caller must still get through), but a
+bearer token that IS present must actually verify: a token that fails
+verification (bad signature, wrong issuer/audience, or `token_use !=
+"id"`) raises `InvalidTokenError`, which `app.py`'s `context_getter`
+turns into an HTTP 401, rejecting the whole request before Strawberry
+ever executes it -- unlike a database hiccup during the upsert itself,
+which still degrades silently since it's unrelated to token validity.
+`COGNITO_USER_POOL_ID`/`COGNITO_REGION` unset
 disables verification entirely rather than failing startup when
 `CD_SERVER_ENVIRONMENT` is `"local"` (the default), so `make start-server`
 still needs zero AWS setup for representative-lookup-only local dev; any

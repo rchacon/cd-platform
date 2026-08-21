@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from strawberry.fastapi import GraphQLRouter
 
@@ -13,6 +13,7 @@ from cd.server.schema import (
     schema,
     users_service,
 )
+from cd.server.services.users_service import InvalidTokenError
 
 
 @asynccontextmanager
@@ -61,14 +62,19 @@ app.add_middleware(
 
 # Runs before every GraphQL request (query or mutation) -- upserts the
 # caller into cd_customers if the Authorization header carries a valid
-# Cognito ID token, and silently does nothing otherwise (see
-# UsersService.upsert_user_from_authorization_header's own docstring for
-# why this never raises). No resolver currently requires auth, so this
-# must never block a request either way.
+# Cognito ID token, and silently does nothing if there's no header at all
+# (see UsersService.upsert_user_from_authorization_header's own docstring
+# -- no resolver requires auth yet, so an anonymous request must never be
+# blocked). A bearer token that IS present but fails to verify is a
+# different case: InvalidTokenError propagates here as an HTTP 401,
+# rejecting the whole request before Strawberry ever executes it.
 async def get_graphql_context(request: Request) -> dict:
-    await users_service.upsert_user_from_authorization_header(
-        request.headers.get("Authorization")
-    )
+    try:
+        await users_service.upsert_user_from_authorization_header(
+            request.headers.get("Authorization")
+        )
+    except InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=str(e)) from e
     return {}
 
 

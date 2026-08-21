@@ -5,7 +5,12 @@ import jwt
 import pytest
 
 from cd.server import settings
-from cd.server.services.users_service import UsersClient, UsersService, get_users_service
+from cd.server.services.users_service import (
+    InvalidTokenError,
+    UsersClient,
+    UsersService,
+    get_users_service,
+)
 
 
 class _FakeUsersClient:
@@ -83,7 +88,7 @@ def test_valid_id_token_upserts_sub_and_email(monkeypatch):
     assert client.calls == [("abc-123", "person@example.com")]
 
 
-def test_invalid_token_does_not_raise_or_upsert(monkeypatch):
+def test_invalid_token_raises_and_does_not_upsert(monkeypatch):
     client = _FakeUsersClient()
     jwk_client = _FakeJwkClient()
     service = UsersService(client, jwk_client, issuer=_ISSUER, audiences=_AUDIENCES)
@@ -93,7 +98,8 @@ def test_invalid_token_does_not_raise_or_upsert(monkeypatch):
 
     monkeypatch.setattr(jwt, "decode", fake_decode)
 
-    asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
+    with pytest.raises(InvalidTokenError, match="bad signature"):
+        asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
 
     assert client.calls == []
 
@@ -108,7 +114,8 @@ def test_access_token_rejected_by_token_use(monkeypatch):
 
     monkeypatch.setattr(jwt, "decode", fake_decode)
 
-    asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
+    with pytest.raises(InvalidTokenError, match="token_use='access'"):
+        asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
 
     assert client.calls == []
 

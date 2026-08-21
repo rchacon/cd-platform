@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from cd.server.app import app
 from cd.server.schema import cd_api_service, geocoder_service, schema, users_service
+from cd.server.services.users_service import InvalidTokenError
 
 
 @pytest.fixture
@@ -105,6 +106,28 @@ def test_graphql_request_with_authorization_header_still_succeeds(client, monkey
     assert response.status_code == 200
     assert response.json() == {"data": {"version": "dev"}}
     assert received_headers == ["Bearer not-a-real-jwt"]
+
+
+def test_graphql_request_with_invalid_token_is_rejected_with_401(client, monkeypatch):
+    # Same spying rationale as the test above -- token-verification detail
+    # is covered by tests/services/test_users_service.py; this only
+    # confirms app.py's context_getter turns InvalidTokenError into an
+    # HTTP 401 before Strawberry ever executes the query.
+    async def fake_upsert(header):
+        raise InvalidTokenError("bad signature")
+
+    monkeypatch.setattr(
+        users_service, "upsert_user_from_authorization_header", fake_upsert
+    )
+
+    response = client.post(
+        "/graphql",
+        json={"query": "{ version }"},
+        headers={"Authorization": "Bearer not-a-real-jwt"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "bad signature"}
 
 
 def test_version_query_returns_dev_when_no_version_file(client):
