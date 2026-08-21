@@ -1,15 +1,29 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from strawberry.fastapi import GraphQLRouter
 
 from cd.server import settings
-from cd.server.schema import GRAPHIQL_ENABLED, VERSION, cd_api_service, geocoder_service, schema
+from cd.server.schema import (
+    GRAPHIQL_ENABLED,
+    VERSION,
+    cd_api_service,
+    geocoder_service,
+    schema,
+    users_service,
+)
+from cd.server.services.users_service import InvalidTokenError
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # users_service's connection pool is the one thing here that must be
+    # opened before serving any request, not just closed after the last
+    # one -- unlike cd_api_service/geocoder_service, whose pools open
+    # synchronously at import time (see schema.py), asyncpg.create_pool()
+    # is a coroutine and has no synchronous equivalent.
+    await users_service.connect()
     yield
     # cd_api_service's aclose() delegates to its underlying ApiClient
     # (HttpApiClient holds an open httpx.AsyncClient connection pool;
@@ -19,6 +33,7 @@ async def lifespan(app: FastAPI):
     # services/geocoder_service.py.
     await cd_api_service.aclose()
     await geocoder_service.aclose()
+    await users_service.aclose()
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)
@@ -43,8 +58,32 @@ app.add_middleware(
 # introspection (see schema.py) disabled, since nothing gates /graphql
 # behind auth yet. Query execution via POST is unaffected either way --
 # this only controls whether a browser GET serves the IDE.
+
+
+# Runs before every GraphQL request (query or mutation) -- upserts the
+# caller into cd_customers if the Authorization header carries a valid
+# Cognito ID token, and silently does nothing if there's no header at all
+# (see UsersService.upsert_user_from_authorization_header's own docstring
+# -- no resolver requires auth yet, so an anonymous request must never be
+# blocked). A bearer token that IS present but fails to verify is a
+# different case: InvalidTokenError propagates here as an HTTP 401,
+# rejecting the whole request before Strawberry ever executes it.
+async def get_graphql_context(request: Request) -> dict:
+    try:
+        await users_service.upsert_user_from_authorization_header(
+            request.headers.get("Authorization")
+        )
+    except InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=str(e)) from e
+    return {}
+
+
 app.include_router(
-    GraphQLRouter(schema, graphql_ide="graphiql" if GRAPHIQL_ENABLED else None),
+    GraphQLRouter(
+        schema,
+        graphql_ide="graphiql" if GRAPHIQL_ENABLED else None,
+        context_getter=get_graphql_context,
+    ),
     prefix="/graphql",
 )
 
