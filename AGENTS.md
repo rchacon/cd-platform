@@ -74,8 +74,10 @@ verification (bad signature, wrong issuer/audience, or `token_use !=
 "id"`) raises `InvalidTokenError`, which `app.py`'s `context_getter`
 turns into an HTTP 401, rejecting the whole request before Strawberry
 ever executes it -- unlike a database hiccup during the upsert itself,
-which still degrades silently since it's unrelated to token validity.
-`COGNITO_USER_POOL_ID`/`COGNITO_REGION` unset
+or a `PyJWKClientConnectionError` fetching Cognito's own JWKS (a network
+hiccup unrelated to the token's actual validity), both of which still
+degrade silently to anonymous rather than 401ing a caller over cd-server's
+own infra issue. `COGNITO_USER_POOL_ID`/`COGNITO_REGION` unset
 disables verification entirely rather than failing startup when
 `CD_SERVER_ENVIRONMENT` is `"local"` (the default), so `make start-server`
 still needs zero AWS setup for representative-lookup-only local dev; any

@@ -3,6 +3,7 @@ import types
 
 import jwt
 import pytest
+from jwt import PyJWKClientConnectionError
 
 from cd.server import settings
 from cd.server.services.users_service import (
@@ -100,6 +101,25 @@ def test_invalid_token_raises_and_does_not_upsert(monkeypatch):
 
     with pytest.raises(InvalidTokenError, match="bad signature"):
         asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
+
+    assert client.calls == []
+
+
+def test_jwks_connection_failure_does_not_raise_or_upsert():
+    client = _FakeUsersClient()
+
+    class _UnreachableJwkClient(_FakeJwkClient):
+        def get_signing_key_from_jwt(self, token: str):
+            raise PyJWKClientConnectionError("could not reach jwks endpoint")
+
+    service = UsersService(
+        client, _UnreachableJwkClient(), issuer=_ISSUER, audiences=_AUDIENCES
+    )
+
+    # A JWKS-fetch hiccup is Cognito's own connectivity, not the token's
+    # fault -- must degrade to anonymous like a missing header, not raise
+    # InvalidTokenError/401 the way an actually-bad signature does.
+    asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
 
     assert client.calls == []
 

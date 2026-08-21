@@ -2,7 +2,7 @@ import logging
 
 import asyncpg
 import jwt
-from jwt import PyJWKClient, PyJWTError
+from jwt import PyJWKClient, PyJWKClientConnectionError, PyJWTError
 
 from cd.server import settings
 
@@ -97,6 +97,18 @@ class UsersService:
 
         try:
             signing_key = self._jwk_client.get_signing_key_from_jwt(token)
+        except PyJWKClientConnectionError as e:
+            # A network/DNS hiccup reaching Cognito's own JWKS endpoint is
+            # not the token's fault -- same "don't block the request over
+            # an unrelated infra hiccup" precedent as the DB upsert
+            # failure below, not the "reject an actually-bad token" path.
+            logger.warning("Could not reach Cognito's JWKS endpoint: %s", e)
+            return
+        except PyJWTError as e:
+            logger.warning("Rejected invalid JWT on GraphQL request: %s", e)
+            raise InvalidTokenError(str(e)) from e
+
+        try:
             claims = jwt.decode(
                 token,
                 signing_key.key,
