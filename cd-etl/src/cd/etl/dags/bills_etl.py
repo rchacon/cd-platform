@@ -107,7 +107,8 @@ def bills_etl():
         # separate connection per worker: sync_bill's own cursor/commit
         # calls aren't safe to share across threads on one psycopg2
         # connection, unlike the pure-HTTP concurrent fetches elsewhere in
-        # this codebase (fetch_vote_details, fetch_member_votes).
+        # this codebase (fetch_vote_details, and sync_member_votes's own
+        # per-batch member-vote fetch).
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
 
         def refresh_one(bill: dict[str, Any]) -> None:

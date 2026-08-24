@@ -292,7 +292,8 @@ refresh path, on its own `@daily` schedule:
    sharing one -- `sync_bill`'s cursor/commit calls aren't safe to run
    concurrently on a single psycopg2 connection, unlike the pure-HTTP
    concurrent fetches this pattern is normally used for elsewhere
-   (`fetch_vote_details`, `fetch_member_votes`). Unlike `house_votes_etl`'s
+   (`fetch_vote_details`, and `sync_member_votes`'s own per-batch member-vote
+   fetch). Unlike `house_votes_etl`'s
    `resolve_bills` (which stays sequential specifically to avoid two votes
    in the same batch racing to insert the *same* not-yet-existing bill),
    there's no such race here -- every row in `known_bills` already exists.

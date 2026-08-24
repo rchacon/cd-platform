@@ -53,10 +53,18 @@ PAGE_LIMIT = 250
 MEMBER_VOTES_FETCH_WORKERS = 10
 POSTGRES_CONN_ID = "congressional_postgres"
 
-# Bounds a load() failure's blast radius to one chunk of roll calls
-# rather than either the whole run (one big transaction) or a full
-# commit per roll call (too many WAL flushes at real vote volumes).
-LOAD_CHUNK_SIZE = 50
+# Bounds sync_member_votes()'s peak memory to one batch's worth of
+# member-vote casts (~VOTE_BATCH_SIZE votes x ~435 House members) rather
+# than the whole run's -- see rchacon/cd-platform#59, where fetching and
+# holding every synced vote's full member breakdown at once repeatedly
+# OOM-killed the Airflow worker on a backfill/catch-up day. Also bounds
+# the transaction/commit chunk size, the same rationale this constant
+# (formerly LOAD_CHUNK_SIZE) had before it started governing the API
+# fetch too. Not shrunk below 50: MEMBER_VOTES_FETCH_WORKERS already caps
+# fetch concurrency at 10, so a smaller batch buys no further memory
+# benefit while adding more DB round trips and serializing fetch+write
+# across more batches.
+VOTE_BATCH_SIZE = 50
 
 _API_SESSION = congress_api.build_session(pool_maxsize=MEMBER_VOTES_FETCH_WORKERS)
 
@@ -148,6 +156,108 @@ def resolve_amendment_bill(
         amendment.amended_bill.type,
         int(amendment.amended_bill.number),
     )
+
+
+def _build_batch_rows(
+    batch: list[dict[str, Any]],
+    vote_question_by_key: dict[tuple[int, int], str],
+    fetched_by_key: dict[tuple[int, int], list[dict[str, Any]]],
+    known_bioguide_id_set: set[str],
+    congress: int,
+) -> tuple[list[tuple[Any, ...]], dict[tuple[int, int], list[tuple[str, str]]]]:
+    """Builds one batch's SQL-ready roll_calls rows and member-vote casts.
+
+    Pure -- no DB/API calls -- so sync_member_votes() can call this once
+    per batch without holding more than one batch's data in memory at a
+    time (rchacon/cd-platform#59). Unlike the old transform() this
+    replaces, casts_by_key uses real (session, vote_number) tuple keys
+    directly: this never crosses an Airflow XCom boundary (called
+    in-process from sync_member_votes()), so the list(key)/{"key": ...}
+    JSON-safety wrapping transform() needed doesn't apply here.
+    """
+    roll_call_rows = []
+    casts_by_key: dict[tuple[int, int], list[tuple[str, str]]] = {}
+    dropped_unknown_bioguide_count = 0
+    skipped_missing_detail_count = 0
+    skipped_missing_member_votes_count = 0
+    skipped_zero_valid_casts_count = 0
+
+    for vote in batch:
+        key = (vote["session"], vote["roll_call_number"])
+
+        vote_question = vote_question_by_key.get(key)
+        if vote_question is None:
+            # This vote's detail fetch (vote_question) failed or was
+            # skipped -- can't build a roll_calls row without it
+            # (a NOT NULL column), same reasoning as the
+            # missing-member-votes case below.
+            skipped_missing_detail_count += 1
+            continue
+
+        raw_casts = fetched_by_key.get(key)
+        if raw_casts is None:
+            # This vote's member-vote fetch failed or was skipped --
+            # dropped here rather than stored with zero casts.
+            # Incremental sync (filter_votes_needing_sync) is a pure
+            # existence check with no separate retry path, so a
+            # roll_calls row ever committed without its member votes
+            # in the same transaction would be permanently stuck --
+            # a future run would never revisit a key already present.
+            skipped_missing_member_votes_count += 1
+            continue
+
+        casts = []
+        for raw_cast in raw_casts:
+            try:
+                member_vote = HouseVoteMemberVote.model_validate(raw_cast)
+                vote_cast = VOTE_CAST_MAP[member_vote.vote_cast.strip().lower()]
+            except (KeyError, TypeError, ValidationError) as exc:
+                logger.error(
+                    "Skipping one member vote on session %d roll call %d: "
+                    "malformed API data (%s)",
+                    key[0], key[1], exc,
+                )
+                continue
+
+            if member_vote.bioguide_id not in known_bioguide_id_set:
+                # Defensive: roll_call_member_votes.bioguide_id has a
+                # hard FK to members. One unknown id in a batch would
+                # otherwise fail the whole execute_values insert, not
+                # just that one row.
+                dropped_unknown_bioguide_count += 1
+                continue
+
+            casts.append((member_vote.bioguide_id, vote_cast))
+
+        if not casts:
+            # Every cast for this vote was dropped (malformed data,
+            # or none of its voters are known to us yet) -- same
+            # reasoning as the raw_casts-is-None case above: a
+            # roll_calls row with zero real casts would look
+            # "already synced" forever, with no way to backfill it
+            # once the missing member(s) are known.
+            skipped_zero_valid_casts_count += 1
+            continue
+
+        source_hash = congress_api.source_hash(
+            "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
+            vote_question, vote["result"], vote["vote_date"],
+        )
+        roll_call_rows.append((
+            "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
+            vote_question, vote["result"], vote["vote_date"], source_hash,
+        ))
+        casts_by_key[key] = casts
+
+    logger.info(
+        "Built %d roll calls for this batch (%d skipped for missing detail, "
+        "%d skipped for missing member votes, %d skipped for zero valid casts, "
+        "%d member votes dropped for unknown bioguide_id)",
+        len(roll_call_rows), skipped_missing_detail_count,
+        skipped_missing_member_votes_count, skipped_zero_valid_casts_count,
+        dropped_unknown_bioguide_count,
+    )
+    return roll_call_rows, casts_by_key
 
 
 @dag(
@@ -345,7 +455,9 @@ def house_votes_etl():
         # detail fetch (only needed for vote_question) has no ordering
         # dependency on bill resolution, unlike get_or_sync_bill's own
         # calls, so it doesn't need resolve_bills's sequential-per-vote
-        # treatment and can run like fetch_member_votes instead.
+        # treatment and can run fully concurrently via
+        # congress_api.fetch_concurrently instead, same as
+        # sync_member_votes's own per-batch member-vote fetch.
         def fetch_one(key: tuple[int, int]) -> dict[str, Any]:
             session_number, roll_call_number = key
             detail = congress_api.api_get_model(
@@ -368,9 +480,34 @@ def house_votes_etl():
         return results
 
     @task
-    def fetch_member_votes(
-        resolved_votes: list[dict[str, Any]], congress: int,
-    ) -> list[dict[str, Any]]:
+    def sync_member_votes(
+        resolved_votes: list[dict[str, Any]],
+        vote_details: list[dict[str, Any]],
+        known_bioguide_ids: list[str],
+        congress: int,
+    ) -> None:
+        # Processes resolved_votes in batches of VOTE_BATCH_SIZE --
+        # fetching, validating, and writing each batch before moving to
+        # the next -- rather than fetching every vote's full ~435-member
+        # breakdown into memory upfront the way the old
+        # fetch_member_votes -> transform -> load chain did. That shape
+        # repeatedly OOM-killed the Airflow worker on a backfill/catch-up
+        # day (rchacon/cd-platform#59); this bounds peak memory to one
+        # batch's worth of casts instead of the whole run's.
+        #
+        # Each batch is committed in one transaction (roll_calls +
+        # roll_call_member_votes together) rather than either one
+        # transaction for the whole run (rolls back everything on a
+        # single bad row) or one commit per roll call (too many WAL
+        # flushes at real vote volumes) -- a failed batch only costs that
+        # batch, logged and skipped. A roll_calls row is never committed
+        # without its own member votes: _build_batch_rows only produces a
+        # row for a vote whose member-vote fetch already succeeded, and
+        # both upserts for a batch share the same transaction, preserving
+        # the same invariant the old load() had at chunk granularity --
+        # filter_votes_needing_sync() has no separate retry path, so a
+        # roll_calls row ever committed without its member votes would be
+        # permanently stuck.
         def fetch_one(key: tuple[int, int]) -> dict[str, Any]:
             session_number, roll_call_number = key
             member_votes = congress_api.api_get_model(
@@ -384,170 +521,56 @@ def house_votes_etl():
                 "votes": member_votes.results,
             }
 
-        keys = [(v["session"], v["roll_call_number"]) for v in resolved_votes]
-        results = congress_api.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
-
-        logger.info(
-            "Fetched member votes for %d of %d votes", len(results), len(resolved_votes),
-        )
-        return results
-
-    @task
-    def transform(
-        resolved_votes: list[dict[str, Any]],
-        vote_details: list[dict[str, Any]],
-        member_votes: list[dict[str, Any]],
-        known_bioguide_ids: list[str],
-        congress: int,
-    ) -> dict[str, list[Any]]:
-        """Builds the two SQL-ready row lists load() upserts.
-
-        Returns a dict with:
-          "roll_calls": list of tuples, one per roll_call_rows in
-            ROLL_CALLS_UPSERT_SQL's column order (chamber, congress,
-            session, vote_number, bill_id, vote_question, result,
-            vote_date, source_hash).
-          "member_votes": list of {"key": [session, vote_number],
-            "casts": [(bioguide_id, vote_cast), ...]} dicts -- "key"
-            identifies which roll call these casts belong to (a plain
-            list, not a tuple, since this return value crosses an
-            Airflow XCom boundary and has to stay JSON-serializable).
-            load() resolves "key" to the actual roll_call_id itself,
-            since that's only known after its own roll_calls upsert.
-        """
         vote_question_by_key = {
             (vd["session"], vd["roll_call_number"]): vd["vote_question"] for vd in vote_details
         }
-        member_votes_by_key = {
-            (mv["session"], mv["roll_call_number"]): mv["votes"] for mv in member_votes
-        }
         known_bioguide_id_set = set(known_bioguide_ids)
 
-        roll_call_rows = []
-        member_vote_rows = []
-        dropped_unknown_bioguide_count = 0
-        skipped_missing_detail_count = 0
-        skipped_missing_member_votes_count = 0
-        skipped_zero_valid_casts_count = 0
-
-        for vote in resolved_votes:
-            key = (vote["session"], vote["roll_call_number"])
-
-            vote_question = vote_question_by_key.get(key)
-            if vote_question is None:
-                # This vote's detail fetch (vote_question) failed or was
-                # skipped -- can't build a roll_calls row without it
-                # (a NOT NULL column), same reasoning as the
-                # missing-member-votes case below.
-                skipped_missing_detail_count += 1
-                continue
-
-            raw_casts = member_votes_by_key.get(key)
-            if raw_casts is None:
-                # This vote's member-vote fetch failed or was skipped --
-                # dropped here rather than stored with zero casts.
-                # Incremental sync (filter_votes_needing_sync) is a pure
-                # existence check with no separate retry path, so a
-                # roll_calls row ever committed without its member votes
-                # in the same transaction would be permanently stuck --
-                # a future run would never revisit a key already present.
-                skipped_missing_member_votes_count += 1
-                continue
-
-            casts = []
-            for raw_cast in raw_casts:
-                try:
-                    member_vote = HouseVoteMemberVote.model_validate(raw_cast)
-                    vote_cast = VOTE_CAST_MAP[member_vote.vote_cast.strip().lower()]
-                except (KeyError, TypeError, ValidationError) as exc:
-                    logger.error(
-                        "Skipping one member vote on session %d roll call %d: "
-                        "malformed API data (%s)",
-                        key[0], key[1], exc,
-                    )
-                    continue
-
-                if member_vote.bioguide_id not in known_bioguide_id_set:
-                    # Defensive: roll_call_member_votes.bioguide_id has a
-                    # hard FK to members. One unknown id in a batch would
-                    # otherwise fail the whole execute_values insert, not
-                    # just that one row.
-                    dropped_unknown_bioguide_count += 1
-                    continue
-
-                casts.append((member_vote.bioguide_id, vote_cast))
-
-            if not casts:
-                # Every cast for this vote was dropped (malformed data,
-                # or none of its voters are known to us yet) -- same
-                # reasoning as the raw_casts-is-None case above: a
-                # roll_calls row with zero real casts would look
-                # "already synced" forever, with no way to backfill it
-                # once the missing member(s) are known.
-                skipped_zero_valid_casts_count += 1
-                continue
-
-            source_hash = congress_api.source_hash(
-                "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
-                vote_question, vote["result"], vote["vote_date"],
-            )
-            roll_call_rows.append((
-                "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
-                vote_question, vote["result"], vote["vote_date"], source_hash,
-            ))
-            member_vote_rows.append({"key": list(key), "casts": casts})
-
-        logger.info(
-            "Transformed %d roll calls (%d skipped for missing detail, "
-            "%d skipped for missing member votes, %d skipped for zero valid casts, "
-            "%d member votes dropped for unknown bioguide_id)",
-            len(roll_call_rows), skipped_missing_detail_count,
-            skipped_missing_member_votes_count, skipped_zero_valid_casts_count,
-            dropped_unknown_bioguide_count,
-        )
-        return {"roll_calls": roll_call_rows, "member_votes": member_vote_rows}
-
-    @task
-    def load(rows: dict[str, list[Any]]) -> None:
-        # Committed in chunks of LOAD_CHUNK_SIZE roll calls rather than
-        # one transaction for the whole run (which would roll back
-        # everything on a single bad row) or one transaction per roll
-        # call (correspondingly more commits/WAL flushes than needed at
-        # real vote volumes) -- a failed chunk only costs that chunk,
-        # logged and skipped, while the rest of the run's roll calls
-        # still land. A roll_calls row is never committed without its
-        # own member votes: both upserts for a chunk share the same
-        # transaction, so that pairing holds per chunk even though the
-        # run as a whole isn't one single transaction anymore.
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
         conn = hook.get_conn()
 
-        member_votes_by_key = {
-            tuple(mv["key"]): mv["casts"] for mv in rows["member_votes"]
-        }
         loaded_roll_calls = 0
         loaded_votes = 0
-        failed_chunks = 0
+        failed_batches = 0
 
         try:
-            for chunk in batched(rows["roll_calls"], LOAD_CHUNK_SIZE):
-                chunk = list(chunk)
+            for raw_batch in batched(resolved_votes, VOTE_BATCH_SIZE):
+                batch = list(raw_batch)
                 try:
+                    keys = [(v["session"], v["roll_call_number"]) for v in batch]
+                    fetched = congress_api.fetch_concurrently(
+                        keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS,
+                    )
+                    fetched_by_key = {
+                        (f["session"], f["roll_call_number"]): f["votes"] for f in fetched
+                    }
+
+                    roll_call_rows, casts_by_key = _build_batch_rows(
+                        batch, vote_question_by_key, fetched_by_key, known_bioguide_id_set,
+                        congress,
+                    )
+                    if not roll_call_rows:
+                        # Every vote in this batch failed validation (e.g.
+                        # every member-vote fetch failed) -- nothing to
+                        # write. execute_values() would raise on an empty
+                        # argslist, so this must be checked before ever
+                        # touching the DB.
+                        continue
+
                     with conn.cursor() as cursor:
-                        execute_values(cursor, ROLL_CALLS_UPSERT_SQL, chunk)
+                        execute_values(cursor, ROLL_CALLS_UPSERT_SQL, roll_call_rows)
 
                         # ROLL_CALLS_UPSERT_SQL's ON CONFLICT is
                         # WHERE-gated on source_hash, so RETURNING would
                         # silently omit any row Postgres decided not to
                         # update -- a follow-up SELECT on the natural key
                         # is used instead to reliably get every
-                        # roll_call_id this chunk needs (unlike
+                        # roll_call_id this batch needs (unlike
                         # bills_common.BILLS_UPSERT_SQL, which is
                         # single-row and can safely use RETURNING because
                         # its ON CONFLICT is deliberately unconditional).
-                        congress = chunk[0][1]
-                        sessions = [row[2] for row in chunk]
-                        vote_numbers = [row[3] for row in chunk]
+                        sessions = [row[2] for row in roll_call_rows]
+                        vote_numbers = [row[3] for row in roll_call_rows]
                         cursor.execute(
                             """
                             SELECT roll_call_id, session, vote_number FROM roll_calls
@@ -562,12 +585,11 @@ def house_votes_etl():
                         }
 
                         member_vote_rows = []
-                        for row in chunk:
-                            key = (row[2], row[3])
+                        for key, casts in casts_by_key.items():
                             roll_call_id = roll_call_id_by_key.get(key)
                             if roll_call_id is None:
                                 continue
-                            for bioguide_id, vote_cast in member_votes_by_key.get(key, []):
+                            for bioguide_id, vote_cast in casts:
                                 member_vote_rows.append((roll_call_id, bioguide_id, vote_cast))
 
                         if member_vote_rows:
@@ -576,26 +598,26 @@ def house_votes_etl():
                             )
 
                     conn.commit()
-                    loaded_roll_calls += len(chunk)
+                    loaded_roll_calls += len(roll_call_rows)
                     loaded_votes += len(member_vote_rows)
                 except Exception as exc:
-                    # A chunk's own failure shouldn't abort chunks
-                    # already committed, or chunks still to come --
+                    # A batch's own failure shouldn't abort batches
+                    # already committed, or batches still to come --
                     # rollback resets the shared connection to a usable
                     # state for the next iteration (same reason
                     # resolve_bills rolls back on a per-vote failure).
                     conn.rollback()
-                    failed_chunks += 1
+                    failed_batches += 1
                     logger.error(
-                        "Failed to load a chunk of %d roll calls (%s): %s",
-                        len(chunk), [(row[2], row[3]) for row in chunk], exc,
+                        "Failed to sync a batch of %d votes (%s): %s",
+                        len(batch), [(v["session"], v["roll_call_number"]) for v in batch], exc,
                     )
         finally:
             conn.close()
 
         logger.info(
-            "Loaded %d roll calls and %d member votes (%d chunk(s) failed)",
-            loaded_roll_calls, loaded_votes, failed_chunks,
+            "Loaded %d roll calls and %d member votes (%d batch(es) failed)",
+            loaded_roll_calls, loaded_votes, failed_batches,
         )
 
     congress = get_current_congress()
@@ -603,8 +625,7 @@ def house_votes_etl():
     filtered = filter_votes_needing_sync(summaries, congress)
     resolved = resolve_bills(filtered["votes"], congress)
     vote_details = fetch_vote_details(resolved, congress)
-    member_votes = fetch_member_votes(resolved, congress)
-    load(transform(resolved, vote_details, member_votes, filtered["known_bioguide_ids"], congress))
+    sync_member_votes(resolved, vote_details, filtered["known_bioguide_ids"], congress)
 
 
 house_votes_etl()

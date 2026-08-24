@@ -106,6 +106,31 @@ def _roll_call_row(bill_id, vote_number, source_hash, session=1):
     )
 
 
+def _resolved_vote(bill_id, vote_number, session=1, result="Passed", vote_date="2025-09-08"):
+    return {
+        "session": session, "roll_call_number": vote_number, "bill_id": bill_id,
+        "result": result, "vote_date": vote_date,
+    }
+
+
+def _vote_detail(vote_number, session=1, vote_question="On Passage"):
+    return {"session": session, "roll_call_number": vote_number, "vote_question": vote_question}
+
+
+def _fake_members_api_get(member_votes_by_url_suffix):
+    # sync_member_votes() fetches each vote's /members sub-resource itself
+    # now (unlike the old load(), which received pre-fetched rows) --
+    # this stands in for congress_api.api_get, keyed by the URL's
+    # /{session}/{vote_number}/members suffix.
+    def fake_api_get(session, url, params=None):
+        for suffix, results in member_votes_by_url_suffix.items():
+            if url.endswith(suffix):
+                return {"houseRollCallVoteMemberVotes": {"results": results}}
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    return fake_api_get
+
+
 def _get_roll_call_updated_at(pg_conn, vote_number):
     with pg_conn.cursor() as cursor:
         cursor.execute(
@@ -284,30 +309,32 @@ def test_roll_call_member_votes_upsert_bumps_update_when_vote_cast_changed(
 def test_load_attributes_member_votes_to_the_correct_roll_call(
     pg_conn, test_bill_id, test_bioguide_id, monkeypatch,
 ):
-    # Guards against a key-mixup bug in load()'s natural-key ->
-    # roll_call_id join: two roll calls upserted in one batch must each
+    # Guards against a key-mixup bug in sync_member_votes()'s natural-key
+    # -> roll_call_id join: two roll calls upserted in one batch must each
     # get their own, correctly-attributed member votes.
     vote_number_a = random_number(20000, 24000)
     vote_number_b = random_number(24000, 28000)
 
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
+    monkeypatch.setattr(
+        etl.congress_api, "api_get",
+        _fake_members_api_get({
+            f"/1/{vote_number_a}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Yea"}],
+            f"/1/{vote_number_b}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Nay"}],
+        }),
+    )
 
     dag = etl.house_votes_etl()
-    load = dag.task_dict["load"].python_callable
+    sync_member_votes = dag.task_dict["sync_member_votes"].python_callable
 
-    rows = {
-        "roll_calls": [
-            _roll_call_row(test_bill_id, vote_number_a, "hash-a"),
-            _roll_call_row(test_bill_id, vote_number_b, "hash-b"),
-        ],
-        "member_votes": [
-            {"key": [1, vote_number_a], "casts": [(test_bioguide_id, "YEA")]},
-            {"key": [1, vote_number_b], "casts": [(test_bioguide_id, "NAY")]},
-        ],
-    }
+    resolved_votes = [
+        _resolved_vote(test_bill_id, vote_number_a),
+        _resolved_vote(test_bill_id, vote_number_b),
+    ]
+    vote_details = [_vote_detail(vote_number_a), _vote_detail(vote_number_b)]
 
     try:
-        load(rows)
+        sync_member_votes(resolved_votes, vote_details, [test_bioguide_id], CONGRESS)
 
         with pg_conn.cursor() as cursor:
             cursor.execute(
@@ -337,10 +364,10 @@ def test_load_attributes_member_votes_to_the_correct_roll_call(
 def test_load_chunk_failure_does_not_block_other_chunks(
     pg_conn, test_bill_id, test_bioguide_id, monkeypatch,
 ):
-    # Regression test for the chunked-commit design: a bad row in one
-    # chunk must not roll back roll calls already committed in an
-    # earlier chunk, and must not prevent other chunks from loading.
-    monkeypatch.setattr(etl, "LOAD_CHUNK_SIZE", 2)
+    # Regression test for the batched-commit design: a bad row in one
+    # batch must not roll back roll calls already committed in an
+    # earlier batch, and must not prevent other batches from loading.
+    monkeypatch.setattr(etl, "VOTE_BATCH_SIZE", 2)
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
 
     good_vote_number_1 = random_number(20000, 22000)
@@ -348,24 +375,29 @@ def test_load_chunk_failure_does_not_block_other_chunks(
     bad_vote_number = random_number(24000, 26000)
     nonexistent_bill_id = 999_999_999  # violates roll_calls_bill_congress_fk
 
-    dag = etl.house_votes_etl()
-    load = dag.task_dict["load"].python_callable
+    monkeypatch.setattr(
+        etl.congress_api, "api_get",
+        _fake_members_api_get({
+            f"/1/{good_vote_number_1}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Yea"}],
+            f"/1/{good_vote_number_2}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Nay"}],
+            f"/1/{bad_vote_number}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Yea"}],
+        }),
+    )
 
-    rows = {
-        "roll_calls": [
-            _roll_call_row(test_bill_id, good_vote_number_1, "hash-good-1"),   # chunk 1
-            _roll_call_row(test_bill_id, good_vote_number_2, "hash-good-2"),   # chunk 1
-            _roll_call_row(nonexistent_bill_id, bad_vote_number, "hash-bad"),  # chunk 2, fails
-        ],
-        "member_votes": [
-            {"key": [1, good_vote_number_1], "casts": [(test_bioguide_id, "YEA")]},
-            {"key": [1, good_vote_number_2], "casts": [(test_bioguide_id, "NAY")]},
-            {"key": [1, bad_vote_number], "casts": [(test_bioguide_id, "YEA")]},
-        ],
-    }
+    dag = etl.house_votes_etl()
+    sync_member_votes = dag.task_dict["sync_member_votes"].python_callable
+
+    resolved_votes = [
+        _resolved_vote(test_bill_id, good_vote_number_1),                # batch 1
+        _resolved_vote(test_bill_id, good_vote_number_2),                # batch 1
+        _resolved_vote(nonexistent_bill_id, bad_vote_number),            # batch 2, fails
+    ]
+    vote_details = [
+        _vote_detail(good_vote_number_1), _vote_detail(good_vote_number_2), _vote_detail(bad_vote_number),
+    ]
 
     try:
-        load(rows)
+        sync_member_votes(resolved_votes, vote_details, [test_bioguide_id], CONGRESS)
 
         with pg_conn.cursor() as cursor:
             cursor.execute(
@@ -375,7 +407,7 @@ def test_load_chunk_failure_does_not_block_other_chunks(
             )
             landed_vote_numbers = {row[0] for row in cursor.fetchall()}
 
-        # Chunk 1's two good roll calls landed; chunk 2's bad one didn't.
+        # Batch 1's two good roll calls landed; batch 2's bad one didn't.
         assert landed_vote_numbers == {good_vote_number_1, good_vote_number_2}
 
         with pg_conn.cursor() as cursor:
@@ -397,3 +429,89 @@ def test_load_chunk_failure_does_not_block_other_chunks(
                 (CONGRESS, good_vote_number_1, good_vote_number_2, bad_vote_number),
             )
         pg_conn.commit()
+
+
+def test_sync_member_votes_skips_vote_whose_member_fetch_failed(
+    pg_conn, test_bill_id, test_bioguide_id, monkeypatch,
+):
+    # End-to-end replacement for the old fetch_member_votes-level fault-
+    # isolation test: one vote's failed /members fetch must not prevent
+    # the rest of the batch from landing, and per the transactional
+    # invariant, the failed vote itself must get NO roll_calls row at all
+    # (not one with zero member votes).
+    good_vote_number = random_number(20000, 22000)
+    failing_vote_number = random_number(22000, 24000)
+
+    def fake_api_get(session, url, params=None):
+        if f"/1/{failing_vote_number}/members" in url:
+            raise RuntimeError("simulated failure")
+        return {"houseRollCallVoteMemberVotes": {
+            "results": [{"bioguideID": test_bioguide_id, "voteCast": "Yea"}],
+        }}
+
+    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
+    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
+
+    dag = etl.house_votes_etl()
+    sync_member_votes = dag.task_dict["sync_member_votes"].python_callable
+
+    resolved_votes = [
+        _resolved_vote(test_bill_id, good_vote_number),
+        _resolved_vote(test_bill_id, failing_vote_number),
+    ]
+    vote_details = [_vote_detail(good_vote_number), _vote_detail(failing_vote_number)]
+
+    try:
+        sync_member_votes(resolved_votes, vote_details, [test_bioguide_id], CONGRESS)
+
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT vote_number FROM roll_calls WHERE chamber = 'HOUSE' AND congress = %s "
+                "AND vote_number IN (%s, %s)",
+                (CONGRESS, good_vote_number, failing_vote_number),
+            )
+            landed_vote_numbers = {row[0] for row in cursor.fetchall()}
+
+        assert landed_vote_numbers == {good_vote_number}
+    finally:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM roll_calls WHERE chamber = 'HOUSE' AND congress = %s "
+                "AND vote_number IN (%s, %s)",
+                (CONGRESS, good_vote_number, failing_vote_number),
+            )
+        pg_conn.commit()
+
+
+def test_sync_member_votes_skips_db_write_for_batch_with_zero_valid_rows(
+    pg_conn, test_bill_id, monkeypatch,
+):
+    # Regression test for the empty-batch edge case: when every vote in a
+    # batch fails validation (here, every vote is missing its vote_question
+    # detail), sync_member_votes() must not call execute_values() with an
+    # empty argslist (it raises IndexError on that) -- it must just skip
+    # the batch cleanly.
+    vote_number = random_number(20000, 22000)
+
+    monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
+    monkeypatch.setattr(
+        etl.congress_api, "api_get",
+        _fake_members_api_get({f"/1/{vote_number}/members": []}),
+    )
+
+    dag = etl.house_votes_etl()
+    sync_member_votes = dag.task_dict["sync_member_votes"].python_callable
+
+    resolved_votes = [_resolved_vote(test_bill_id, vote_number)]
+
+    # No IndexError/exception -- and no roll_calls row, since vote_details
+    # is empty (no vote_question available for this vote).
+    sync_member_votes(resolved_votes, [], [], CONGRESS)
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT count(*) FROM roll_calls WHERE chamber = 'HOUSE' AND congress = %s "
+            "AND vote_number = %s",
+            (CONGRESS, vote_number),
+        )
+        assert cursor.fetchone()[0] == 0
