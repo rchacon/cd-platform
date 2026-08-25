@@ -306,7 +306,7 @@ def test_roll_call_member_votes_upsert_bumps_update_when_vote_cast_changed(
     assert second_updated_at > first_updated_at
 
 
-def test_load_attributes_member_votes_to_the_correct_roll_call(
+def test_sync_member_votes_attributes_member_votes_to_the_correct_roll_call(
     pg_conn, test_bill_id, test_bioguide_id, monkeypatch,
 ):
     # Guards against a key-mixup bug in sync_member_votes()'s natural-key
@@ -361,7 +361,7 @@ def test_load_attributes_member_votes_to_the_correct_roll_call(
         pg_conn.commit()
 
 
-def test_load_chunk_failure_does_not_block_other_chunks(
+def test_sync_member_votes_batch_failure_does_not_block_other_batches(
     pg_conn, test_bill_id, test_bioguide_id, monkeypatch,
 ):
     # Regression test for the batched-commit design: a bad row in one
