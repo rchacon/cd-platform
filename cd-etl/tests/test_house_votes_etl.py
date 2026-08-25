@@ -341,6 +341,29 @@ def test_build_batch_rows_drops_member_vote_for_unknown_bioguide_id():
     assert casts == {"KNOWN01": "YEA"}
 
 
+def test_build_batch_rows_skips_vote_missing_from_fetched_by_key_without_failing_the_batch():
+    # Regression test: mirrors the old fetch_member_votes's fault
+    # isolation, now at the pure _build_batch_rows layer so this
+    # coverage doesn't need a live Postgres connection -- one vote's
+    # failed/absent member-vote fetch (missing from fetched_by_key, same
+    # shape congress_api.fetch_concurrently leaves a failed id in) must
+    # not discard the rest of the batch.
+    resolved = [_resolved_vote(240), _resolved_vote(241)]
+    vote_details = [_vote_detail(240), _vote_detail(241)]
+    fetched_by_key = {
+        # 240 is absent entirely -- its fetch failed.
+        (1, 241): [{"bioguideID": "A000055", "voteCast": "Yea"}],
+    }
+
+    roll_call_rows, casts_by_key = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key, {"A000055"}, 119,
+    )
+
+    assert len(roll_call_rows) == 1
+    assert roll_call_rows[0][3] == 241
+    assert casts_by_key == {(1, 241): [("A000055", "YEA")]}
+
+
 def test_build_batch_rows_drops_vote_missing_its_detail_entirely():
     # Regression test: a vote whose detail fetch (vote_question) failed
     # (absent from vote_question_by_key) must produce NO roll_calls row
