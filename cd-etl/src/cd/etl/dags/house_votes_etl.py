@@ -508,6 +508,14 @@ def house_votes_etl():
         # filter_votes_needing_sync() has no separate retry path, so a
         # roll_calls row ever committed without its member votes would be
         # permanently stuck.
+        #
+        # A fresh connection per batch (via IsolatedTransaction), opened
+        # only right before this batch's DB work rather than one
+        # connection held open for the whole task -- the fetch above is
+        # network-bound and can take tens of seconds per batch, and a
+        # connection sitting open-but-idle across that phase is exactly
+        # what an infra-level idle-connection timeout would catch,
+        # potentially between batches rather than during one.
         def fetch_one(key: tuple[int, int]) -> dict[str, Any]:
             session_number, roll_call_number = key
             member_votes = congress_api.api_get_model(
@@ -525,95 +533,77 @@ def house_votes_etl():
             (vd["session"], vd["roll_call_number"]): vd["vote_question"] for vd in vote_details
         }
         known_bioguide_id_set = set(known_bioguide_ids)
-
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
-        conn = hook.get_conn()
 
         loaded_roll_calls = 0
         loaded_votes = 0
         failed_batches = 0
 
-        try:
-            for raw_batch in batched(resolved_votes, VOTE_BATCH_SIZE):
-                batch = list(raw_batch)
-                try:
-                    keys = [(v["session"], v["roll_call_number"]) for v in batch]
-                    fetched = congress_api.fetch_concurrently(
-                        keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS,
+        for raw_batch in batched(resolved_votes, VOTE_BATCH_SIZE):
+            batch = list(raw_batch)
+            keys = [(v["session"], v["roll_call_number"]) for v in batch]
+            fetched = congress_api.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
+            fetched_by_key = {(f["session"], f["roll_call_number"]): f["votes"] for f in fetched}
+
+            roll_call_rows, casts_by_key = _build_batch_rows(
+                batch, vote_question_by_key, fetched_by_key, known_bioguide_id_set, congress,
+            )
+            if not roll_call_rows:
+                # Every vote in this batch failed validation (e.g. every
+                # member-vote fetch failed) -- nothing to write.
+                # execute_values() would raise on an empty argslist, so
+                # this must be checked before ever touching the DB.
+                continue
+
+            txn = congress_api.IsolatedTransaction(
+                hook,
+                f"a batch of {len(batch)} votes "
+                f"({[(v['session'], v['roll_call_number']) for v in batch]})",
+            )
+            with txn as conn:
+                with conn.cursor() as cursor:
+                    execute_values(cursor, ROLL_CALLS_UPSERT_SQL, roll_call_rows)
+
+                    # ROLL_CALLS_UPSERT_SQL's ON CONFLICT is WHERE-gated
+                    # on source_hash, so RETURNING would silently omit
+                    # any row Postgres decided not to update -- a
+                    # follow-up SELECT on the natural key is used instead
+                    # to reliably get every roll_call_id this batch needs
+                    # (unlike bills_common.BILLS_UPSERT_SQL, which is
+                    # single-row and can safely use RETURNING because its
+                    # ON CONFLICT is deliberately unconditional).
+                    sessions = [row[2] for row in roll_call_rows]
+                    vote_numbers = [row[3] for row in roll_call_rows]
+                    cursor.execute(
+                        """
+                        SELECT roll_call_id, session, vote_number FROM roll_calls
+                        WHERE chamber = 'HOUSE' AND congress = %s
+                          AND session = ANY(%s) AND vote_number = ANY(%s)
+                        """,
+                        (congress, sessions, vote_numbers),
                     )
-                    fetched_by_key = {
-                        (f["session"], f["roll_call_number"]): f["votes"] for f in fetched
+                    roll_call_id_by_key = {
+                        (session, vote_number): roll_call_id
+                        for roll_call_id, session, vote_number in cursor.fetchall()
                     }
 
-                    roll_call_rows, casts_by_key = _build_batch_rows(
-                        batch, vote_question_by_key, fetched_by_key, known_bioguide_id_set,
-                        congress,
-                    )
-                    if not roll_call_rows:
-                        # Every vote in this batch failed validation (e.g.
-                        # every member-vote fetch failed) -- nothing to
-                        # write. execute_values() would raise on an empty
-                        # argslist, so this must be checked before ever
-                        # touching the DB.
-                        continue
+                    member_vote_rows = []
+                    for key, casts in casts_by_key.items():
+                        roll_call_id = roll_call_id_by_key.get(key)
+                        if roll_call_id is None:
+                            continue
+                        for bioguide_id, vote_cast in casts:
+                            member_vote_rows.append((roll_call_id, bioguide_id, vote_cast))
 
-                    with conn.cursor() as cursor:
-                        execute_values(cursor, ROLL_CALLS_UPSERT_SQL, roll_call_rows)
-
-                        # ROLL_CALLS_UPSERT_SQL's ON CONFLICT is
-                        # WHERE-gated on source_hash, so RETURNING would
-                        # silently omit any row Postgres decided not to
-                        # update -- a follow-up SELECT on the natural key
-                        # is used instead to reliably get every
-                        # roll_call_id this batch needs (unlike
-                        # bills_common.BILLS_UPSERT_SQL, which is
-                        # single-row and can safely use RETURNING because
-                        # its ON CONFLICT is deliberately unconditional).
-                        sessions = [row[2] for row in roll_call_rows]
-                        vote_numbers = [row[3] for row in roll_call_rows]
-                        cursor.execute(
-                            """
-                            SELECT roll_call_id, session, vote_number FROM roll_calls
-                            WHERE chamber = 'HOUSE' AND congress = %s
-                              AND session = ANY(%s) AND vote_number = ANY(%s)
-                            """,
-                            (congress, sessions, vote_numbers),
+                    if member_vote_rows:
+                        execute_values(
+                            cursor, ROLL_CALL_MEMBER_VOTES_UPSERT_SQL, member_vote_rows,
                         )
-                        roll_call_id_by_key = {
-                            (session, vote_number): roll_call_id
-                            for roll_call_id, session, vote_number in cursor.fetchall()
-                        }
 
-                        member_vote_rows = []
-                        for key, casts in casts_by_key.items():
-                            roll_call_id = roll_call_id_by_key.get(key)
-                            if roll_call_id is None:
-                                continue
-                            for bioguide_id, vote_cast in casts:
-                                member_vote_rows.append((roll_call_id, bioguide_id, vote_cast))
-
-                        if member_vote_rows:
-                            execute_values(
-                                cursor, ROLL_CALL_MEMBER_VOTES_UPSERT_SQL, member_vote_rows,
-                            )
-
-                    conn.commit()
-                    loaded_roll_calls += len(roll_call_rows)
-                    loaded_votes += len(member_vote_rows)
-                except Exception as exc:
-                    # A batch's own failure shouldn't abort batches
-                    # already committed, or batches still to come --
-                    # rollback resets the shared connection to a usable
-                    # state for the next iteration (same reason
-                    # resolve_bills rolls back on a per-vote failure).
-                    conn.rollback()
-                    failed_batches += 1
-                    logger.error(
-                        "Failed to sync a batch of %d votes (%s): %s",
-                        len(batch), [(v["session"], v["roll_call_number"]) for v in batch], exc,
-                    )
-        finally:
-            conn.close()
+                loaded_roll_calls += len(roll_call_rows)
+                loaded_votes += len(member_vote_rows)
+            if txn.failed:
+                failed_batches += 1
 
         logger.info(
             "Loaded %d roll calls and %d member votes (%d batch(es) failed)",
