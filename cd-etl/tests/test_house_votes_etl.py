@@ -290,7 +290,7 @@ def test_build_batch_rows_normalizes_vote_cast_case_insensitively():
         {"bioguideID": "A000369", "voteCast": "Nay"},
     ]}
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
         resolved, _vote_question_by_key(vote_details), fetched_by_key,
         {"A000055", "A000148", "A000369"}, 119,
     )
@@ -312,7 +312,7 @@ def test_build_batch_rows_skips_malformed_vote_cast_without_failing_the_vote():
         {"bioguideID": "A000148", "voteCast": "Unrecognized"},
     ]}
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
         resolved, _vote_question_by_key(vote_details), fetched_by_key,
         {"A000055", "A000148"}, 119,
     )
@@ -333,7 +333,7 @@ def test_build_batch_rows_drops_member_vote_for_unknown_bioguide_id():
         {"bioguideID": "UNKNOWN01", "voteCast": "Nay"},
     ]}
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
         resolved, _vote_question_by_key(vote_details), fetched_by_key, {"KNOWN01"}, 119,
     )
 
@@ -355,7 +355,7 @@ def test_build_batch_rows_skips_vote_missing_from_fetched_by_key_without_failing
         (1, 241): [{"bioguideID": "A000055", "voteCast": "Yea"}],
     }
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
         resolved, _vote_question_by_key(vote_details), fetched_by_key, {"A000055"}, 119,
     )
 
@@ -373,7 +373,7 @@ def test_build_batch_rows_drops_vote_missing_its_detail_entirely():
     resolved = [_resolved_vote()]
     fetched_by_key = {(1, 240): [{"bioguideID": "A000055", "voteCast": "Yea"}]}
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
         resolved, {}, fetched_by_key, {"A000055"}, 119,
     )
 
@@ -390,7 +390,7 @@ def test_build_batch_rows_drops_vote_missing_its_member_votes_entirely():
     resolved = [_resolved_vote()]
     vote_details = [_vote_detail()]
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
         resolved, _vote_question_by_key(vote_details), {}, set(), 119,
     )
 
@@ -412,7 +412,7 @@ def test_build_batch_rows_drops_vote_when_all_casts_filtered_out():
         {"bioguideID": "UNKNOWN02", "voteCast": "Nay"},
     ]}
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
         resolved, _vote_question_by_key(vote_details), fetched_by_key, {"KNOWN01"}, 119,
     )
 
@@ -428,10 +428,45 @@ def test_build_batch_rows_returns_no_rows_when_every_vote_in_batch_fails():
     # cleanly empty rather than raising.
     resolved = [_resolved_vote(240), _resolved_vote(241)]
 
-    roll_call_rows, casts_by_key = etl._build_batch_rows(resolved, {}, {}, set(), 119)
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(resolved, {}, {}, set(), 119)
 
     assert roll_call_rows == []
     assert casts_by_key == {}
+
+
+def test_build_batch_rows_skip_counts_reflect_every_skip_reason():
+    # Regression test: sync_member_votes() accumulates skip_counts across
+    # every batch into the run's final summary log line (restoring the
+    # per-run aggregate observability fetch_member_votes/transform used
+    # to provide) -- pins that each of the four skip reasons is counted
+    # under its own key, not conflated with another.
+    resolved = [
+        _resolved_vote(240),  # missing detail
+        _resolved_vote(241),  # missing member votes
+        _resolved_vote(242),  # zero valid casts (all unknown bioguide_ids)
+        _resolved_vote(243),  # one cast dropped for unknown bioguide_id, one kept
+    ]
+    vote_details = [_vote_detail(241), _vote_detail(242), _vote_detail(243)]
+    fetched_by_key = {
+        (1, 242): [{"bioguideID": "UNKNOWN01", "voteCast": "Yea"}],
+        (1, 243): [
+            {"bioguideID": "UNKNOWN02", "voteCast": "Yea"},
+            {"bioguideID": "KNOWN01", "voteCast": "Nay"},
+        ],
+    }
+
+    roll_call_rows, casts_by_key, skip_counts = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key, {"KNOWN01"}, 119,
+    )
+
+    assert len(roll_call_rows) == 1
+    assert casts_by_key == {(1, 243): [("KNOWN01", "NAY")]}
+    assert skip_counts == {
+        "missing_detail": 1,
+        "missing_member_votes": 1,
+        "zero_valid_casts": 1,
+        "dropped_unknown_bioguide": 2,
+    }
 
 
 def test_dag_has_expected_tasks_wired_in_the_expected_order():

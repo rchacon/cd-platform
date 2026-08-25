@@ -164,7 +164,7 @@ def _build_batch_rows(
     fetched_by_key: dict[tuple[int, int], list[dict[str, Any]]],
     known_bioguide_id_set: set[str],
     congress: int,
-) -> tuple[list[tuple[Any, ...]], dict[tuple[int, int], list[tuple[str, str]]]]:
+) -> tuple[list[tuple[Any, ...]], dict[tuple[int, int], list[tuple[str, str]]], dict[str, int]]:
     """Builds one batch's SQL-ready roll_calls rows and member-vote casts.
 
     Pure -- no DB/API calls -- so sync_member_votes() can call this once
@@ -174,6 +174,14 @@ def _build_batch_rows(
     directly: this never crosses an Airflow XCom boundary (called
     in-process from sync_member_votes()), so the list(key)/{"key": ...}
     JSON-safety wrapping transform() needed doesn't apply here.
+
+    The third return value, skip_counts, is a per-batch skip-reason
+    breakdown (same keys every call) -- sync_member_votes() accumulates
+    these across every batch so the run's final summary line still
+    reports one aggregate total, the way the old fetch_member_votes/
+    transform's single per-run log line did, rather than only ever
+    appearing scattered across dozens of per-batch log lines on a large
+    backfill.
     """
     roll_call_rows = []
     casts_by_key: dict[tuple[int, int], list[tuple[str, str]]] = {}
@@ -257,7 +265,13 @@ def _build_batch_rows(
         skipped_missing_member_votes_count, skipped_zero_valid_casts_count,
         dropped_unknown_bioguide_count,
     )
-    return roll_call_rows, casts_by_key
+    skip_counts = {
+        "missing_detail": skipped_missing_detail_count,
+        "missing_member_votes": skipped_missing_member_votes_count,
+        "zero_valid_casts": skipped_zero_valid_casts_count,
+        "dropped_unknown_bioguide": dropped_unknown_bioguide_count,
+    }
+    return roll_call_rows, casts_by_key, skip_counts
 
 
 @dag(
@@ -538,6 +552,14 @@ def house_votes_etl():
         loaded_roll_calls = 0
         loaded_votes = 0
         failed_batches = 0
+        # Accumulated across every batch so the run's final summary line
+        # still reports one aggregate total, matching the old
+        # fetch_member_votes/transform's single per-run log line -- see
+        # _build_batch_rows()'s own docstring.
+        total_skip_counts = {
+            "missing_detail": 0, "missing_member_votes": 0,
+            "zero_valid_casts": 0, "dropped_unknown_bioguide": 0,
+        }
 
         for raw_batch in batched(resolved_votes, VOTE_BATCH_SIZE):
             batch = list(raw_batch)
@@ -545,9 +567,11 @@ def house_votes_etl():
             fetched = congress_api.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
             fetched_by_key = {(f["session"], f["roll_call_number"]): f["votes"] for f in fetched}
 
-            roll_call_rows, casts_by_key = _build_batch_rows(
+            roll_call_rows, casts_by_key, skip_counts = _build_batch_rows(
                 batch, vote_question_by_key, fetched_by_key, known_bioguide_id_set, congress,
             )
+            for reason, count in skip_counts.items():
+                total_skip_counts[reason] += count
             if not roll_call_rows:
                 # Every vote in this batch failed validation (e.g. every
                 # member-vote fetch failed) -- nothing to write.
@@ -606,8 +630,13 @@ def house_votes_etl():
                 failed_batches += 1
 
         logger.info(
-            "Loaded %d roll calls and %d member votes (%d batch(es) failed)",
+            "Loaded %d roll calls and %d member votes (%d batch(es) failed, "
+            "%d skipped for missing detail, %d skipped for missing member votes, "
+            "%d skipped for zero valid casts, %d member votes dropped for unknown bioguide_id "
+            "across the whole run)",
             loaded_roll_calls, loaded_votes, failed_batches,
+            total_skip_counts["missing_detail"], total_skip_counts["missing_member_votes"],
+            total_skip_counts["zero_valid_casts"], total_skip_counts["dropped_unknown_bioguide"],
         )
 
     congress = get_current_congress()
