@@ -112,7 +112,7 @@ def test_refresh_bills_skips_failed_bill_without_failing_the_batch(monkeypatch):
 
 def test_get_current_congress_delegates_to_the_shared_helper(monkeypatch):
     monkeypatch.setattr(
-        etl.congress_api, "get_current_congress",
+        etl.db, "get_current_congress",
         lambda postgres_conn_id: 119 if postgres_conn_id == etl.POSTGRES_CONN_ID else None,
     )
 

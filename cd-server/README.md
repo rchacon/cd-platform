@@ -131,8 +131,36 @@ errors with a clear message, same "let the raised exception's message
 speak for itself" approach `ApiClientError` already uses above, not a
 structured/typed error result.
 
-Down the line, `cd-server` will also get its own Postgres database and
-issue/manage API keys and billing for authenticated users -- not built
+`cd-server` now has its own Postgres database, `cd_customers`, that no
+other component touches -- schema managed by Alembic migrations under
+`migrations/` (same raw-SQL `op.execute()` idiom as `cd-etl`'s own),
+applied unconditionally on every container start by `entrypoint.sh`
+(mirroring `cd-etl`'s own entrypoint) before `uvicorn` starts. Its only
+table today, `users` (`id`, `email`, `created_at`, `last_seen`), is
+upserted by `services/users_service.py`'s `UsersService` -- following the
+same client/service split as `CdApiService` above: `UsersClient` is the
+thin client (owns the `asyncpg` connection pool and the raw upsert SQL,
+no JWT knowledge), `UsersService` is the actual service (owns JWT
+verification/claim extraction, calls the client). It's wired in via
+`app.py`'s `GraphQLRouter(..., context_getter=...)`, run on every GraphQL
+request rather than from a resolver: an `Authorization: Bearer <token>`
+header, if present, is verified against Cognito's real JWKS (`PyJWKClient`
+against `https://cognito-idp.<region>.amazonaws.com/<user_pool_id>/.well-known/jwks.json`,
+checking `token_use == "id"` and `aud` against `COGNITO_CLIENT_IDS` --
+covering both `cd-webapp`'s prod and local-dev App Clients, which share
+one User Pool) and, if valid, the resulting `sub`/`email` are upserted
+unconditionally, not throttled to only new users -- a deliberately simple
+first pass. A missing or invalid token never blocks the request; no
+resolver requires auth yet.
+`COGNITO_USER_POOL_ID`/`COGNITO_REGION` unset disables verification
+entirely rather than failing startup when `CD_SERVER_ENVIRONMENT` is
+`"local"` (the default) -- `make start-server` needs zero AWS setup for
+representative-lookup-only local dev; any other environment fails fast at
+import instead, same precedent as `get_cd_api_service()`. Note this is
+necessary but not sufficient on its own: `cd-webapp` doesn't yet attach
+an `Authorization` header to any of its GraphQL calls, so nothing upserts
+in practice until that's wired up there, separately. `cd-server` will
+still get its own API-key/billing management down the line -- not built
 yet.
 
 ### Calling cd-api locally

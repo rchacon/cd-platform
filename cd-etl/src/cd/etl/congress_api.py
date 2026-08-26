@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from collections.abc import Callable, Iterator
@@ -8,12 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 import requests
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 from pydantic import BaseModel
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-CONGRESS_API_KEY = os.environ["CONGRESS_API_KEY"]
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +43,19 @@ def build_session(pool_maxsize: int) -> requests.Session:
     return session
 
 
+def _congress_api_key() -> str:
+    # Read lazily, on every actual call, rather than once at module
+    # import time -- every DAG file imports this module transitively, so
+    # an import-time read couples "can this module even be imported" to
+    # "is CONGRESS_API_KEY configured," which broke dag-processor (which
+    # parses DAG files but never calls the Congress API itself under
+    # cd-infra's ECS decomposition, cd-infra#41) even though it never
+    # needed the key at all (cd-platform#79). Only the code path that
+    # actually makes a request pays this cost, and only fails here, not
+    # at parse time.
+    return os.environ["CONGRESS_API_KEY"]
+
+
 def api_get(
     session: requests.Session, url: str, params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -58,7 +67,7 @@ def api_get(
     response = session.get(
         url,
         params={**(params or {}), "format": "json"},
-        headers={"X-Api-Key": CONGRESS_API_KEY},
+        headers={"X-Api-Key": _congress_api_key()},
         timeout=30,
     )
     response.raise_for_status()
@@ -126,27 +135,3 @@ def fetch_concurrently(
                 logger.error("Failed to fetch %s: %s", futures[future], exc)
 
     return results
-
-
-def get_current_congress(postgres_conn_id: str) -> int:
-    # Postgres's own current_congress() function is the single place
-    # every ETL agrees on "which Congress is current." Shared here since
-    # house_votes_etl.py and bills_etl.py both need this exact,
-    # no-upstream-dependency lookup as their very first task -- their
-    # copies were identical. members_etl.py's own get_current_congress
-    # keeps its own copy rather than being forced onto this shape: it
-    # takes a dummy upstream-ordering argument (so Airflow sequences it
-    # after sync_current_congress) that this shared, zero-arg version
-    # has no equivalent for.
-    hook = PostgresHook(postgres_conn_id=postgres_conn_id)
-    row = hook.get_first("SELECT current_congress()")
-    if row is None or row[0] is None:
-        raise ValueError("No current congress found in congresses table")
-    return row[0]
-
-
-def source_hash(*parts: Any) -> str:
-    normalized = "|".join(
-        str(part).strip().lower() if part is not None else "" for part in parts
-    )
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()

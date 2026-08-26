@@ -52,13 +52,45 @@ from `cd-lib`'s `apportionment.py` -- see below) and `getDistrict`
 free-text address via the Census Bureau's geocoding API) -- both ported
 from `cd-lookup`'s `StateNames.php`/`LookupDistrict.php`, same
 algorithms. See `cd-server/README.md`.
-Down the line it will also get its own Postgres
-database and issue/manage API keys and billing for authenticated users --
-not built yet. Unlike `cd-api`'s Lambda-zip deploy, `cd-server` is
-containerized from day one (see below), since it's expected to hold
-long-lived state/connections once its own database lands; the intended
-production target is an ECS service backed by EC2, provisioned in
-`cd-infra`.
+`cd-server` now has its own Postgres database, `cd_customers`, that no
+other component touches -- schema managed by Alembic migrations under
+`cd-server/migrations/` (same raw-SQL `op.execute()` idiom as `cd-etl`'s),
+applied unconditionally on every container start by `cd-server/entrypoint.sh`,
+mirroring `cd-etl`'s own entrypoint. Its only table today, `users` (`id`,
+`email`, `created_at`, `last_seen`), is upserted by
+`services/users_service.py`'s `UsersService` from `app.py`'s
+`GraphQLRouter` `context_getter`, run on every GraphQL request: an
+`Authorization: Bearer <token>` header, if present, is verified against
+the real Cognito User Pool `cd-infra` provisions (`PyJWKClient` against
+`https://cognito-idp.<region>.amazonaws.com/<user_pool_id>/.well-known/jwks.json`,
+checking `token_use == "id"` and `aud` against `COGNITO_CLIENT_IDS`,
+covering both cd-webapp's prod and local-dev App Clients sharing that one
+pool) and, if valid, the resulting `sub`/`email` are upserted
+unconditionally -- a deliberately simple first pass, not throttled to
+only new users. A missing token never blocks the request (no resolver
+requires auth yet, so an anonymous caller must still get through), but a
+bearer token that IS present must actually verify: a token that fails
+verification (bad signature, wrong issuer/audience, or `token_use !=
+"id"`) raises `InvalidTokenError`, which `app.py`'s `context_getter`
+turns into an HTTP 401, rejecting the whole request before Strawberry
+ever executes it -- unlike a database hiccup during the upsert itself,
+or a `PyJWKClientConnectionError` fetching Cognito's own JWKS (a network
+hiccup unrelated to the token's actual validity), both of which still
+degrade silently to anonymous rather than 401ing a caller over cd-server's
+own infra issue. `COGNITO_USER_POOL_ID`/`COGNITO_REGION` unset
+disables verification entirely rather than failing startup when
+`CD_SERVER_ENVIRONMENT` is `"local"` (the default), so `make start-server`
+still needs zero AWS setup for representative-lookup-only local dev; any
+other environment fails fast at import instead, same precedent as
+`get_cd_api_service()`. This is necessary but not sufficient on its own:
+`cd-webapp` doesn't yet attach an `Authorization` header to any of its
+GraphQL calls, so nothing upserts in practice until that's wired up
+there, separately. `cd-server` will still get its own API-key/billing
+management down the line -- not built yet. Unlike `cd-api`'s Lambda-zip
+deploy, `cd-server` is containerized from day one (see below), since it's
+expected to hold long-lived state/connections once its own database
+lands; the intended production target is an ECS service backed by EC2,
+provisioned in `cd-infra`.
 `cd-lib` (`cd-lib/src/cd/lib/`) is a shared library the Python services
 depend on as a local path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
@@ -231,7 +263,7 @@ though a bill's `policy_area` can be reassigned and its `legislativeSubjects`
 can be added or removed over its lifetime. `bills_etl` is the missing
 refresh path, on its own `@daily` schedule:
 
-1. `get_current_congress` — delegates to `congress_api.get_current_congress()`,
+1. `get_current_congress` — delegates to `db.get_current_congress()`,
    shared with `house_votes_etl`'s identical task (both take no upstream
    argument, unlike `members_etl`'s own copy -- see that module's task of
    the same name).
@@ -260,7 +292,8 @@ refresh path, on its own `@daily` schedule:
    sharing one -- `sync_bill`'s cursor/commit calls aren't safe to run
    concurrently on a single psycopg2 connection, unlike the pure-HTTP
    concurrent fetches this pattern is normally used for elsewhere
-   (`fetch_vote_details`, `fetch_member_votes`). Unlike `house_votes_etl`'s
+   (`fetch_vote_details`, and `sync_member_votes`'s own per-batch member-vote
+   fetch). Unlike `house_votes_etl`'s
    `resolve_bills` (which stays sequential specifically to avoid two votes
    in the same batch racing to insert the *same* not-yet-existing bill),
    there's no such race here -- every row in `known_bills` already exists.
@@ -391,17 +424,24 @@ docker compose exec -T postgres psql -U postgres -d congressional_app \
 make test-etl                                  # docker compose run --rm -e PGDATABASE=congressional_app_test cd-etl uv run pytest tests/
 make test-etl TEST=test_members_etl.py::test_name
 
-make start-server      # docker compose up --build cd-server -- GraphiQL at
-                        # http://localhost:8000/graphql, health check at
-                        # http://localhost:8000/health
-make test-server       # docker compose run --rm cd-server uv run pytest tests/
+make start-server      # docker compose up -d postgres && docker compose up
+                        # --build cd-server -- applies cd-server's own
+                        # migrations, GraphiQL at http://localhost:8000/graphql,
+                        # health check at http://localhost:8000/health
+make test-server       # docker compose run --rm -e PGDATABASE=cd_customers_test cd-server uv run pytest tests/
 ```
 
 `tests/test_upsert_sql.py` needs a live Postgres and skips itself if one
 isn't reachable; every other test is a pure unit test with no external
 dependencies. `tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so
-the module (which reads it at import time) can be imported without a real
-key.
+tests exercising `congress_api.py`'s `api_get()` directly against a fake
+session don't need a real key -- `api_get()` reads it lazily on every call
+(`congress_api.py`'s own `_congress_api_key()`), not at import time, so
+merely importing any DAG file (which every DAG does transitively) never
+requires this var at all (`cd-platform#79` -- this used to be an
+import-time read, which broke `dag-processor` parsing DAGs under
+`cd-infra`'s ECS decomposition, since only `scheduler` is ever given this
+credential).
 
 `make test-etl` targets a dedicated `congressional_app_test` database (a
 sibling of `congressional_app` and `airflow_metadata` in the same Postgres
@@ -412,6 +452,12 @@ other's migrations (`cd-platform#16`). `cd-api`'s tests share this same
 database (see `cd-api/README.md`) -- its schema is only ever applied by
 `cd-etl`'s side, so `cd-api`'s tests need `make test-etl` to have run at
 least once first.
+
+`make test-server` follows the identical pattern for its own database: a
+dedicated `cd_customers_test` (a sibling of `cd_customers` in the same
+Postgres container, created by `cd-server/docker/init-cd-customers-test-db.sh`)
+rather than the real dev database, for the same isolation reason as
+`congressional_app_test` above.
 
 `cd-etl/docker/Dockerfile` is multi-stage: `production` (what ships to GHCR) has
 no test dependencies at all -- its `base` stage's `uv sync --locked

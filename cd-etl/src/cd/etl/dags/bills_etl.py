@@ -35,7 +35,7 @@ from typing import Any
 
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bills_common, congress_api
+from cd.etl import bills_common, congress_api, db
 
 POSTGRES_CONN_ID = "congressional_postgres"
 
@@ -74,7 +74,7 @@ def bills_etl():
 
     @task
     def get_current_congress() -> int:
-        return congress_api.get_current_congress(POSTGRES_CONN_ID)
+        return db.get_current_congress(POSTGRES_CONN_ID)
 
     @task
     def extract_known_bills(congress: int) -> list[dict[str, Any]]:
@@ -107,7 +107,8 @@ def bills_etl():
         # separate connection per worker: sync_bill's own cursor/commit
         # calls aren't safe to share across threads on one psycopg2
         # connection, unlike the pure-HTTP concurrent fetches elsewhere in
-        # this codebase (fetch_vote_details, fetch_member_votes).
+        # this codebase (fetch_vote_details, and sync_member_votes's own
+        # per-batch member-vote fetch).
         hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
 
         def refresh_one(bill: dict[str, Any]) -> None:

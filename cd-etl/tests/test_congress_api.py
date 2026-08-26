@@ -1,3 +1,6 @@
+import importlib
+
+import pytest
 from pydantic import BaseModel
 
 from cd.etl import congress_api
@@ -61,9 +64,26 @@ def test_api_get_sends_the_api_key_as_a_header_not_a_query_param():
     congress_api.api_get(session, "https://api.congress.gov/v3/thing")
 
     call = session.calls[0]
-    assert call["headers"] == {"X-Api-Key": congress_api.CONGRESS_API_KEY}
+    assert call["headers"] == {"X-Api-Key": congress_api._congress_api_key()}
     assert "api_key" not in call["params"]
     assert "api_key" not in (call["url"] or "")
+
+
+def test_congress_api_key_is_read_lazily_not_at_import_time(monkeypatch):
+    # Regression test for cd-platform#79: every DAG file imports this
+    # module transitively, so an import-time read broke dag-processor
+    # (parses DAG files, never calls the Congress API itself) even
+    # though CONGRESS_API_KEY was never set there. importlib.reload()
+    # re-executes the module body -- if the read were still at import
+    # time, this would raise KeyError instead of succeeding.
+    monkeypatch.delenv("CONGRESS_API_KEY", raising=False)
+    importlib.reload(congress_api)
+
+    with pytest.raises(KeyError):
+        congress_api._congress_api_key()
+
+    monkeypatch.setenv("CONGRESS_API_KEY", "test-key")
+    assert congress_api._congress_api_key() == "test-key"
 
 
 def test_api_get_model_validates_response_into_the_given_model():
@@ -122,17 +142,3 @@ def test_fetch_concurrently_skips_failures_without_failing_the_batch():
     results = congress_api.fetch_concurrently(["good1", "bad", "good2"], fetch_one, max_workers=3)
 
     assert sorted(results) == ["GOOD1", "GOOD2"]
-
-
-def test_source_hash_is_order_and_case_and_whitespace_insensitive_per_field():
-    a = congress_api.source_hash("Foo", " Bar ", None, 1)
-    b = congress_api.source_hash("foo", "bar", "", 1)
-
-    assert a == b
-
-
-def test_source_hash_differs_when_a_field_actually_differs():
-    a = congress_api.source_hash("foo", "bar")
-    b = congress_api.source_hash("foo", "baz")
-
-    assert a != b

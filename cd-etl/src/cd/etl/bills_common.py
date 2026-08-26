@@ -20,7 +20,7 @@ from datetime import date
 from typing import Any
 
 import requests
-from cd.etl import congress_api
+from cd.etl import congress_api, db
 from cd.etl.congress_models import (
     BillDetailResponse,
     BillSubjectsResponse,
@@ -139,7 +139,7 @@ def sync_bill(
             BILLS_UPSERT_SQL,
             (
                 congress, bill_type, bill_number, bill.title, policy_area, crs_summary,
-                congress_api.source_hash(
+                db.source_hash(
                     congress, bill_type, bill_number, bill.title, policy_area, crs_summary,
                 ),
                 bill.update_date,
