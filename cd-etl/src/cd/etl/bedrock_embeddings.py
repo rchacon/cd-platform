@@ -11,6 +11,7 @@ matching every other AWS-native auth pattern already in this project.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import boto3
@@ -26,12 +27,24 @@ EMBEDDING_DIMENSIONS = 1024
 
 
 def build_bedrock_client() -> Any:
-    # No explicit region_name -- same precedent as cd-server's own
-    # boto3.client("lambda") (services/cd_api_service.py), relying on
-    # boto3's own default region resolution (the ECS task's own
-    # configured region) rather than hardcoding a fallback that could
-    # silently be wrong if that ever changes.
-    return boto3.client("bedrock-runtime")
+    # Unlike cd-server's boto3.client("lambda") (services/cd_api_service.py,
+    # no region_name at all), this needs an explicit fallback: that
+    # client is only ever actually constructed in a non-"local"
+    # CD_SERVER_ENVIRONMENT (get_cd_api_service() picks HttpApiClient
+    # instead when local), so it never runs anywhere a region can't be
+    # resolved. bills_etl.py/house_votes_etl.py build this
+    # unconditionally at module import time -- confirmed empirically
+    # that boto3.client() itself (unlike credential resolution, which is
+    # lazy) requires a resolvable region just to construct, raising
+    # botocore.exceptions.NoRegionError immediately in any environment
+    # (e.g. local dev, dag-processor parsing) with no AWS config at all.
+    # Matters beyond local dev too: an import-time failure here would be
+    # the exact same class of bug as rchacon/cd-platform#79 (CONGRESS_API_KEY
+    # read at import time broke dag-processor, which parses DAG files but
+    # is never given that credential) -- dag-processor doesn't need a
+    # real Bedrock call to succeed, just to be able to import this module
+    # at all.
+    return boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 
 def embed_text(client: Any, text: str) -> list[float]:

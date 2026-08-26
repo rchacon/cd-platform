@@ -86,7 +86,7 @@ def test_refresh_bills_skips_failed_bill_without_failing_the_batch(monkeypatch):
 
     synced = []
 
-    def fake_sync_bill(session, conn, congress, bill_type, bill_number):
+    def fake_sync_bill(session, conn, congress, bill_type, bill_number, bedrock_client):
         if bill_type == "HR" and bill_number == 1:
             raise RuntimeError("simulated failure")
         synced.append((bill_type, bill_number))
