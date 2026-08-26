@@ -41,3 +41,126 @@ def fetch_current_members(state: str, district: int | None) -> list[dict]:
             return list(cur.fetchall())
     finally:
         conn.close()
+
+
+def _to_pgvector_literal(embedding: list[float]) -> str:
+    # Bound as a plain string %s param and cast with ::vector in SQL --
+    # no query here ever needs the pgvector Python package (and the
+    # numpy dependency it pulls in) to deserialize a vector column back
+    # into a float array, matching cd-etl's own db.to_pgvector_literal.
+    return "[" + ",".join(f"{x:.8f}" for x in embedding) + "]"
+
+
+def member_exists(bioguide_id: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM members WHERE bioguide_id = %s", (bioguide_id,))
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def fetch_closest_vocab_term(embedding: list[float]) -> dict | None:
+    # No index on vocab_term_embeddings (see migration 0005) -- a brute
+    # force scan is exact and fast enough at this table's expected scale
+    # (a few hundred distinct terms).
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT kind, term, embedding <=> %(embedding)s::vector AS distance
+                FROM vocab_term_embeddings
+                ORDER BY distance ASC
+                LIMIT 1
+                """,
+                {"embedding": _to_pgvector_literal(embedding)},
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def fetch_bills_by_policy_area(term: str, limit: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT bill_id, congress, bill_type, bill_number, title,
+                       policy_area, crs_summary
+                FROM bills
+                WHERE policy_area = %(term)s
+                LIMIT %(limit)s
+                """,
+                {"term": term, "limit": limit},
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def fetch_bills_by_subject(term: str, limit: int) -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT b.bill_id, b.congress, b.bill_type, b.bill_number, b.title,
+                       b.policy_area, b.crs_summary
+                FROM bills b
+                JOIN bill_subjects s ON s.bill_id = b.bill_id
+                WHERE s.subject_name = %(term)s
+                LIMIT %(limit)s
+                """,
+                {"term": term, "limit": limit},
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def fetch_bills_by_similarity(
+    embedding: list[float], exclude_bill_ids: list[int], limit: int
+) -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT bill_id, congress, bill_type, bill_number, title,
+                       policy_area, crs_summary
+                FROM bills
+                WHERE crs_summary_embedding IS NOT NULL
+                  AND NOT (bill_id = ANY(%(exclude_bill_ids)s))
+                ORDER BY crs_summary_embedding <=> %(embedding)s::vector ASC
+                LIMIT %(limit)s
+                """,
+                {
+                    "embedding": _to_pgvector_literal(embedding),
+                    "exclude_bill_ids": exclude_bill_ids,
+                    "limit": limit,
+                },
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def fetch_votes_for_bills(bill_ids: list[int], bioguide_id: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.bill_id, v.vote_cast, r.vote_question, r.result, r.vote_date
+                FROM roll_calls r
+                JOIN roll_call_member_votes v ON v.roll_call_id = r.roll_call_id
+                WHERE r.bill_id = ANY(%(bill_ids)s) AND v.bioguide_id = %(bioguide_id)s
+                """,
+                {"bill_ids": bill_ids, "bioguide_id": bioguide_id},
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()

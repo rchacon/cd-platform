@@ -8,10 +8,19 @@ import os
 # querying the real dev database while tests seed the test one.
 os.environ.setdefault("PGDATABASE", "congressional_app_test")
 
+import uuid
+
 import psycopg2
 import pytest
 
 from cd.api.db import PG_DSN
+
+
+def random_number(low: int, high: int) -> int:
+    # Shared by real-Postgres test modules that need a bill/vote number
+    # kept well clear of any real value's current range. Matches
+    # cd-etl's own tests/conftest.py helper of the same name.
+    return low + (uuid.uuid4().int % (high - low))
 
 
 @pytest.fixture
