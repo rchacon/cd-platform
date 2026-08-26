@@ -15,6 +15,15 @@ CONGRESS = 119
 # test module.
 
 
+@pytest.fixture(autouse=True)
+def _stub_bedrock(monkeypatch):
+    # Every existing test in this file passes bedrock_client=None and
+    # doesn't care what embed_text returns -- only the embedding-specific
+    # tests further down override this locally (a test's own
+    # monkeypatch.setattr call wins, since it runs after this fixture's).
+    monkeypatch.setattr(bills_common.bedrock_embeddings, "embed_text", lambda client, text: [0.1] * 1024)
+
+
 @pytest.fixture
 def test_bill_number(pg_conn):
     # Kept well above any real bill's current range, and under
@@ -153,6 +162,7 @@ def test_sync_bill_stores_title_policy_area_subjects_and_latest_crs_summary(
 
     bill_id = bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
 
     title, policy_area, crs_summary, _ = _get_bill_row(pg_conn, bill_id)
@@ -175,6 +185,7 @@ def test_sync_bill_refreshes_an_already_synced_bill_when_source_data_changed(
     )
     first_bill_id = bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
     _, _, _, first_updated_at = _get_bill_row(pg_conn, first_bill_id)
 
@@ -188,6 +199,7 @@ def test_sync_bill_refreshes_an_already_synced_bill_when_source_data_changed(
     )
     second_bill_id = bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
     title, policy_area, crs_summary, second_updated_at = _get_bill_row(pg_conn, second_bill_id)
 
@@ -223,6 +235,7 @@ def test_sync_bill_degrades_gracefully_when_summaries_fetch_fails(
 
     bill_id = bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
 
     title, policy_area, crs_summary, _ = _get_bill_row(pg_conn, bill_id)
@@ -243,6 +256,7 @@ def test_sync_bill_preserves_prior_subjects_when_subjects_response_is_empty(
     )
     bill_id = bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
     assert _get_bill_subjects(pg_conn, bill_id) == ["Health", "Insurance"]
 
@@ -252,6 +266,7 @@ def test_sync_bill_preserves_prior_subjects_when_subjects_response_is_empty(
     )
     bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
 
     assert _get_bill_subjects(pg_conn, bill_id) == ["Health", "Insurance"]
@@ -269,6 +284,7 @@ def test_sync_bill_preserves_prior_values_when_refresh_returns_nulls(
     )
     bill_id = bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
 
     monkeypatch.setattr(
@@ -277,9 +293,176 @@ def test_sync_bill_preserves_prior_values_when_refresh_returns_nulls(
     )
     bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
     )
 
     title, policy_area, crs_summary, _ = _get_bill_row(pg_conn, bill_id)
     assert title == "A Title"
     assert policy_area == "Health"
     assert crs_summary == "A summary"
+
+
+def _get_bill_embedding_is_set(pg_conn, bill_id):
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT crs_summary_embedding IS NOT NULL FROM bills WHERE bill_id = %s", (bill_id,),
+        )
+        return cursor.fetchone()[0]
+
+
+def _count_vocab_term(pg_conn, kind, term):
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT count(*) FROM vocab_term_embeddings WHERE kind = %s AND term = %s",
+            (kind, term),
+        )
+        return cursor.fetchone()[0]
+
+
+def test_sync_bill_embeds_a_new_bill(pg_conn, test_bill_number, monkeypatch):
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("Dream Act", "Immigration", [], [("2025-01-01", "A summary")]),
+    )
+
+    bill_id = bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
+    )
+
+    assert _get_bill_embedding_is_set(pg_conn, bill_id)
+
+
+def test_sync_bill_does_not_reembed_the_bill_when_content_is_unchanged(
+    pg_conn, test_bill_number, monkeypatch,
+):
+    # Regression test: re-syncing a bill whose title/policy_area/
+    # crs_summary haven't changed must not spend a second Bedrock call --
+    # bills_etl's daily refresh would otherwise re-embed every known
+    # bill's unchanged content on every single run forever.
+    embed_calls = []
+    monkeypatch.setattr(
+        bills_common.bedrock_embeddings, "embed_text",
+        lambda client, text: (embed_calls.append(text), [0.1] * 1024)[1],
+    )
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("A Title", "Health", [], [("2025-01-01", "A summary")]),
+    )
+
+    bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
+    )
+    assert len(embed_calls) == 1
+
+    bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
+    )
+
+    assert len(embed_calls) == 1  # unchanged -- no second embed call
+
+
+def test_sync_bill_reembeds_when_content_changes(pg_conn, test_bill_number, monkeypatch):
+    embed_calls = []
+    monkeypatch.setattr(
+        bills_common.bedrock_embeddings, "embed_text",
+        lambda client, text: (embed_calls.append(text), [0.1] * 1024)[1],
+    )
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("Original Title", "Health", [], [("2025-01-01", "Original summary")]),
+    )
+    bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
+    )
+    assert len(embed_calls) == 1
+
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("Reclassified Title", "Immigration", [], [("2025-01-01", "Original summary")]),
+    )
+    bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
+    )
+
+    assert len(embed_calls) == 2
+    assert embed_calls[1] == "Reclassified Title\n\nOriginal summary"
+
+
+def test_sync_bill_degrades_gracefully_when_bedrock_embed_fails(
+    pg_conn, test_bill_number, monkeypatch,
+):
+    # Same degrade-gracefully precedent as the /summaries-fetch-failure
+    # test above -- an embedding failure is metadata enrichment for
+    # search, unrelated to bill_id's own correctness as an FK target, so
+    # it must not fail the sync.
+    monkeypatch.setattr(
+        bills_common.bedrock_embeddings, "embed_text",
+        lambda client, text: (_ for _ in ()).throw(RuntimeError("simulated Bedrock failure")),
+    )
+    monkeypatch.setattr(
+        bills_common.congress_api, "api_get",
+        _fake_api_get("A Title", "Health", [], [("2025-01-01", "A summary")]),
+    )
+
+    bill_id = bills_common.sync_bill(
+        session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
+        bedrock_client=None,
+    )
+
+    assert not _get_bill_embedding_is_set(pg_conn, bill_id)
+
+
+def test_sync_bill_embeds_a_shared_policy_area_exactly_once_across_two_bills(
+    pg_conn, monkeypatch,
+):
+    # Regression test: policy_area is shared, mostly-closed vocabulary --
+    # two different bills syncing the same policy_area must only spend
+    # one Bedrock call embedding that term, not one per bill.
+    term = f"Test Policy Area {random_number(100000, 999999)}"
+    bill_number_a = random_number(20000, 24000)
+    bill_number_b = random_number(24000, 28000)
+    vocab_embed_calls = []
+
+    def fake_embed_text(client, text):
+        if text == term:
+            vocab_embed_calls.append(text)
+        return [0.1] * 1024
+
+    monkeypatch.setattr(bills_common.bedrock_embeddings, "embed_text", fake_embed_text)
+
+    try:
+        monkeypatch.setattr(
+            bills_common.congress_api, "api_get",
+            _fake_api_get("Bill A", term, [], []),
+        )
+        bills_common.sync_bill(
+            session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=bill_number_a,
+            bedrock_client=None,
+        )
+        monkeypatch.setattr(
+            bills_common.congress_api, "api_get",
+            _fake_api_get("Bill B", term, [], []),
+        )
+        bills_common.sync_bill(
+            session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=bill_number_b,
+            bedrock_client=None,
+        )
+
+        assert len(vocab_embed_calls) == 1
+        assert _count_vocab_term(pg_conn, "POLICY_AREA", term) == 1
+    finally:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM bills WHERE congress = %s AND bill_type = 'HR' "
+                "AND bill_number IN (%s, %s)",
+                (CONGRESS, bill_number_a, bill_number_b),
+            )
+            cursor.execute(
+                "DELETE FROM vocab_term_embeddings WHERE kind = 'POLICY_AREA' AND term = %s", (term,),
+            )
+        pg_conn.commit()

@@ -20,7 +20,7 @@ from datetime import date
 from typing import Any
 
 import requests
-from cd.etl import congress_api, db
+from cd.etl import bedrock_embeddings, congress_api, db
 from cd.etl.congress_models import (
     BillDetailResponse,
     BillSubjectsResponse,
@@ -77,6 +77,15 @@ BILL_SUBJECTS_INSERT_SQL = """
     ON CONFLICT (bill_id, subject_name) DO NOTHING
 """
 
+VOCAB_TERM_SELECT_SQL = """
+    SELECT term FROM vocab_term_embeddings WHERE kind = %s AND term = ANY(%s)
+"""
+
+VOCAB_TERM_INSERT_SQL = """
+    INSERT INTO vocab_term_embeddings (kind, term, embedding) VALUES (%s, %s, %s::vector)
+    ON CONFLICT (kind, term) DO NOTHING
+"""
+
 
 def _latest_crs_summary(summaries: list[BillSummaryItem]) -> str | None:
     # Congress.gov issues a new CRS summary at each legislative stage
@@ -93,12 +102,47 @@ def _latest_crs_summary(summaries: list[BillSummaryItem]) -> str | None:
     return max(usable, key=lambda s: s.action_date or date.min).text
 
 
+def _embed_missing_vocab_terms(
+    conn: Any, bedrock_client: Any, kind: str, terms: list[str],
+) -> None:
+    # cd-platform#9 (semantic search): policy_area/subject_name are both
+    # short, shared, mostly-closed vocabulary -- embedded once per
+    # distinct string and reused across every bill that has it, rather
+    # than per-bill like crs_summary_embedding. Incremental ("embed if
+    # missing"), not a scheduled re-embed: a term's own text never
+    # changes once written, so there's nothing to refresh.
+    distinct = list(dict.fromkeys(t for t in terms if t))
+    if not distinct:
+        return
+
+    with conn.cursor() as cursor:
+        cursor.execute(VOCAB_TERM_SELECT_SQL, (kind, distinct))
+        existing = {row[0] for row in cursor.fetchall()}
+
+    for term in (t for t in distinct if t not in existing):
+        try:
+            embedding = bedrock_embeddings.embed_text(bedrock_client, term)
+        except Exception as exc:
+            logger.warning(
+                "Failed to embed vocab term %r (%s): %s -- skipping", term, kind, exc,
+            )
+            continue
+        # ON CONFLICT DO NOTHING matters here, not just defensively:
+        # bills_etl.refresh_bills processes bills concurrently
+        # (REFRESH_BATCH_WORKERS), so two bills sharing a policy_area (or
+        # a subject) can race to embed the same term from two different
+        # connections at once.
+        with conn.cursor() as cursor:
+            cursor.execute(VOCAB_TERM_INSERT_SQL, (kind, term, db.to_pgvector_literal(embedding)))
+
+
 def sync_bill(
     session: requests.Session,
     conn: Any,
     congress: int,
     bill_type: str,
     bill_number: int,
+    bedrock_client: Any,
 ) -> int:
     # Detail, subjects, and summaries are three independent endpoints --
     # fetched concurrently since none depends on another's result.
@@ -133,16 +177,30 @@ def sync_bill(
 
     policy_area = bill.policy_area_name
     crs_summary = _latest_crs_summary(summaries)
+    new_hash = db.source_hash(congress, bill_type, bill_number, bill.title, policy_area, crs_summary)
 
     with conn.cursor() as cursor:
+        # Checked before the upsert below overwrites source_hash --
+        # cd-platform#9's semantic search only wants to spend a Bedrock
+        # call re-embedding a bill when its title/policy_area/crs_summary
+        # actually changed (or it has never been embedded at all).
+        # Without this, bills_etl's daily refresh would re-embed every
+        # known bill's unchanged content on every single run forever --
+        # cost is trivial either way, but the added external round-trip
+        # (and its failure surface) per sync isn't free.
+        cursor.execute(
+            "SELECT source_hash, crs_summary_embedding IS NOT NULL FROM bills "
+            "WHERE congress = %s AND bill_type = %s AND bill_number = %s",
+            (congress, bill_type, bill_number),
+        )
+        existing = cursor.fetchone()
+        needs_embedding = existing is None or existing[0] != new_hash or not existing[1]
+
         cursor.execute(
             BILLS_UPSERT_SQL,
             (
                 congress, bill_type, bill_number, bill.title, policy_area, crs_summary,
-                db.source_hash(
-                    congress, bill_type, bill_number, bill.title, policy_area, crs_summary,
-                ),
-                bill.update_date,
+                new_hash, bill.update_date,
             ),
         )
         bill_id = cursor.fetchone()[0]
@@ -165,6 +223,33 @@ def sync_bill(
                 cursor, BILL_SUBJECTS_INSERT_SQL,
                 [(bill_id, name) for name in subject_names],
             )
+
+        if needs_embedding:
+            # title + crs_summary concatenated, not crs_summary alone --
+            # the title often carries the colloquial hook a free-text
+            # query like "dreamers" would actually match (e.g. "Dream
+            # Act"), while crs_summary carries the substantive policy
+            # content.
+            embed_input = "\n\n".join(part for part in (bill.title, crs_summary) if part)
+            if embed_input:
+                try:
+                    embedding = bedrock_embeddings.embed_text(bedrock_client, embed_input)
+                    cursor.execute(
+                        "UPDATE bills SET crs_summary_embedding = %s::vector WHERE bill_id = %s",
+                        (db.to_pgvector_literal(embedding), bill_id),
+                    )
+                except Exception as exc:
+                    # Same degrade-gracefully precedent as /summaries
+                    # above -- an embedding failure is metadata
+                    # enrichment for search, unrelated to bill_id's own
+                    # correctness as an FK target.
+                    logger.warning(
+                        "Failed to embed bill %s %s %d: %s -- leaving crs_summary_embedding unset",
+                        congress, bill_type, bill_number, exc,
+                    )
+
+        _embed_missing_vocab_terms(conn, bedrock_client, "POLICY_AREA", [policy_area] if policy_area else [])
+        _embed_missing_vocab_terms(conn, bedrock_client, "SUBJECT", subject_names)
 
     # Committed here, per bill, rather than once at the end of the
     # caller's loop over many bills -- so one bill's failure doesn't roll

@@ -35,7 +35,7 @@ from typing import Any
 
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bills_common, congress_api, db
+from cd.etl import bedrock_embeddings, bills_common, congress_api, db
 
 POSTGRES_CONN_ID = "congressional_postgres"
 
@@ -57,6 +57,7 @@ REFRESH_MIN_INTERVAL_DAYS = 7
 REFRESH_BATCH_WORKERS = 5
 
 _API_SESSION = congress_api.build_session(pool_maxsize=REFRESH_BATCH_WORKERS * 3)
+_BEDROCK_CLIENT = bedrock_embeddings.build_bedrock_client()
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ def bills_etl():
             try:
                 bills_common.sync_bill(
                     _API_SESSION, conn, congress, bill["bill_type"], bill["bill_number"],
+                    _BEDROCK_CLIENT,
                 )
             except Exception:
                 # A DB-side failure would otherwise leave this worker's

@@ -56,4 +56,19 @@ def test_build_bedrock_client_targets_bedrock_runtime(monkeypatch):
 
     bedrock_embeddings.build_bedrock_client()
 
-    assert calls == [(("bedrock-runtime",), {})]
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == ("bedrock-runtime",)
+    assert "region_name" in kwargs  # falls back to a default -- must never raise NoRegionError
+
+
+def test_build_bedrock_client_respects_aws_region_env_var(monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    calls = []
+    monkeypatch.setattr(
+        bedrock_embeddings.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    bedrock_embeddings.build_bedrock_client()
+
+    assert calls[0][1]["region_name"] == "eu-west-1"

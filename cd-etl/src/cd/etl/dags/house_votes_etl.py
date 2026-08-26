@@ -35,7 +35,7 @@ from typing import Any
 import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bills_common, congress_api, db
+from cd.etl import bedrock_embeddings, bills_common, congress_api, db
 from cd.etl.congress_models import (
     AmendmentResponse,
     HouseVoteDetailResponse,
@@ -67,6 +67,7 @@ POSTGRES_CONN_ID = "congressional_postgres"
 VOTE_BATCH_SIZE = 50
 
 _API_SESSION = congress_api.build_session(pool_maxsize=MEMBER_VOTES_FETCH_WORKERS)
+_BEDROCK_CLIENT = bedrock_embeddings.build_bedrock_client()
 
 # House roll calls report different literal values depending on voteType
 # ("Recorded Vote" uses Aye/No/Not Voting; "Yea-and-Nay" uses Yea/Nay/Not
@@ -120,6 +121,7 @@ def get_or_sync_bill(
     congress: int,
     bill_type: str,
     bill_number: int,
+    bedrock_client: Any,
 ) -> int:
     # Sync-once, not a refresh path: once a bill is stored, this helper
     # never re-fetches it. Only bills actually referenced by a vote are
@@ -136,7 +138,7 @@ def get_or_sync_bill(
     if row is not None:
         return row[0]
 
-    return bills_common.sync_bill(session, conn, congress, bill_type, bill_number)
+    return bills_common.sync_bill(session, conn, congress, bill_type, bill_number, bedrock_client)
 
 
 def resolve_amendment_bill(
@@ -430,7 +432,7 @@ def house_votes_etl():
                                 f"match the currently-synced congress ({congress})"
                             )
 
-                    bill_id = get_or_sync_bill(_API_SESSION, conn, *bill_key)
+                    bill_id = get_or_sync_bill(_API_SESSION, conn, *bill_key, _BEDROCK_CLIENT)
                 except Exception as exc:
                     # Broad on purpose -- HTTP errors, pydantic
                     # ValidationError, a malformed legislation_number
