@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import congress_api
+from cd.etl import congress_api, db
 from cd.etl.congress_models import (
     CongressCurrent,
     CongressCurrentResponse,
@@ -250,7 +250,7 @@ def _member_row(member: MemberDetail) -> tuple[Any, ...]:
         phone,
         member.official_website_url,
         party_history,
-        congress_api.source_hash(
+        db.source_hash(
             member.bioguide_id, member.first_name, member.middle_name,
             member.last_name, member.nick_name, member.suffix_name,
             member.birth_year, member.death_year, photo_uri, phone,
@@ -296,7 +296,7 @@ def _term_rows(member: MemberDetail, congress: int) -> list[tuple[Any, ...]]:
             term.district,
             term.start_year,
             term.end_year,
-            congress_api.source_hash(
+            db.source_hash(
                 bioguide_id, congress, chamber, term.member_type,
                 term.state_code, term.district, term.start_year, term.end_year,
             ),

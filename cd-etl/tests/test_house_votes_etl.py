@@ -242,8 +242,8 @@ def test_extract_house_vote_summaries_covers_both_sessions(monkeypatch):
 def test_fetch_vote_details_skips_failed_fetch_without_failing_the_batch(monkeypatch):
     # Regression test: fetch_vote_details was split out of resolve_bills's
     # own sequential loop into its own concurrent task -- mirrors
-    # fetch_member_votes's fault isolation, one vote's failed detail
-    # fetch shouldn't discard the others.
+    # sync_member_votes's own per-batch member-vote fetch fault isolation,
+    # one vote's failed detail fetch shouldn't discard the others.
     def fake_api_get(session, url, params=None):
         if url.endswith("/1/240"):
             raise RuntimeError("simulated failure")
@@ -266,31 +266,6 @@ def test_fetch_vote_details_skips_failed_fetch_without_failing_the_batch(monkeyp
     assert result[0]["vote_question"] == "On Passage"
 
 
-def test_fetch_member_votes_skips_failed_fetch_without_failing_the_batch(monkeypatch):
-    # Regression test: mirrors fetch_member_details's fault isolation --
-    # one vote's failed /members fetch shouldn't discard the others.
-    def fake_api_get(session, url, params=None):
-        if "/240/members" in url:
-            raise RuntimeError("simulated failure")
-        return {"houseRollCallVoteMemberVotes": {"results": [{"bioguideID": "A000055", "voteCast": "Yea"}]}}
-
-    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
-
-    dag = etl.house_votes_etl()
-    fetch_member_votes = dag.task_dict["fetch_member_votes"].python_callable
-
-    resolved = [
-        {"session": 1, "roll_call_number": 240},
-        {"session": 1, "roll_call_number": 241},
-    ]
-
-    result = fetch_member_votes(resolved, 119)
-
-    assert len(result) == 1
-    assert result[0]["roll_call_number"] == 241
-    assert result[0]["votes"] == [{"bioguideID": "A000055", "voteCast": "Yea"}]
-
-
 def _resolved_vote(roll_call_number=240, session=1, bill_id=1):
     return {
         "session": session, "roll_call_number": roll_call_number, "bill_id": bill_id,
@@ -302,125 +277,196 @@ def _vote_detail(roll_call_number=240, session=1, vote_question="On Passage"):
     return {"session": session, "roll_call_number": roll_call_number, "vote_question": vote_question}
 
 
-def test_transform_normalizes_vote_cast_case_insensitively():
-    dag = etl.house_votes_etl()
-    transform = dag.task_dict["transform"].python_callable
+def _vote_question_by_key(vote_details):
+    return {(vd["session"], vd["roll_call_number"]): vd["vote_question"] for vd in vote_details}
 
+
+def test_build_batch_rows_normalizes_vote_cast_case_insensitively():
     resolved = [_resolved_vote()]
     vote_details = [_vote_detail()]
-    member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
+    fetched_by_key = {(1, 240): [
         {"bioguideID": "A000055", "voteCast": "yea"},
         {"bioguideID": "A000148", "voteCast": "AYE"},
         {"bioguideID": "A000369", "voteCast": "Nay"},
-    ]}]
+    ]}
 
-    result = transform(resolved, vote_details, member_votes, ["A000055", "A000148", "A000369"], 119)
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key,
+        {"A000055", "A000148", "A000369"}, 119,
+    )
 
-    assert result["roll_calls"][0][0] == "HOUSE"
-    assert result["roll_calls"][0][5] == "On Passage"
-    casts = dict(result["member_votes"][0]["casts"])
+    assert roll_call_rows[0][0] == "HOUSE"
+    assert roll_call_rows[0][5] == "On Passage"
+    casts = dict(casts_by_key[(1, 240)])
     assert casts == {"A000055": "YEA", "A000148": "YEA", "A000369": "NAY"}
 
 
-def test_transform_skips_malformed_vote_cast_without_failing_the_vote():
+def test_build_batch_rows_skips_malformed_vote_cast_without_failing_the_vote():
     # Regression test: an unrecognized vote_cast value shouldn't discard
     # the rest of that roll call's member votes, mirroring
     # members_etl.py's per-item fault isolation in transform().
-    dag = etl.house_votes_etl()
-    transform = dag.task_dict["transform"].python_callable
-
     resolved = [_resolved_vote()]
     vote_details = [_vote_detail()]
-    member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
+    fetched_by_key = {(1, 240): [
         {"bioguideID": "A000055", "voteCast": "Yea"},
         {"bioguideID": "A000148", "voteCast": "Unrecognized"},
-    ]}]
+    ]}
 
-    result = transform(resolved, vote_details, member_votes, ["A000055", "A000148"], 119)
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key,
+        {"A000055", "A000148"}, 119,
+    )
 
-    assert len(result["roll_calls"]) == 1
-    casts = dict(result["member_votes"][0]["casts"])
+    assert len(roll_call_rows) == 1
+    casts = dict(casts_by_key[(1, 240)])
     assert casts == {"A000055": "YEA"}
 
 
-def test_transform_drops_member_vote_for_unknown_bioguide_id():
+def test_build_batch_rows_drops_member_vote_for_unknown_bioguide_id():
     # Defensive test: roll_call_member_votes.bioguide_id has a hard FK
     # to members -- an unknown id must be dropped in Python before it
     # can fail the whole execute_values batch at insert time.
-    dag = etl.house_votes_etl()
-    transform = dag.task_dict["transform"].python_callable
-
     resolved = [_resolved_vote()]
     vote_details = [_vote_detail()]
-    member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
+    fetched_by_key = {(1, 240): [
         {"bioguideID": "KNOWN01", "voteCast": "Yea"},
         {"bioguideID": "UNKNOWN01", "voteCast": "Nay"},
-    ]}]
+    ]}
 
-    result = transform(resolved, vote_details, member_votes, ["KNOWN01"], 119)
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key, {"KNOWN01"}, 119,
+    )
 
-    casts = dict(result["member_votes"][0]["casts"])
+    casts = dict(casts_by_key[(1, 240)])
     assert casts == {"KNOWN01": "YEA"}
 
 
-def test_transform_drops_vote_missing_its_detail_entirely():
+def test_build_batch_rows_skips_vote_missing_from_fetched_by_key_without_failing_the_batch():
+    # Regression test: mirrors the old fetch_member_votes's fault
+    # isolation, now at the pure _build_batch_rows layer so this
+    # coverage doesn't need a live Postgres connection -- one vote's
+    # failed/absent member-vote fetch (missing from fetched_by_key, same
+    # shape congress_api.fetch_concurrently leaves a failed id in) must
+    # not discard the rest of the batch.
+    resolved = [_resolved_vote(240), _resolved_vote(241)]
+    vote_details = [_vote_detail(240), _vote_detail(241)]
+    fetched_by_key = {
+        # 240 is absent entirely -- its fetch failed.
+        (1, 241): [{"bioguideID": "A000055", "voteCast": "Yea"}],
+    }
+
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key, {"A000055"}, 119,
+    )
+
+    assert len(roll_call_rows) == 1
+    assert roll_call_rows[0][3] == 241
+    assert casts_by_key == {(1, 241): [("A000055", "YEA")]}
+
+
+def test_build_batch_rows_drops_vote_missing_its_detail_entirely():
     # Regression test: a vote whose detail fetch (vote_question) failed
-    # (absent from vote_details) must produce NO roll_calls row at all --
-    # vote_question is a NOT NULL column, same transactional-invariant
-    # reasoning as the missing-member-votes case below.
-    dag = etl.house_votes_etl()
-    transform = dag.task_dict["transform"].python_callable
-
+    # (absent from vote_question_by_key) must produce NO roll_calls row
+    # at all -- vote_question is a NOT NULL column, same
+    # transactional-invariant reasoning as the missing-member-votes case
+    # below.
     resolved = [_resolved_vote()]
-    member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
-        {"bioguideID": "A000055", "voteCast": "Yea"},
-    ]}]
+    fetched_by_key = {(1, 240): [{"bioguideID": "A000055", "voteCast": "Yea"}]}
 
-    result = transform(resolved, [], member_votes, ["A000055"], 119)
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
+        resolved, {}, fetched_by_key, {"A000055"}, 119,
+    )
 
-    assert result["roll_calls"] == []
-    assert result["member_votes"] == []
+    assert roll_call_rows == []
+    assert casts_by_key == {}
 
 
-def test_transform_drops_vote_missing_its_member_votes_entirely():
+def test_build_batch_rows_drops_vote_missing_its_member_votes_entirely():
     # Regression test for the transactional invariant: a vote whose
-    # member-vote fetch failed (absent from member_votes) must produce
+    # member-vote fetch failed (absent from fetched_by_key) must produce
     # NO roll_calls row at all, not a roll call with zero casts --
     # incremental sync has no separate retry path for an already-known
     # roll call, so a partially-loaded one would be permanently stuck.
-    dag = etl.house_votes_etl()
-    transform = dag.task_dict["transform"].python_callable
-
     resolved = [_resolved_vote()]
     vote_details = [_vote_detail()]
 
-    result = transform(resolved, vote_details, [], [], 119)
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), {}, set(), 119,
+    )
 
-    assert result["roll_calls"] == []
-    assert result["member_votes"] == []
+    assert roll_call_rows == []
+    assert casts_by_key == {}
 
 
-def test_transform_drops_vote_when_all_casts_filtered_out():
+def test_build_batch_rows_drops_vote_when_all_casts_filtered_out():
     # Regression test: a vote whose every cast got filtered out (all
     # unknown bioguide_ids, here) must produce NO roll_calls row --
     # same transactional-invariant reasoning as the missing-member-votes
     # case above. Previously this only checked for raw_casts is None,
     # missing the case where casts is a non-empty list that fully empties
     # out after per-cast filtering.
-    dag = etl.house_votes_etl()
-    transform = dag.task_dict["transform"].python_callable
-
     resolved = [_resolved_vote()]
     vote_details = [_vote_detail()]
-    member_votes = [{"session": 1, "roll_call_number": 240, "votes": [
+    fetched_by_key = {(1, 240): [
         {"bioguideID": "UNKNOWN01", "voteCast": "Yea"},
         {"bioguideID": "UNKNOWN02", "voteCast": "Nay"},
-    ]}]
+    ]}
 
-    result = transform(resolved, vote_details, member_votes, ["KNOWN01"], 119)
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key, {"KNOWN01"}, 119,
+    )
 
-    assert result["roll_calls"] == []
-    assert result["member_votes"] == []
+    assert roll_call_rows == []
+    assert casts_by_key == {}
+
+
+def test_build_batch_rows_returns_no_rows_when_every_vote_in_batch_fails():
+    # Regression test for the new empty-batch case: sync_member_votes()
+    # must not call execute_values() with an empty argslist when every
+    # vote in a batch fails validation (here, every vote is missing its
+    # detail fetch) -- pins that _build_batch_rows() itself returns
+    # cleanly empty rather than raising.
+    resolved = [_resolved_vote(240), _resolved_vote(241)]
+
+    roll_call_rows, casts_by_key, _ = etl._build_batch_rows(resolved, {}, {}, set(), 119)
+
+    assert roll_call_rows == []
+    assert casts_by_key == {}
+
+
+def test_build_batch_rows_skip_counts_reflect_every_skip_reason():
+    # Regression test: sync_member_votes() accumulates skip_counts across
+    # every batch into the run's final summary log line (restoring the
+    # per-run aggregate observability fetch_member_votes/transform used
+    # to provide) -- pins that each of the four skip reasons is counted
+    # under its own key, not conflated with another.
+    resolved = [
+        _resolved_vote(240),  # missing detail
+        _resolved_vote(241),  # missing member votes
+        _resolved_vote(242),  # zero valid casts (all unknown bioguide_ids)
+        _resolved_vote(243),  # one cast dropped for unknown bioguide_id, one kept
+    ]
+    vote_details = [_vote_detail(241), _vote_detail(242), _vote_detail(243)]
+    fetched_by_key = {
+        (1, 242): [{"bioguideID": "UNKNOWN01", "voteCast": "Yea"}],
+        (1, 243): [
+            {"bioguideID": "UNKNOWN02", "voteCast": "Yea"},
+            {"bioguideID": "KNOWN01", "voteCast": "Nay"},
+        ],
+    }
+
+    roll_call_rows, casts_by_key, skip_counts = etl._build_batch_rows(
+        resolved, _vote_question_by_key(vote_details), fetched_by_key, {"KNOWN01"}, 119,
+    )
+
+    assert len(roll_call_rows) == 1
+    assert casts_by_key == {(1, 243): [("KNOWN01", "NAY")]}
+    assert skip_counts == {
+        "missing_detail": 1,
+        "missing_member_votes": 1,
+        "zero_valid_casts": 1,
+        "dropped_unknown_bioguide": 2,
+    }
 
 
 def test_dag_has_expected_tasks_wired_in_the_expected_order():
@@ -433,9 +479,7 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
         "filter_votes_needing_sync",
         "resolve_bills",
         "fetch_vote_details",
-        "fetch_member_votes",
-        "transform",
-        "load",
+        "sync_member_votes",
     }
 
     upstream = {
@@ -449,9 +493,7 @@ def test_dag_has_expected_tasks_wired_in_the_expected_order():
     }
     assert upstream["resolve_bills"] == {"filter_votes_needing_sync", "get_current_congress"}
     assert upstream["fetch_vote_details"] == {"resolve_bills", "get_current_congress"}
-    assert upstream["fetch_member_votes"] == {"resolve_bills", "get_current_congress"}
-    assert upstream["transform"] == {
-        "resolve_bills", "fetch_vote_details", "fetch_member_votes",
+    assert upstream["sync_member_votes"] == {
+        "resolve_bills", "fetch_vote_details",
         "filter_votes_needing_sync", "get_current_congress",
     }
-    assert upstream["load"] == {"transform"}

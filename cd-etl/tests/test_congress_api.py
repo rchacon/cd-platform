@@ -142,17 +142,3 @@ def test_fetch_concurrently_skips_failures_without_failing_the_batch():
     results = congress_api.fetch_concurrently(["good1", "bad", "good2"], fetch_one, max_workers=3)
 
     assert sorted(results) == ["GOOD1", "GOOD2"]
-
-
-def test_source_hash_is_order_and_case_and_whitespace_insensitive_per_field():
-    a = congress_api.source_hash("Foo", " Bar ", None, 1)
-    b = congress_api.source_hash("foo", "bar", "", 1)
-
-    assert a == b
-
-
-def test_source_hash_differs_when_a_field_actually_differs():
-    a = congress_api.source_hash("foo", "bar")
-    b = congress_api.source_hash("foo", "baz")
-
-    assert a != b

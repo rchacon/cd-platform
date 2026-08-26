@@ -6,9 +6,12 @@ into the schema defined in `migrations/versions/`.
 
 ## What it does
 
-`src/congress_api.py` (session/pagination/concurrent-fetch HTTP helpers)
-and `src/congress_models.py` (Pydantic models for the API's response
-shapes) are shared, DAG-agnostic modules every DAG below builds on.
+`src/congress_api.py` (session/pagination/concurrent-fetch HTTP helpers --
+strictly interfacing with api.congress.gov itself, no DB code),
+`src/db.py` (shared Postgres helpers -- `IsolatedTransaction`,
+`get_current_congress`, `source_hash`), and `src/congress_models.py`
+(Pydantic models for the API's response shapes) are shared, DAG-agnostic
+modules every DAG below builds on.
 
 ### `congress_members_etl` (`src/members_etl.py`)
 
@@ -40,11 +43,14 @@ own docstring for why.
 4. `resolve_bills` — resolves each vote's `bill_id` (syncing the bill on
    demand if it's new), sequentially rather than concurrently so two
    votes referencing the same new bill don't race an insert.
-5. `fetch_member_votes` — concurrently fetches each vote's individual
-   member casts.
-6. `transform` — validates and normalizes vote casts, dropping any vote
-   whose member-vote fetch failed rather than storing it incomplete.
-7. `load` — upserts `roll_calls` and `roll_call_member_votes`.
+5. `fetch_vote_details` — concurrently fetches each vote's question detail.
+6. `sync_member_votes` — processes votes in small batches (bounds peak
+   memory to one batch's worth of member-vote casts rather than the whole
+   run's, see rchacon/cd-platform#59): concurrently fetches each batch's
+   individual member casts, validates and normalizes them (dropping any
+   vote whose member-vote fetch failed rather than storing it
+   incomplete), and upserts `roll_calls`/`roll_call_member_votes` for
+   that batch together in one transaction before moving to the next.
 
 ## Prerequisites
 

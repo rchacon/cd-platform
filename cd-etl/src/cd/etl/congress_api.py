@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from collections.abc import Callable, Iterator
@@ -8,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 import requests
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 from pydantic import BaseModel
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -137,27 +135,3 @@ def fetch_concurrently(
                 logger.error("Failed to fetch %s: %s", futures[future], exc)
 
     return results
-
-
-def get_current_congress(postgres_conn_id: str) -> int:
-    # Postgres's own current_congress() function is the single place
-    # every ETL agrees on "which Congress is current." Shared here since
-    # house_votes_etl.py and bills_etl.py both need this exact,
-    # no-upstream-dependency lookup as their very first task -- their
-    # copies were identical. members_etl.py's own get_current_congress
-    # keeps its own copy rather than being forced onto this shape: it
-    # takes a dummy upstream-ordering argument (so Airflow sequences it
-    # after sync_current_congress) that this shared, zero-arg version
-    # has no equivalent for.
-    hook = PostgresHook(postgres_conn_id=postgres_conn_id)
-    row = hook.get_first("SELECT current_congress()")
-    if row is None or row[0] is None:
-        raise ValueError("No current congress found in congresses table")
-    return row[0]
-
-
-def source_hash(*parts: Any) -> str:
-    normalized = "|".join(
-        str(part).strip().lower() if part is not None else "" for part in parts
-    )
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
