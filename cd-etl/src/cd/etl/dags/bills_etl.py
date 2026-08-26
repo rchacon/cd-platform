@@ -35,7 +35,7 @@ from typing import Any
 
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bills_common, congress_api
+from cd.etl import bills_common, congress_api, db
 
 POSTGRES_CONN_ID = "congressional_postgres"
 
@@ -74,7 +74,7 @@ def bills_etl():
 
     @task
     def get_current_congress() -> int:
-        return congress_api.get_current_congress(POSTGRES_CONN_ID)
+        return db.get_current_congress(POSTGRES_CONN_ID)
 
     @task
     def extract_known_bills(congress: int) -> list[dict[str, Any]]:

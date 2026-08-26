@@ -263,7 +263,7 @@ though a bill's `policy_area` can be reassigned and its `legislativeSubjects`
 can be added or removed over its lifetime. `bills_etl` is the missing
 refresh path, on its own `@daily` schedule:
 
-1. `get_current_congress` — delegates to `congress_api.get_current_congress()`,
+1. `get_current_congress` — delegates to `db.get_current_congress()`,
    shared with `house_votes_etl`'s identical task (both take no upstream
    argument, unlike `members_etl`'s own copy -- see that module's task of
    the same name).

@@ -35,7 +35,7 @@ from typing import Any
 import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bills_common, congress_api
+from cd.etl import bills_common, congress_api, db
 from cd.etl.congress_models import (
     AmendmentResponse,
     HouseVoteDetailResponse,
@@ -247,7 +247,7 @@ def _build_batch_rows(
             skipped_zero_valid_casts_count += 1
             continue
 
-        source_hash = congress_api.source_hash(
+        source_hash = db.source_hash(
             "HOUSE", congress, vote["session"], vote["roll_call_number"], vote["bill_id"],
             vote_question, vote["result"], vote["vote_date"],
         )
@@ -287,7 +287,7 @@ def house_votes_etl():
 
     @task
     def get_current_congress() -> int:
-        return congress_api.get_current_congress(POSTGRES_CONN_ID)
+        return db.get_current_congress(POSTGRES_CONN_ID)
 
     @task
     def extract_house_vote_summaries(congress: int) -> list[dict[str, Any]]:
@@ -579,7 +579,7 @@ def house_votes_etl():
                 # this must be checked before ever touching the DB.
                 continue
 
-            txn = congress_api.IsolatedTransaction(
+            txn = db.IsolatedTransaction(
                 hook,
                 f"a batch of {len(batch)} votes "
                 f"({[(v['session'], v['roll_call_number']) for v in batch]})",
