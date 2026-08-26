@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -42,3 +44,40 @@ class Member(BaseModel):
 class MembersResponse(BaseModel):
     senators: list[Member]
     representatives: list[Member]
+
+
+class BillVote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    vote_cast: str = Field(description="YEA, NAY, PRESENT, or NOT_VOTING.")
+    vote_question: str
+    result: str
+    vote_date: date
+
+
+class Bill(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    congress: int
+    bill_type: str
+    bill_number: int
+    title: str | None = None
+    policy_area: str | None = None
+    crs_summary: str | None = None
+    votes: list[BillVote] = Field(
+        default_factory=list,
+        description=(
+            "A list, not a single nullable vote -- one bill can have more "
+            "than one roll call in a member's own chamber (e.g. a "
+            "procedural vote plus final passage). Empty if the bill "
+            "matched the search but this representative never voted on it."
+        ),
+    )
+
+
+class BillSearchResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    bioguide_id: str
+    bills: list[Bill]
