@@ -1,6 +1,12 @@
 services:
   postgres:
-    image: postgres:16
+    # pgvector/pgvector:pg16, not vanilla postgres:16 -- bundles the
+    # pgvector extension cd-platform#9's semantic search needs
+    # (CREATE EXTENSION vector). Same Postgres 16 major version cd-infra's
+    # RDS instance runs (terraform/rds/variables.tf's engine_version
+    # default), so local dev and prod stay on the same major version --
+    # just with the extension already compiled in locally.
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_DB: congressional_app
