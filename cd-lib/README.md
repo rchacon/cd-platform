@@ -27,6 +27,17 @@ own models happen to live. `cd-api` still owns *building* `Member`s
 in `app.py`) -- only the `Member`/`MembersResponse` *definitions*
 moved, not the logic that populates them.
 
+`src/cd/lib/models.py` also has `BillVote`, `Bill`, and
+`BillSearchResponse`, for `cd-platform#9`'s semantic search over bills
+(`cd-api`'s `GET /bills/search`). Placed here rather than in
+`cd-api`-local models for the same reason as `Member`/
+`MembersResponse`: a future `cd-server` GraphQL resolver will validate
+against the exact same response shape `cd-api` builds, once that
+resolver is built. `Bill.votes` is a list, not a single nullable vote --
+one bill can have more than one roll call in a member's own chamber
+(e.g. a procedural vote plus final passage), and is empty when a bill
+matched the search but the given representative never voted on it.
+
 `src/cd/lib/apportionment.py` -- `SEATS_PER_STATE` (2020 census
 apportionment, 50 states plus DC/PR/VI/GU/AS/MP each with one at-large
 seat) and `NON_VOTING_TERRITORIES` (which of those keys are a non-voting
