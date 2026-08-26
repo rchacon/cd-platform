@@ -40,10 +40,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # TODO(cd-infra#43): placeholder ARN -- cd-infra must provision
-          # this role (mirroring terraform/cd-server/main.tf's
-          # cd_server_deploy) before the next cd-etl-v* tag is pushed, or
-          # this job will fail after a successful GHCR push.
+          # Provisioned in cd-infra#43 (terraform/airflow-ecs/main.tf's
+          # airflow_deploy role, mirroring cd_server_deploy).
           role-to-assume: arn:aws:iam::658430303091:role/cd-platform-airflow-deploy
           aws-region: us-west-2
 
