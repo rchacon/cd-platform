@@ -11,6 +11,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -35,3 +36,35 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/cd-etl:${{ steps.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/cd-etl:latest
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Provisioned in cd-infra#43 (terraform/airflow-ecs/main.tf's
+          # airflow_deploy role, mirroring cd_server_deploy).
+          role-to-assume: arn:aws:iam::658430303091:role/cd-platform-airflow-deploy
+          aws-region: us-west-2
+
+      - name: Run migration task
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster cd-platform-airflow \
+            --task-definition cd-platform-airflow-migrate \
+            --launch-type EC2 \
+            --query 'tasks[0].taskArn' --output text)
+          aws ecs wait tasks-stopped --cluster cd-platform-airflow --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster cd-platform-airflow --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration task failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+
+      - name: Force-redeploy the 4 ECS services
+        run: |
+          for svc in scheduler triggerer dag-processor api-server; do
+            aws ecs update-service \
+              --cluster cd-platform-airflow \
+              --service "cd-platform-airflow-$svc" \
+              --force-new-deployment
+          done
