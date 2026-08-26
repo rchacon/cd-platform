@@ -80,3 +80,17 @@ def test_source_hash_differs_when_a_field_actually_differs():
     b = db.source_hash("foo", "baz")
 
     assert a != b
+
+
+def test_to_pgvector_literal_formats_as_a_bracketed_comma_separated_list():
+    assert db.to_pgvector_literal([0.1, -0.25, 1.0]) == "[0.10000000,-0.25000000,1.00000000]"
+
+
+def test_to_pgvector_literal_round_trips_through_real_postgres(pg_conn):
+    literal = db.to_pgvector_literal([0.5, -1.5, 3.0])
+
+    with pg_conn.cursor() as cursor:
+        cursor.execute("SELECT %s::vector", (literal,))
+        (result,) = cursor.fetchone()
+
+    assert result == "[0.5,-1.5,3]"

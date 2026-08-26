@@ -91,3 +91,14 @@ def source_hash(*parts: Any) -> str:
         str(part).strip().lower() if part is not None else "" for part in parts
     )
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def to_pgvector_literal(embedding: list[float]) -> str:
+    # Neither writer nor reader in this codebase ever deserializes a
+    # vector column back into a float array (only ever writes one, or
+    # reads back a computed distance) -- a plain string literal bound as
+    # a normal %s param and cast with ::vector in SQL is enough, so
+    # there's no need for the pgvector Python package (and the numpy
+    # dependency it pulls in) just to register a bidirectional adapter
+    # neither service actually needs.
+    return "[" + ",".join(f"{x:.8f}" for x in embedding) + "]"
