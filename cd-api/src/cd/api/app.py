@@ -11,16 +11,26 @@ from mangum import Mangum
 from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from cd.api import bedrock
 from cd.api.apportionment import is_valid_district, max_valid_district
-from cd.api.db import fetch_current_members
+from cd.api.db import (
+    fetch_bills_by_policy_area,
+    fetch_bills_by_similarity,
+    fetch_bills_by_subject,
+    fetch_closest_vocab_term,
+    fetch_current_members,
+    fetch_votes_for_bills,
+    member_exists,
+)
 from cd.api.models import (
     PROBLEM_DETAIL_SCHEMA,
     VALIDATION_PROBLEM_DETAIL_SCHEMA,
     VersionResponse,
 )
 from cd.api.problem import MEDIA_TYPE, problem_response
+from cd.api.search import shape_bill_search_response
 from cd.api.transform import group_representatives
-from cd.lib.models import MembersResponse
+from cd.lib.models import BillSearchResponse, MembersResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,6 +77,18 @@ app = FastAPI(
     description=DESCRIPTION,
     servers=[{"url": PRODUCTION_SERVER_URL, "description": "Production"}],
 )
+
+# Built once at import time (Lambda cold start), same precedent as
+# cd-etl's own bedrock_embeddings._BEDROCK_CLIENT module-level construction
+# in bills_etl.py/house_votes_etl.py.
+_BEDROCK_CLIENT = bedrock.build_bedrock_client()
+
+# A query embedding within this cosine distance of the closest vocab term
+# is treated as a confident tier-1 match (exact policy_area/subject_name
+# lookup); anything farther falls through to tier-2 similarity search
+# over bills.crs_summary_embedding instead. Placeholder -- tune
+# empirically once real query traffic exists.
+VOCAB_MATCH_THRESHOLD = 0.25
 
 
 def _problem_response(description: str, model_name: str) -> dict:
@@ -232,6 +254,78 @@ def get_members(
     if not rows:
         raise HTTPException(status_code=404, detail=f"No data found for state {state.upper()}")
     return group_representatives(rows)
+
+
+@app.get(
+    "/bills/search",
+    response_model=BillSearchResponse,
+    responses={
+        404: _problem_response("Unknown bioguide_id.", "ProblemDetail"),
+        405: _problem_response("HTTP method not allowed for this path.", "ProblemDetail"),
+        422: _problem_response(
+            "Request parameters failed validation.", "ValidationProblemDetail"
+        ),
+        500: _problem_response("An unexpected error occurred.", "ProblemDetail"),
+        503: _problem_response(
+            "Search is temporarily unavailable (embedding generation failed).",
+            "ProblemDetail",
+        ),
+    },
+)
+def get_bills_search(
+    q: str = Query(..., min_length=1, max_length=500, description="Free-text search query."),
+    bioguide_id: str = Query(
+        ..., description="Scopes results to how this specific representative voted."
+    ),
+    limit: int = Query(10, ge=1, le=50),
+) -> dict:
+    """Semantic search over bills, scoped to one representative's votes.
+
+    Matches `q` against a bill's policy area or legislative subjects
+    first (tier 1, exact controlled-vocabulary match against the
+    closest embedding in `vocab_term_embeddings`); any remaining slots
+    up to `limit` are filled by tier-2 cosine-similarity search directly
+    against each bill's own summary embedding. Each returned bill
+    includes every roll call `bioguide_id` cast in their own chamber for
+    it (empty if the bill matched but they never voted on it).
+    """
+    if not member_exists(bioguide_id):
+        raise HTTPException(status_code=404, detail=f"Unknown bioguide_id {bioguide_id}")
+
+    try:
+        query_embedding = bedrock.embed_query(_BEDROCK_CLIENT, q)
+    except Exception as exc:
+        # Unlike cd-etl's degrade-gracefully precedent for a stale
+        # embedding, there's nothing to fall back to here -- the
+        # embedding IS the query. 503 signals retryability more usefully
+        # than the generic 500 catch-all below.
+        logger.exception("Bedrock embed failed for query %r", q)
+        raise HTTPException(
+            status_code=503, detail="Search is temporarily unavailable."
+        ) from exc
+
+    vocab_match = fetch_closest_vocab_term(query_embedding)
+    tier1_bills = []
+    if vocab_match is not None and vocab_match["distance"] <= VOCAB_MATCH_THRESHOLD:
+        fetch = (
+            fetch_bills_by_policy_area
+            if vocab_match["kind"] == "POLICY_AREA"
+            else fetch_bills_by_subject
+        )
+        tier1_bills = fetch(vocab_match["term"], limit)
+
+    remaining = limit - len(tier1_bills)
+    tier2_bills = (
+        fetch_bills_by_similarity(
+            query_embedding, [b["bill_id"] for b in tier1_bills], remaining
+        )
+        if remaining > 0
+        else []
+    )
+
+    all_bills = tier1_bills + tier2_bills
+    votes = fetch_votes_for_bills([b["bill_id"] for b in all_bills], bioguide_id)
+    return shape_bill_search_response(q, bioguide_id, all_bills, votes)
 
 
 # API Gateway's custom-domain base_path_mapping ("v1") is used to select
