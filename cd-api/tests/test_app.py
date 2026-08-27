@@ -733,3 +733,43 @@ def test_get_bills_search_falls_back_to_similarity_when_no_close_vocab_match(
             )
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
         pg_conn.commit()
+
+
+def test_get_bills_search_omits_bills_beyond_the_relevance_floor(monkeypatch, pg_conn):
+    # Regression test for the "always pads out to `limit`" issue found
+    # while manually testing locally: a query with no genuinely related
+    # bill in the corpus should return fewer (here, zero) results, not
+    # backfill with the least-far bill regardless of how unrelated it
+    # actually is.
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    unrelated_term = f"test-unrelated-{uuid.uuid4().hex[:8]}"
+    bill_number = random_number(20000, 29000)
+
+    _insert_member(pg_conn, bioguide_id, "Jill", "Jensen")
+    _insert_vocab_term(pg_conn, "POLICY_AREA", unrelated_term, _vector(0.0, 1.0))
+    # cosine distance from the query embedding below is 1.0 -- well past
+    # app_module.BILL_SIMILARITY_THRESHOLD (0.80).
+    bill_id = _insert_bill(pg_conn, bill_number, embedding=_vector(0.0, 1.0))
+    pg_conn.commit()
+
+    monkeypatch.setattr(
+        app_module.bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
+    )
+
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/bills/search", params={"q": "some free text", "bioguide_id": bioguide_id}
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert bill_number not in {b["bill_number"] for b in body["bills"]}
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
+            cur.execute(
+                "DELETE FROM vocab_term_embeddings WHERE term = %s", (unrelated_term,)
+            )
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()

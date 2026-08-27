@@ -200,7 +200,11 @@ def test_fetch_bills_by_similarity_orders_closest_first(pg_conn):
     pg_conn.commit()
 
     try:
-        results = db.fetch_bills_by_similarity(_vector(1.0, 0.0), exclude_bill_ids=[], limit=10)
+        # max_distance=2.0 (cosine distance's own max) -- this test cares
+        # about ordering, not the relevance-floor filtering covered below.
+        results = db.fetch_bills_by_similarity(
+            _vector(1.0, 0.0), exclude_bill_ids=[], limit=10, max_distance=2.0,
+        )
         result_ids = [row["bill_id"] for row in results]
 
         assert result_ids.index(closest) < result_ids.index(medium) < result_ids.index(farthest)
@@ -219,7 +223,7 @@ def test_fetch_bills_by_similarity_excludes_given_bill_ids(pg_conn):
 
     try:
         results = db.fetch_bills_by_similarity(
-            _vector(1.0, 0.0), exclude_bill_ids=[excluded], limit=10,
+            _vector(1.0, 0.0), exclude_bill_ids=[excluded], limit=10, max_distance=2.0,
         )
         result_ids = {row["bill_id"] for row in results}
 
@@ -236,12 +240,39 @@ def test_fetch_bills_by_similarity_excludes_bills_with_no_embedding(pg_conn):
     pg_conn.commit()
 
     try:
-        results = db.fetch_bills_by_similarity(_vector(1.0, 0.0), exclude_bill_ids=[], limit=1000)
+        results = db.fetch_bills_by_similarity(
+            _vector(1.0, 0.0), exclude_bill_ids=[], limit=1000, max_distance=2.0,
+        )
 
         assert bill_id not in {row["bill_id"] for row in results}
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
+        pg_conn.commit()
+
+
+def test_fetch_bills_by_similarity_excludes_bills_beyond_max_distance(pg_conn):
+    # The relevance floor: a bill farther than max_distance from the
+    # query embedding is excluded entirely, not backfilled in just to
+    # pad the response out to `limit` -- pins the fix for a query with
+    # no genuinely related bill in the corpus otherwise always returning
+    # `limit` results anyway.
+    near = _insert_bill(pg_conn, _bill_number(), embedding=_vector(1.0, 0.0))
+    far = _insert_bill(pg_conn, _bill_number(), embedding=_vector(0.0, 1.0))
+    pg_conn.commit()
+
+    try:
+        # cosine distance(near, query) == 0.0, distance(far, query) == 1.0
+        results = db.fetch_bills_by_similarity(
+            _vector(1.0, 0.0), exclude_bill_ids=[], limit=10, max_distance=0.5,
+        )
+        result_ids = {row["bill_id"] for row in results}
+
+        assert near in result_ids
+        assert far not in result_ids
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM bills WHERE bill_id = ANY(%s)", ([near, far],))
         pg_conn.commit()
 
 

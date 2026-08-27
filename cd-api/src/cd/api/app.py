@@ -90,6 +90,19 @@ _BEDROCK_CLIENT = bedrock.build_bedrock_client()
 # empirically once real query traffic exists.
 VOCAB_MATCH_THRESHOLD = 0.25
 
+# Relevance floor for tier-2 similarity search: a bill farther than this
+# from the query embedding is treated as "not actually about this topic"
+# and excluded, rather than backfilled in just to pad the response out
+# to `limit`. Unlike VOCAB_MATCH_THRESHOLD (a pure guess), this was
+# calibrated against real Titan V2 embeddings of real synced bills:
+# genuinely on-topic matches clustered at ~0.72-0.78 cosine distance
+# across several test queries, while a query with no genuinely related
+# bill in the corpus only produced matches at 0.87+ -- 0.80 sits
+# cleanly in the gap between the two. Still worth re-tuning once real
+# query traffic and a full-size corpus (a few hundred bills, not 61)
+# exist.
+BILL_SIMILARITY_THRESHOLD = 0.80
+
 
 def _problem_response(description: str, model_name: str) -> dict:
     return {
@@ -317,7 +330,8 @@ def get_bills_search(
     remaining = limit - len(tier1_bills)
     tier2_bills = (
         fetch_bills_by_similarity(
-            query_embedding, [b["bill_id"] for b in tier1_bills], remaining
+            query_embedding, [b["bill_id"] for b in tier1_bills], remaining,
+            BILL_SIMILARITY_THRESHOLD,
         )
         if remaining > 0
         else []
