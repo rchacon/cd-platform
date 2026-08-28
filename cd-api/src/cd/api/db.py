@@ -135,13 +135,19 @@ def fetch_bills_by_similarity(
         with conn.cursor() as cur:
             cur.execute(
                 """
+                WITH scored AS (
+                    SELECT bill_id, congress, bill_type, bill_number, title,
+                           policy_area, crs_summary,
+                           crs_summary_embedding <=> %(embedding)s::vector AS distance
+                    FROM bills
+                    WHERE crs_summary_embedding IS NOT NULL
+                      AND NOT (bill_id = ANY(%(exclude_bill_ids)s))
+                )
                 SELECT bill_id, congress, bill_type, bill_number, title,
                        policy_area, crs_summary
-                FROM bills
-                WHERE crs_summary_embedding IS NOT NULL
-                  AND NOT (bill_id = ANY(%(exclude_bill_ids)s))
-                  AND crs_summary_embedding <=> %(embedding)s::vector <= %(max_distance)s
-                ORDER BY crs_summary_embedding <=> %(embedding)s::vector ASC
+                FROM scored
+                WHERE distance <= %(max_distance)s
+                ORDER BY distance ASC
                 LIMIT %(limit)s
                 """,
                 {
