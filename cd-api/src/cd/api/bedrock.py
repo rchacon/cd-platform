@@ -37,6 +37,17 @@ def build_bedrock_client() -> Any:
     # app.py without AWS_REGION set) -- same class of import-time-crash
     # bug as cd-etl's own build_bedrock_client(), which cites
     # rchacon/cd-platform#79 for the same reasoning.
+    #
+    # An empty-but-present AWS_PROFILE must be treated as unset, for the
+    # same reasoning as cd-etl's own fix (e.g. a container environment
+    # that always defines the var, just empty when unset in .env).
+    # Confirmed empirically there that passing profile_name=None to
+    # boto3.Session() does NOT fix this -- botocore's config-provider
+    # chain still reads the raw AWS_PROFILE env var itself regardless of
+    # what profile_name is given. Actually removing the var from the
+    # environment when empty is the only fix that works.
+    if not os.environ.get("AWS_PROFILE"):
+        os.environ.pop("AWS_PROFILE", None)
     return boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 

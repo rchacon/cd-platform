@@ -57,20 +57,23 @@ services:
       CONGRESS_API_KEY: ${CONGRESS_API_KEY}
       # cd-platform#9: bills_common.sync_bill() calls Bedrock (Titan
       # Text Embeddings V2) directly via boto3. Production auth is
-      # IAM/task-role (see cd-infra's airflow-ecs task role), which has
-      # nothing to mount locally -- these three are the closest local
-      # equivalent, sourced from your own AWS credentials via .env (see
-      # .env.sample). Leave AWS_SESSION_TOKEN unset in .env for a
-      # long-lived access key pair; only needed for temporary
-      # credentials (e.g. an SSO session export). A missing/invalid/
-      # under-permissioned set of these doesn't break the DAG -- every
-      # embed call degrades gracefully to "no embedding this sync" (see
-      # bills_common.py), so this stays optional for representative-
-      # lookup-only local dev, same precedent as cd-server's
-      # COGNITO_USER_POOL_ID.
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN}
+      # IAM/task-role (see cd-infra's airflow-ecs task role) -- no
+      # static secret, temporary auto-rotated credentials. AWS_PROFILE
+      # + the ~/.aws mount below is the local equivalent: rather than
+      # granting bedrock:InvokeModel directly to your own long-lived
+      # IAM user, set up a small assumable role (e.g.
+      # cd-platform-local-bedrock-dev) that holds the grant instead, and
+      # a matching profile in ~/.aws/config (role_arn + source_profile)
+      # that assumes it -- boto3 inside the container then does the
+      # AssumeRole call itself and handles refreshing the resulting
+      # temporary credentials, the same way it transparently picks up
+      # ECS task-role credentials in production. See .env.sample for the
+      # profile name. A missing/invalid/under-permissioned setup doesn't
+      # break the DAG -- every embed call degrades gracefully to "no
+      # embedding this sync" (see bills_common.py), so this stays
+      # optional for representative-lookup-only local dev, same
+      # precedent as cd-server's COGNITO_USER_POOL_ID.
+      AWS_PROFILE: ${AWS_PROFILE:-}
       AWS_REGION: ${AWS_REGION:-us-west-2}
       # Zero-friction local-dev default (matches SimpleAuthManager's own
       # former default admin/admin credential) -- override via .env for a
@@ -98,6 +101,15 @@ services:
       # target build above.
       - ./cd-etl/src:/app/src
       - ./cd-etl/tests:/app/tests
+      # Read-only -- lets boto3 inside the container resolve AWS_PROFILE
+      # (see the Bedrock env vars above) against your own host
+      # ~/.aws/config /credentials, including assuming a role via
+      # role_arn/source_profile. Harmless if you never set AWS_PROFILE
+      # (boto3 falls back to its normal credential chain) -- the one
+      # side effect on a machine with no ~/.aws at all is Compose
+      # auto-creating an empty one, since a bind mount's source
+      # directory is created if missing.
+      - ~/.aws:/root/.aws:ro
       # Named volume so Airflow's own logs (and anything else under
       # AIRFLOW_HOME not living in Postgres) persist across restarts.
       - cd_etl_airflow_home:/app/.airflow

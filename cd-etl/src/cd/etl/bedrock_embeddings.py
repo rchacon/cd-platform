@@ -44,6 +44,20 @@ def build_bedrock_client() -> Any:
     # is never given that credential) -- dag-processor doesn't need a
     # real Bedrock call to succeed, just to be able to import this module
     # at all.
+    #
+    # An empty-but-present AWS_PROFILE must be treated as unset, for the
+    # same import-time-crash reason: docker-compose.yml's
+    # AWS_PROFILE: ${AWS_PROFILE:-} always defines the env var inside
+    # the container, just empty when unset in .env. Confirmed
+    # empirically that passing profile_name=None to boto3.Session()
+    # does NOT fix this on its own -- botocore's config-provider chain
+    # still reads the raw AWS_PROFILE env var itself regardless of what
+    # profile_name is given, so an empty string there still raises
+    # ProfileNotFound immediately (this crashed CI, which has no .env
+    # at all). Actually removing the var from the environment when
+    # empty is the only fix that works.
+    if not os.environ.get("AWS_PROFILE"):
+        os.environ.pop("AWS_PROFILE", None)
     return boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 
