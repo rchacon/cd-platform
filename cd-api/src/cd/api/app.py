@@ -297,10 +297,14 @@ def get_bills_search(
     Matches `q` against a bill's policy area or legislative subjects
     first (tier 1, exact controlled-vocabulary match against the
     closest embedding in `vocab_term_embeddings`); any remaining slots
-    up to `limit` are filled by tier-2 cosine-similarity search directly
-    against each bill's own summary embedding. Each returned bill
-    includes every roll call `bioguide_id` cast in their own chamber for
-    it (empty if the bill matched but they never voted on it).
+    up to `limit` are then considered for tier-2 cosine-similarity
+    search directly against each bill's own summary embedding, subject
+    to `BILL_SIMILARITY_THRESHOLD` -- a bill farther than that from `q`
+    is excluded rather than backfilled in, so this can return fewer
+    than `limit` (even zero) bills when nothing in the corpus is
+    genuinely close enough. Each returned bill includes every roll call
+    `bioguide_id` cast in their own chamber for it (empty if the bill
+    matched but they never voted on it).
     """
     if not member_exists(bioguide_id):
         raise HTTPException(status_code=404, detail=f"Unknown bioguide_id {bioguide_id}")
