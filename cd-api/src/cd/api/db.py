@@ -122,25 +122,39 @@ def fetch_bills_by_subject(term: str, limit: int) -> list[dict]:
 
 
 def fetch_bills_by_similarity(
-    embedding: list[float], exclude_bill_ids: list[int], limit: int
+    embedding: list[float], exclude_bill_ids: list[int], limit: int, max_distance: float
 ) -> list[dict]:
+    # max_distance is a relevance floor -- without it this always pads
+    # out to `limit` with whatever's *least* far, even when nothing in
+    # the corpus is genuinely related to the query (confirmed empirically:
+    # a query with no genuine match in a small local corpus still
+    # returned `limit` bills, all filler). Filtered in SQL rather than
+    # in Python so an empty result short-circuits the query itself.
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
+                WITH scored AS (
+                    SELECT bill_id, congress, bill_type, bill_number, title,
+                           policy_area, crs_summary,
+                           crs_summary_embedding <=> %(embedding)s::vector AS distance
+                    FROM bills
+                    WHERE crs_summary_embedding IS NOT NULL
+                      AND NOT (bill_id = ANY(%(exclude_bill_ids)s))
+                )
                 SELECT bill_id, congress, bill_type, bill_number, title,
                        policy_area, crs_summary
-                FROM bills
-                WHERE crs_summary_embedding IS NOT NULL
-                  AND NOT (bill_id = ANY(%(exclude_bill_ids)s))
-                ORDER BY crs_summary_embedding <=> %(embedding)s::vector ASC
+                FROM scored
+                WHERE distance <= %(max_distance)s
+                ORDER BY distance ASC
                 LIMIT %(limit)s
                 """,
                 {
                     "embedding": _to_pgvector_literal(embedding),
                     "exclude_bill_ids": exclude_bill_ids,
                     "limit": limit,
+                    "max_distance": max_distance,
                 },
             )
             return list(cur.fetchall())
