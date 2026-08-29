@@ -31,8 +31,10 @@ roll_calls.bill_id / bill_subjects.bill_id keep their narrow single-column
 foreign keys -- surrogate PK plus natural unique key, the same trade 0002 made
 in choosing a surrogate bill_id over the 3-column composite. This just adds a
 second, externally meaningful unique handle alongside it. bill_key uniqueness
-already follows from bills_unique_bill (the lowering is 1:1); the index below
-is belt-and-braces and gives cd-api a single-column key to look bills up by.
+already follows from bills_unique_bill (the lowering is 1:1); the explicit
+constraint below -- named for 0002's own bills_unique_* constraints, not the
+Postgres-default <table>_<column>_key an index would collide with later --
+states it directly and gives cd-api a single-column key to look bills up by.
 """
 from typing import Sequence, Union
 
@@ -64,9 +66,9 @@ def upgrade() -> None:
         ) STORED NOT NULL
         """
     )
-    op.execute("CREATE UNIQUE INDEX bills_bill_key_key ON bills (bill_key)")
+    op.execute("ALTER TABLE bills ADD CONSTRAINT bills_unique_bill_key UNIQUE (bill_key)")
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX bills_bill_key_key")
+    op.execute("ALTER TABLE bills DROP CONSTRAINT bills_unique_bill_key")
     op.execute("ALTER TABLE bills DROP COLUMN bill_key")

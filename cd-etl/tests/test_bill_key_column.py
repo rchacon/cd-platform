@@ -77,13 +77,13 @@ def test_bill_key_is_not_null(pg_conn):
     assert row[0] is True, "bill_key should be NOT NULL (backstop for a missing CASE arm)"
 
 
-def test_bill_key_has_a_unique_index(pg_conn):
+def test_bill_key_has_a_unique_constraint(pg_conn):
     with pg_conn.cursor() as cursor:
         cursor.execute(
-            "SELECT indexdef FROM pg_indexes WHERE indexname = 'bills_bill_key_key'"
+            "SELECT contype FROM pg_constraint "
+            "WHERE conrelid = 'bills'::regclass AND conname = 'bills_unique_bill_key'"
         )
         row = cursor.fetchone()
 
-    assert row is not None, "migration 0006 should create bills_bill_key_key"
-    assert "UNIQUE" in row[0]
-    assert "(bill_key)" in row[0]
+    assert row is not None, "migration 0006 should add the bills_unique_bill_key constraint"
+    assert row[0] == "u", "bills_unique_bill_key should be a UNIQUE constraint"
