@@ -17,6 +17,7 @@ import os
 from typing import Any
 
 import boto3
+from botocore.config import Config
 
 TITAN_EMBED_MODEL_ID = "amazon.titan-embed-text-v2:0"
 
@@ -48,7 +49,45 @@ def build_bedrock_client() -> Any:
     # environment when empty is the only fix that works.
     if not os.environ.get("AWS_PROFILE"):
         os.environ.pop("AWS_PROFILE", None)
-    return boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+
+    # botocore's own defaults are a 60s connect timeout and a 60s read
+    # timeout, both longer than the cd-platform-cd-api Lambda's own 25s
+    # function timeout. So when the network path to Bedrock is broken --
+    # e.g. the Lambda's security group is missing an egress rule for 443,
+    # which is exactly how GET /bills/search first shipped -- invoke_model()
+    # hangs past the Lambda timeout and the whole sandbox is killed
+    # mid-call. That surfaces to the caller as an uncatchable 500 (API
+    # Gateway's own), never reaching app.py's try/except around
+    # embed_query() that would otherwise turn a Bedrock failure into a
+    # clean, retryable 503.
+    #
+    # The numbers are chosen so the *whole* call -- every retry, both
+    # phases -- stays inside the 25s function budget with room left for
+    # the handler's own DB round trips, keeping that failure mode
+    # catchable rather than just moving the cliff. total_max_attempts is
+    # max_attempts + 1 == 2, and a single attempt's worst case is
+    # connect_timeout + read_timeout == 10s, so the absolute ceiling is
+    # ~21s (2 * 10s + one standard-mode backoff). A healthy embed of a
+    # <=500-char query returns in well under 1s, so 5s read is already
+    # generous; 5s connect is the conventional AWS-SDK floor and tolerates
+    # a cold VPC Lambda's first TLS-through-NAT handshake. One retry, not
+    # more, is what keeps the ceiling under budget -- more real headroom
+    # needs the Lambda's own timeout/memory raised (cd-infra#58).
+    #
+    # Built fresh per call, not a module-level constant -- botocore
+    # mutates config.retries in place when the client is created (it
+    # replaces max_attempts with total_max_attempts), so a shared Config
+    # instance is a footgun.
+    config = Config(
+        connect_timeout=5,
+        read_timeout=5,
+        retries={"max_attempts": 1, "mode": "standard"},
+    )
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=os.environ.get("AWS_REGION", "us-west-2"),
+        config=config,
+    )
 
 
 def embed_query(client: Any, text: str) -> list[float]:

@@ -63,6 +63,43 @@ def test_build_bedrock_client_targets_bedrock_runtime(monkeypatch):
     assert "region_name" in kwargs  # falls back to a default -- must never raise NoRegionError
 
 
+def test_build_bedrock_client_sets_explicit_short_timeouts(monkeypatch):
+    # Without these, botocore's 60s connect/read defaults outlast the
+    # Lambda's own 25s timeout, so a broken network path to Bedrock (e.g.
+    # a missing SG egress rule for 443) hangs the whole invocation into an
+    # uncatchable 500 instead of an exception app.py can turn into a 503.
+    # The values matter: total_max_attempts (max_attempts + 1) times a
+    # single attempt's connect + read worst case must stay under the 25s
+    # function budget -- 2 * (5 + 5) here, ~21s with backoff.
+    calls = []
+    monkeypatch.setattr(
+        bedrock.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    bedrock.build_bedrock_client()
+
+    config = calls[0][1]["config"]
+    assert config.connect_timeout == 5
+    assert config.read_timeout == 5
+    assert config.retries["max_attempts"] == 1
+
+
+def test_build_bedrock_client_passes_a_fresh_config_object_each_call(monkeypatch):
+    # botocore mutates the supplied config.retries in place at client
+    # construction (max_attempts -> total_max_attempts), so build_bedrock_client
+    # must hand out a new Config every call. A module-level constant would
+    # make configs[0] is configs[1] and fail this.
+    configs = []
+    monkeypatch.setattr(
+        bedrock.boto3, "client", lambda *args, **kwargs: configs.append(kwargs["config"]),
+    )
+
+    bedrock.build_bedrock_client()
+    bedrock.build_bedrock_client()
+
+    assert configs[0] is not configs[1]
+
+
 def test_build_bedrock_client_respects_aws_region_env_var(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
     calls = []
