@@ -23,6 +23,7 @@ def shape_bill_search_response(
         "bioguide_id": bioguide_id,
         "bills": [
             {
+                "id": row["bill_key"],
                 "congress": row["congress"],
                 "bill_type": row["bill_type"],
                 "bill_number": row["bill_number"],

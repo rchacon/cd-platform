@@ -6,6 +6,7 @@ from cd.api.search import shape_bill_search_response
 def _bill_row(**overrides) -> dict:
     row = {
         "bill_id": 1,
+        "bill_key": "119-hr-144",
         "congress": 119,
         "bill_type": "HR",
         "bill_number": 144,
@@ -41,6 +42,7 @@ def test_shape_bill_search_response_bill_fields_pass_through():
     result = shape_bill_search_response("dreamers", "C000127", [_bill_row()], [])
 
     bill = result["bills"][0]
+    assert bill["id"] == "119-hr-144"
     assert bill["congress"] == 119
     assert bill["bill_type"] == "HR"
     assert bill["bill_number"] == 144

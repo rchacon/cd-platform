@@ -572,7 +572,7 @@ def test_openapi_bills_search_response_documents_bill_and_vote_fields():
     assert "BillSearchResponse" in schemas
     assert set(schemas["BillSearchResponse"]["properties"]) == {"query", "bioguide_id", "bills"}
     assert set(schemas["Bill"]["properties"]) == {
-        "congress", "bill_type", "bill_number", "title", "policy_area",
+        "id", "congress", "bill_type", "bill_number", "title", "policy_area",
         "crs_summary", "votes",
     }
     assert set(schemas["BillVote"]["properties"]) == {
@@ -684,6 +684,7 @@ def test_get_bills_search_tier1_vocab_match_includes_the_members_vote(monkeypatc
         assert body["query"] == "some free text"
         assert body["bioguide_id"] == bioguide_id
         matched = next(b for b in body["bills"] if b["bill_number"] == bill_number)
+        assert matched["id"] == f"119-hr-{bill_number}"
         assert matched["policy_area"] == term
         assert len(matched["votes"]) == 1
         assert matched["votes"][0]["vote_cast"] == "YEA"
