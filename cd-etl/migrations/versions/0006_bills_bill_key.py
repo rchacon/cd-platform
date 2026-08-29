@@ -7,7 +7,7 @@ Create Date: 2026-08-29 00:00:00.000000
 A stable string form of the (congress, bill_type, bill_number) natural key --
 "<congress>-<bill_type lowercased>-<bill_number>", e.g. "119-hr-2616",
 "119-sjres-14" -- for cd-api's GET /bills/search and (later) GET
-/members/{bioguide_id}/voting-record responses to expose as each bill's `id`:
+/members/{bioguide_id}/votes responses to expose as each bill's `id`:
 the opaque handle a client reads from one response and passes back verbatim
 in the next (rchacon/cd-platform#104).
 
@@ -20,9 +20,11 @@ The bill_type piece is a spelled-out CASE rather than lower(bill_type::text):
 casting an ENUM to text is only STABLE, not IMMUTABLE (labels are renamable
 via ALTER TYPE), and a GENERATED expression must be immutable. The CASE covers
 every value of the bill_type enum from 0002 -- itself described there as "a
-small, constitutionally fixed taxonomy", so it isn't expected to grow; if a
-value is ever added, add its arm here too (an unlisted value would make the
-whole bill_key NULL for that row).
+small, constitutionally fixed taxonomy", so it isn't expected to grow. The
+column is NOT NULL as a backstop: a value added to the enum without a matching
+CASE arm makes the CASE (and so bill_key) NULL, and the NOT NULL turns that
+into a loud write-time failure rather than a silently unaddressable row (a
+plain unique index tolerates unlimited NULLs).
 
 Deliberately NOT the primary key. bills.bill_id (BIGSERIAL) stays the PK and
 roll_calls.bill_id / bill_subjects.bill_id keep their narrow single-column
@@ -59,7 +61,7 @@ def upgrade() -> None:
                 WHEN 'HRES'    THEN 'hres'
                 WHEN 'SRES'    THEN 'sres'
             END || '-' || bill_number::text
-        ) STORED
+        ) STORED NOT NULL
         """
     )
     op.execute("CREATE UNIQUE INDEX bills_bill_key_key ON bills (bill_key)")

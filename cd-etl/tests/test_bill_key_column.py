@@ -65,6 +65,18 @@ def test_bill_key_is_generated_not_writable(pg_conn, cleanup_bills):
     pg_conn.rollback()
 
 
+def test_bill_key_is_not_null(pg_conn):
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT attnotnull FROM pg_attribute "
+            "WHERE attrelid = 'bills'::regclass AND attname = 'bill_key'"
+        )
+        row = cursor.fetchone()
+
+    assert row is not None, "bills.bill_key should exist"
+    assert row[0] is True, "bill_key should be NOT NULL (backstop for a missing CASE arm)"
+
+
 def test_bill_key_has_a_unique_index(pg_conn):
     with pg_conn.cursor() as cursor:
         cursor.execute(
