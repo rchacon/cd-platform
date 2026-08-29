@@ -65,9 +65,12 @@ def test_build_bedrock_client_targets_bedrock_runtime(monkeypatch):
 
 def test_build_bedrock_client_sets_explicit_short_timeouts(monkeypatch):
     # Without these, botocore's 60s connect/read defaults outlast the
-    # Lambda's own timeout, so a broken network path to Bedrock (e.g. a
-    # missing SG egress rule for 443) hangs the whole invocation into an
+    # Lambda's own 25s timeout, so a broken network path to Bedrock (e.g.
+    # a missing SG egress rule for 443) hangs the whole invocation into an
     # uncatchable 500 instead of an exception app.py can turn into a 503.
+    # The values matter: total_max_attempts (max_attempts + 1) times a
+    # single attempt's connect + read worst case must stay under the 25s
+    # function budget -- 2 * (5 + 5) here, ~21s with backoff.
     calls = []
     monkeypatch.setattr(
         bedrock.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
@@ -76,9 +79,9 @@ def test_build_bedrock_client_sets_explicit_short_timeouts(monkeypatch):
     bedrock.build_bedrock_client()
 
     config = calls[0][1]["config"]
-    assert config.connect_timeout == 3
-    assert config.read_timeout == 10
-    assert config.retries["max_attempts"] == 2
+    assert config.connect_timeout == 5
+    assert config.read_timeout == 5
+    assert config.retries["max_attempts"] == 1
 
 
 def test_build_bedrock_client_respects_aws_region_env_var(monkeypatch):
