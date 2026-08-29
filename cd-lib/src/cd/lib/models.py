@@ -58,6 +58,15 @@ class BillVote(BaseModel):
 class Bill(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    id: str = Field(
+        description=(
+            'Canonical bill id -- "<congress>-<bill_type lowercased>-'
+            '<bill_number>", e.g. "119-hr-2616". A stable handle a caller '
+            "reads here and passes back verbatim to a later request "
+            "(e.g. GET /members/{bioguide_id}/votes); sourced from the "
+            "bills.bill_key generated column, not the internal bill_id."
+        )
+    )
     congress: int
     bill_type: str
     bill_number: int

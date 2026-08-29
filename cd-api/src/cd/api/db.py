@@ -88,7 +88,7 @@ def fetch_bills_by_policy_area(term: str, limit: int) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT bill_id, congress, bill_type, bill_number, title,
+                SELECT bill_id, bill_key, congress, bill_type, bill_number, title,
                        policy_area, crs_summary
                 FROM bills
                 WHERE policy_area = %(term)s
@@ -107,7 +107,7 @@ def fetch_bills_by_subject(term: str, limit: int) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT b.bill_id, b.congress, b.bill_type, b.bill_number, b.title,
+                SELECT b.bill_id, b.bill_key, b.congress, b.bill_type, b.bill_number, b.title,
                        b.policy_area, b.crs_summary
                 FROM bills b
                 JOIN bill_subjects s ON s.bill_id = b.bill_id
@@ -136,14 +136,14 @@ def fetch_bills_by_similarity(
             cur.execute(
                 """
                 WITH scored AS (
-                    SELECT bill_id, congress, bill_type, bill_number, title,
+                    SELECT bill_id, bill_key, congress, bill_type, bill_number, title,
                            policy_area, crs_summary,
                            crs_summary_embedding <=> %(embedding)s::vector AS distance
                     FROM bills
                     WHERE crs_summary_embedding IS NOT NULL
                       AND NOT (bill_id = ANY(%(exclude_bill_ids)s))
                 )
-                SELECT bill_id, congress, bill_type, bill_number, title,
+                SELECT bill_id, bill_key, congress, bill_type, bill_number, title,
                        policy_area, crs_summary
                 FROM scored
                 WHERE distance <= %(max_distance)s

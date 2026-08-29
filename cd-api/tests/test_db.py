@@ -149,13 +149,15 @@ def test_fetch_closest_vocab_term_returns_the_nearest_match(pg_conn):
 
 
 def test_fetch_bills_by_policy_area_matches_exact_term(pg_conn):
-    bill_id = _insert_bill(pg_conn, _bill_number(), policy_area="Immigration")
+    bill_number = _bill_number()
+    bill_id = _insert_bill(pg_conn, bill_number, policy_area="Immigration")
     pg_conn.commit()
 
     try:
         results = db.fetch_bills_by_policy_area("Immigration", limit=10)
 
-        assert bill_id in {row["bill_id"] for row in results}
+        matched = next(row for row in results if row["bill_id"] == bill_id)
+        assert matched["bill_key"] == f"119-hr-{bill_number}"
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
