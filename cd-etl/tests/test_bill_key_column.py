@@ -1,0 +1,77 @@
+import pytest
+
+from cd.etl import bills_common
+from conftest import random_number
+
+# 119th Congress is seeded by migration 0001, so these don't need their
+# own congresses row. pg_conn lives in conftest.py.
+CONGRESS = 119
+
+
+@pytest.fixture
+def cleanup_bills(pg_conn):
+    numbers = []
+    yield numbers
+    with pg_conn.cursor() as cursor:
+        for bill_number in numbers:
+            cursor.execute(
+                "DELETE FROM bills WHERE congress = %s AND bill_number = %s",
+                (CONGRESS, bill_number),
+            )
+    pg_conn.commit()
+
+
+def _insert_bill(pg_conn, bill_type: str, bill_number: int) -> None:
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            bills_common.BILLS_UPSERT_SQL,
+            (CONGRESS, bill_type, bill_number, "Test Bill Title", "Health", None, "hash-bill", None),
+        )
+    pg_conn.commit()
+
+
+def _bill_key(pg_conn, bill_type: str, bill_number: int) -> str:
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT bill_key FROM bills WHERE congress = %s AND bill_type = %s AND bill_number = %s",
+            (CONGRESS, bill_type, bill_number),
+        )
+        return cursor.fetchone()[0]
+
+
+@pytest.mark.parametrize(
+    "bill_type, expected_slug",
+    [("HR", "hr"), ("S", "s"), ("SJRES", "sjres"), ("HCONRES", "hconres")],
+)
+def test_bill_key_is_congress_lowertype_number(pg_conn, cleanup_bills, bill_type, expected_slug):
+    bill_number = random_number(20000, 29000)
+    cleanup_bills.append(bill_number)
+
+    _insert_bill(pg_conn, bill_type, bill_number)
+
+    assert _bill_key(pg_conn, bill_type, bill_number) == f"{CONGRESS}-{expected_slug}-{bill_number}"
+
+
+def test_bill_key_is_generated_not_writable(pg_conn, cleanup_bills):
+    bill_number = random_number(20000, 29000)
+    cleanup_bills.append(bill_number)
+    _insert_bill(pg_conn, "HR", bill_number)
+
+    with pg_conn.cursor() as cursor, pytest.raises(Exception):
+        cursor.execute(
+            "UPDATE bills SET bill_key = %s WHERE congress = %s AND bill_type = 'HR' AND bill_number = %s",
+            ("119-hr-9999", CONGRESS, bill_number),
+        )
+    pg_conn.rollback()
+
+
+def test_bill_key_has_a_unique_index(pg_conn):
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'bills_bill_key_key'"
+        )
+        row = cursor.fetchone()
+
+    assert row is not None, "migration 0006 should create bills_bill_key_key"
+    assert "UNIQUE" in row[0]
+    assert "(bill_key)" in row[0]
