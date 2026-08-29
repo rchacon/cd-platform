@@ -84,6 +84,22 @@ def test_build_bedrock_client_sets_explicit_short_timeouts(monkeypatch):
     assert config.retries["max_attempts"] == 1
 
 
+def test_build_bedrock_client_passes_a_fresh_config_object_each_call(monkeypatch):
+    # botocore mutates the supplied config.retries in place at client
+    # construction (max_attempts -> total_max_attempts), so build_bedrock_client
+    # must hand out a new Config every call. A module-level constant would
+    # make configs[0] is configs[1] and fail this.
+    configs = []
+    monkeypatch.setattr(
+        bedrock.boto3, "client", lambda *args, **kwargs: configs.append(kwargs["config"]),
+    )
+
+    bedrock.build_bedrock_client()
+    bedrock.build_bedrock_client()
+
+    assert configs[0] is not configs[1]
+
+
 def test_build_bedrock_client_respects_aws_region_env_var(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
     calls = []
