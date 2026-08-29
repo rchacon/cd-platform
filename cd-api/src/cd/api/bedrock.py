@@ -17,6 +17,7 @@ import os
 from typing import Any
 
 import boto3
+from botocore.config import Config
 
 TITAN_EMBED_MODEL_ID = "amazon.titan-embed-text-v2:0"
 
@@ -48,7 +49,32 @@ def build_bedrock_client() -> Any:
     # environment when empty is the only fix that works.
     if not os.environ.get("AWS_PROFILE"):
         os.environ.pop("AWS_PROFILE", None)
-    return boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+
+    # botocore's own defaults are a 60s connect timeout and a 60s read
+    # timeout, both longer than the cd-platform-cd-api Lambda's own
+    # function timeout. So when the network path to Bedrock is broken --
+    # e.g. the Lambda's security group is missing an egress rule for 443,
+    # which is exactly how GET /bills/search first shipped -- invoke_model()
+    # hangs past the Lambda timeout and the whole sandbox is killed
+    # mid-call. That surfaces to the caller as an uncatchable 500 (API
+    # Gateway's own), never reaching app.py's try/except around
+    # embed_query() that would otherwise turn a Bedrock failure into a
+    # clean, retryable 503. Short, explicit timeouts keep that failure
+    # mode catchable: a blocked or slow path fails in a few seconds with
+    # an exception the handler can actually see. Built fresh per call, not
+    # a module-level constant -- botocore mutates config.retries in place
+    # when the client is created (it replaces max_attempts with
+    # total_max_attempts), so a shared Config instance is a footgun.
+    config = Config(
+        connect_timeout=3,
+        read_timeout=10,
+        retries={"max_attempts": 2, "mode": "standard"},
+    )
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=os.environ.get("AWS_REGION", "us-west-2"),
+        config=config,
+    )
 
 
 def embed_query(client: Any, text: str) -> list[float]:
