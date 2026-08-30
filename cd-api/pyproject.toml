@@ -4,7 +4,10 @@ version = "0.3.4"
 description = "REST API for cd-lookup, backed by current_members"
 requires-python = ">=3.12"
 dependencies = [
-    "boto3>=1.35.0",
+    # botocore.config.Config in routes/bills.py -- the only direct
+    # boto import cd-api has since the Bedrock client moved to cd-lib
+    # (which pulls in boto3 for us).
+    "botocore>=1.35.0",
     "cd-lib",
     "fastapi>=0.115.0",
     "mangum>=0.19.0",
