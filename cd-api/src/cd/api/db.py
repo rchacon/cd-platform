@@ -43,6 +43,22 @@ def fetch_current_members(state: str, district: int | None) -> list[dict]:
         conn.close()
 
 
+def fetch_member(bioguide_id: str) -> dict | None:
+    # current_members is already scoped to the current Congress and to
+    # not-yet-departed terms, so an id that isn't a sitting member simply
+    # matches no row -> the route turns that into a 404.
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM current_members WHERE bioguide_id = %(bioguide_id)s",
+                {"bioguide_id": bioguide_id},
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def _to_pgvector_literal(embedding: list[float]) -> str:
     # Bound as a plain string %s param and cast with ::vector in SQL --
     # no query here ever needs the pgvector Python package (and the

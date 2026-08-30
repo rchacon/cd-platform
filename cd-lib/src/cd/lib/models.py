@@ -46,6 +46,19 @@ class MembersResponse(BaseModel):
     representatives: list[Member]
 
 
+class MemberDetail(Member):
+    # A superset of Member for GET /members/{bioguide_id}: that endpoint
+    # can afford to carry `state` (a single member, not a list already
+    # scoped to one state). Kept separate from Member rather than adding
+    # a nullable `state` there, so GET /members' shape -- and every
+    # consumer validating it against Member -- is untouched.
+    model_config = ConfigDict(extra="forbid")
+
+    state: str = Field(
+        description="2-letter USPS state/territory code for this member's seat."
+    )
+
+
 class BillVote(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
