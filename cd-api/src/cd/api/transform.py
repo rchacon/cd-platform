@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 
-def _person(row: dict[str, Any]) -> dict[str, Any]:
+def person(row: dict[str, Any]) -> dict[str, Any]:
+    # The Member shape shared by GET /members (grouped by chamber, below)
+    # and GET /members/{bioguide_id} (which adds `state` on top).
     return {
         "bioguide_id": row["bioguide_id"],
         "first_name": row.get("given_name"),
@@ -26,6 +28,6 @@ def _person(row: dict[str, Any]) -> dict[str, Any]:
 
 def group_representatives(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     return {
-        "senators": [_person(row) for row in rows if row["chamber"] == "SENATE"],
-        "representatives": [_person(row) for row in rows if row["chamber"] == "HOUSE"],
+        "senators": [person(row) for row in rows if row["chamber"] == "SENATE"],
+        "representatives": [person(row) for row in rows if row["chamber"] == "HOUSE"],
     }

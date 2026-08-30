@@ -103,3 +103,9 @@ def test_group_representatives_splits_by_chamber():
 def test_group_representatives_empty_house_rows():
     result = group_representatives([_row(chamber="SENATE")])
     assert result["representatives"] == []
+
+
+def test_person_does_not_carry_state():
+    # `state` is a GET /members/{bioguide_id} (MemberDetail) addition,
+    # layered on in the route -- the shared shape stays as GET /members has it.
+    assert "state" not in group_representatives([_row()])["senators"][0]

@@ -330,6 +330,8 @@ def test_get_members_returns_senators_and_representative(seeded_state):
     assert body["representatives"][0]["bioguide_id"] == seeded_state["rep"]
     assert body["senators"][0]["district"] is None
     assert body["representatives"][0]["district"] == DISTRICT
+    # GET /members' shape is unchanged by the by-id endpoint's MemberDetail.
+    assert "state" not in body["representatives"][0]
 
 
 def test_get_members_returns_member_type_as_role_for_delegate(pg_conn):
@@ -505,6 +507,46 @@ def test_get_members_valid_but_vacant_district_still_returns_200(pg_conn):
                 ([senator_a, senator_b],),
             )
         pg_conn.commit()
+
+
+def test_get_member_by_id_returns_the_member_with_state(seeded_state):
+    client = TestClient(app)
+    response = client.get(f"/members/{seeded_state['rep']}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bioguide_id"] == seeded_state["rep"]
+    assert body["last_name"] == "Clark"
+    assert body["role"] == "Representative"
+    assert body["district"] == DISTRICT
+    assert body["state"] == STATE
+
+
+def test_get_member_by_id_unknown_bioguide_id_returns_404(pg_conn):
+    client = TestClient(app)
+    response = client.get("/members/NOTAREALID99")
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.json()["status"] == 404
+
+
+def test_openapi_member_by_id_route_is_documented():
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    responses = schema["paths"]["/members/{bioguide_id}"]["get"]["responses"]
+    assert "200" in responses
+    for status in ("404", "405", "422", "500"):
+        assert list(responses[status]["content"]) == ["application/problem+json"]
+
+    detail = schema["components"]["schemas"]["MemberDetail"]
+    assert "state" in detail["required"]
+    assert set(detail["properties"]) == {
+        "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
+        "suffix", "role", "party", "phone", "website", "photo_url", "district",
+        "state",
+    }
 
 
 def _vector(*first_values: float, dimensions: int = 1024) -> list[float]:

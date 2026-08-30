@@ -19,6 +19,7 @@ from cd.api.db import (
     fetch_bills_by_subject,
     fetch_closest_vocab_term,
     fetch_current_members,
+    fetch_member,
     fetch_votes_for_bills,
     member_exists,
 )
@@ -29,8 +30,8 @@ from cd.api.models import (
 )
 from cd.api.problem import MEDIA_TYPE, problem_response
 from cd.api.search import shape_bill_search_response
-from cd.api.transform import group_representatives
-from cd.lib.models import BillSearchResponse, MembersResponse
+from cd.api.transform import group_representatives, person
+from cd.lib.models import BillSearchResponse, MemberDetail, MembersResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -267,6 +268,38 @@ def get_members(
     if not rows:
         raise HTTPException(status_code=404, detail=f"No data found for state {state.upper()}")
     return group_representatives(rows)
+
+
+@app.get(
+    "/members/{bioguide_id}",
+    response_model=MemberDetail,
+    responses={
+        404: _problem_response(
+            "No current member has this bioguide_id.", "ProblemDetail"
+        ),
+        405: _problem_response("HTTP method not allowed for this path.", "ProblemDetail"),
+        # No path-param constraints make a 422 practically unreachable, but
+        # declaring it keeps FastAPI from auto-generating its own
+        # HTTPValidationError-shaped one (see the other routes).
+        422: _problem_response(
+            "Request parameters failed validation.", "ValidationProblemDetail"
+        ),
+        500: _problem_response("An unexpected error occurred.", "ProblemDetail"),
+    },
+)
+def get_member(bioguide_id: str) -> dict:
+    """Look up a single current member by their Congress.gov bioguide id.
+
+    `404` for an id that isn't a member of the *current* Congress --
+    former members (resigned, defeated, deceased) aren't retained. Carries
+    `state` on top of the `GET /members` shape.
+    """
+    row = fetch_member(bioguide_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail=f"No current member with bioguide_id {bioguide_id}"
+        )
+    return {**person(row), "state": row["state"]}
 
 
 @app.get(

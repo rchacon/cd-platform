@@ -35,6 +35,20 @@ def _insert_member(pg_conn, bioguide_id: str) -> None:
         )
 
 
+def _insert_term(pg_conn, bioguide_id: str, state: str = "ZZ") -> None:
+    # A current-Congress HOUSE term, so the row shows up in current_members.
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO member_terms (
+                bioguide_id, congress, chamber, member_type, state, district,
+                start_year, source_hash
+            ) VALUES (%s, 119, 'HOUSE', 'Representative', %s, 7, 2023, %s)
+            """,
+            (bioguide_id, state, f"hash-term-{bioguide_id}"),
+        )
+
+
 def _insert_bill(
     pg_conn,
     bill_number: int,
@@ -124,6 +138,42 @@ def test_member_exists_true_for_a_real_bioguide_id(pg_conn):
 
 def test_member_exists_false_for_an_unknown_bioguide_id():
     assert db.member_exists("NOTAREALID99") is False
+
+
+def test_fetch_member_returns_the_current_members_row(pg_conn):
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id)
+    _insert_term(pg_conn, bioguide_id, state="GA")
+    pg_conn.commit()
+
+    try:
+        row = db.fetch_member(bioguide_id)
+        assert row is not None
+        assert row["bioguide_id"] == bioguide_id
+        assert row["state"] == "GA"
+        assert row["member_type"] == "Representative"
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
+
+
+def test_fetch_member_returns_none_for_a_member_with_no_current_term(pg_conn):
+    # In `members` but not `current_members` -- a former member.
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id)
+    pg_conn.commit()
+
+    try:
+        assert db.fetch_member(bioguide_id) is None
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
+
+
+def test_fetch_member_returns_none_for_an_unknown_bioguide_id():
+    assert db.fetch_member("NOTAREALID99") is None
 
 
 def test_fetch_closest_vocab_term_returns_the_nearest_match(pg_conn):
