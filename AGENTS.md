@@ -102,21 +102,24 @@ itself built them from (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
 `ValidationProblemDetail` deliberately stayed in `cd-api/src/cd/api/models.py`,
 since `cd-server` never touches them -- `cd-lib` is for code that's
 actually shared, not a dumping ground for every model cd-api happens to
-have; see `cd-lib/README.md`), and `apportionment.py`'s
+have; see `cd-lib/README.md`), `bedrock.py`'s `build_bedrock_client()`/
+`embed()` (Titan Text Embeddings V2 -- shared by `cd-api`'s
+`GET /bills/search` and `cd-etl`'s `bills_common.sync_bill`; the move is
+what first made `cd-etl` depend on `cd-lib`), and `apportionment.py`'s
 `SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` -- only the data lives in
 `cd-lib` now; cd-api's `max_valid_district`/`is_valid_district`
 validation built on that table sits in
 `cd-api/src/cd/api/routes/members.py` (its only caller -- a future
 `validation/` package if more request-validation accrues). `cd-server`'s
 `getStates` needed the same seat counts/voting status cd-api already
-validates `district` against, hence the data move. `cd-etl` doesn't
-depend on `cd-lib` yet.
+validates `district` against, hence the data move. All three services --
+`cd-api`, `cd-etl`, `cd-server` -- now depend on `cd-lib`.
 Whether to use `editable = true` on the
 `[tool.uv.sources]` entry is a real, load-bearing choice, not a style
-preference: `cd-server` uses it (fine -- its whole life happens inside a
-container whose filesystem is stable between build and run), `cd-api`
-deliberately does not (its Lambda zip build has no persistent source
-tree at runtime -- `editable = true` was confirmed empirically to
+preference: `cd-server` and `cd-etl` use it (fine -- both live entirely
+inside a container whose filesystem is stable between build and run),
+`cd-api` deliberately does not (its Lambda zip build has no persistent
+source tree at runtime -- `editable = true` was confirmed empirically to
 produce only a dangling `.pth` file pointing at the build machine's own
 absolute path, not real copied files, silently breaking the deployed
 zip). See `cd-lib/README.md`'s "Consuming it" section for the full
@@ -124,15 +127,15 @@ explanation. Any component that depends on `cd-lib` must also have no
 `cd/__init__.py` of its own (an implicit PEP 420 namespace package, not
 a regular one) so its own `cd.<component>` and `cd-lib`'s `cd.lib` --
 installed from two physically separate locations -- merge into one
-importable `cd` namespace instead of only one of them being visible;
-`cd-server` and `cd-api` both already have this (their own
-`src/cd/__init__.py` was removed when each adopted `cd-lib`), `cd-etl`
-still has its and would need the same removal if/when it adopts
-`cd-lib` too. A component built in Docker needs its build context to be
-the repo root, not its own directory, so `cd-lib` is reachable at all
-(`cd-server/docker/Dockerfile` is the first example of this); a
-Lambda-zip-deployed component instead just needs the whole repo checked
-out in CI, no Dockerfile/COPY step involved.
+importable `cd` namespace instead of only one of them being visible; all
+three services had their own `src/cd/__init__.py` removed when they
+adopted `cd-lib`. A component built in Docker needs its build context to
+be the repo root, not its own directory, so `cd-lib` is reachable at all
+(`cd-server/docker/Dockerfile` and `cd-etl/docker/Dockerfile` both COPY
+`cd-lib` to `/cd-lib`, one level above `/app`, so the pyproject's
+`../cd-lib` path source resolves); a Lambda-zip-deployed component
+instead just needs the whole repo checked out in CI, no Dockerfile/COPY
+step involved.
 `docker-compose.yml` at the repo root runs Postgres, plus a `cd-etl` service
 built from `cd-etl/docker/Dockerfile` -- the same image also pushed to GHCR (see
 `cd-etl/README.md`'s Releasing section) on a `cd-etl-v*` tag, so local dev

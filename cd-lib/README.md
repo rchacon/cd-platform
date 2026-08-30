@@ -53,12 +53,24 @@ matched the search but the given representative never voted on it.
 apportionment, 50 states plus DC/PR/VI/GU/AS/MP each with one at-large
 seat) and `NON_VOTING_TERRITORIES` (which of those keys are a non-voting
 Delegate/Resident Commissioner seat rather than a full voting
-Representative). Moved here from `cd-api/src/cd/api/apportionment.py`
-(which still owns `max_valid_district`/`is_valid_district`, the
-validation logic built on top of the table -- only the data moved) once
-`cd-server`'s `getStates` GraphQL field needed the same seat counts and
-voting status cd-api was already using to validate `district` query
-params, rather than a second hand-transcribed copy.
+Representative). Moved here from `cd-api/src/cd/api/apportionment.py` (only the data --
+`max_valid_district`/`is_valid_district`, built on the table, live in
+`cd-api/src/cd/api/routes/members.py`, that endpoint being their only
+caller) once `cd-server`'s `getStates` GraphQL field needed the same
+seat counts and voting status cd-api was already using to validate
+`district` query params, rather than a second hand-transcribed copy.
+
+`src/cd/lib/bedrock.py` -- `build_bedrock_client(config=None)` and
+`embed(client, text)` for Amazon Titan Text Embeddings V2. Shared by
+`cd-api`'s `GET /bills/search` (embeds a query at request time) and
+`cd-etl`'s `bills_common.sync_bill` (embeds a bill's title + CRS
+summary). This move is what first made `cd-etl` a `cd-lib` consumer.
+IAM/task-role auth via boto3's default credential chain -- no API key.
+`build_bedrock_client` takes an optional `botocore.config.Config` so a
+caller can bound the call's worst case (cd-api passes one: its Lambda's
+25s function timeout is well under botocore's 60s connect/read
+defaults). `cd-lib` gains `boto3` as a dependency here -- every consumer
+already had it.
 
 `cd-server`'s GraphQL `Representative` and `Senator` types are both
 derived from the same `Member` via
@@ -95,13 +107,10 @@ namespace, merged from two physically separate locations (the consumer's
 own `src/`, and wherever `cd-lib` gets installed). A real `cd/__init__.py`
 would make that directory a regular package instead, and Python would only
 ever see whichever one of the two `cd` directories came first on
-`sys.path` -- silently breaking the other one's imports. `cd-server` and
-`cd-api` both already have this (their own `src/cd/__init__.py` was
-removed when each adopted `cd-lib`); `cd-etl` doesn't depend on `cd-lib`
-yet and still has its `cd/__init__.py` -- harmless as long as that stays
-true, but it'd need the same removal the moment it adds `cd-lib` as a
-dependency. `src/cd/lib/__init__.py` itself is a normal package -- only
-the shared `cd` parent needs to stay namespace-only.
+`sys.path` -- silently breaking the other one's imports. `cd-server`, `cd-api`, and
+`cd-etl` all have this -- each removed its own `src/cd/__init__.py` when
+it adopted `cd-lib`. `src/cd/lib/__init__.py` itself is a normal package
+-- only the shared `cd` parent needs to stay namespace-only.
 
 ## Consuming it
 
@@ -124,12 +133,13 @@ lockfile with anyone else's.
 
 **`editable = true` is a real, load-bearing choice, not a style
 preference -- get it wrong and the deployed artifact silently doesn't
-have `cd-lib`'s code in it.** `cd-server` (`cd-server/pyproject.toml`)
-uses `editable = true`: its whole life happens inside a container whose
+have `cd-lib`'s code in it.** `cd-server` and `cd-etl` use
+`editable = true`: both live entirely inside a container whose
 filesystem is stable between build and run, so an editable install
 (really just a `.pth`-style reference back to `cd-lib`'s own source
 directory, `COPY`'d into the image at a matching path -- see
-`cd-server/docker/Dockerfile`) works fine, and additionally means editing
+`cd-server/docker/Dockerfile` and `cd-etl/docker/Dockerfile`) works
+fine, and additionally means editing
 `cd-lib` locally shows up immediately via the bind mount, no rebuild
 needed. `cd-api` deliberately does **not** use `editable = true`: its
 deploy path (`uv export` + `uv pip install --target package`, see

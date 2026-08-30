@@ -183,7 +183,7 @@ def test_get_or_sync_bill_is_cached_after_first_sync(pg_conn, test_bill_number, 
         }
 
     monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
-    monkeypatch.setattr(etl.bedrock_embeddings, "embed_text", lambda client, text: [0.1] * 1024)
+    monkeypatch.setattr(etl.bedrock, "embed", lambda client, text: [0.1] * 1024)
 
     first_bill_id = etl.get_or_sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,

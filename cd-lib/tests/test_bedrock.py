@@ -1,7 +1,9 @@
 import json
 import os
 
-from cd.etl import bedrock_embeddings
+from botocore.config import Config
+
+from cd.lib import bedrock
 
 
 class _FakeBody:
@@ -25,24 +27,24 @@ class _FakeBedrockClient:
         return {"body": _FakeBody({"embedding": self._embedding})}
 
 
-def test_embed_text_returns_the_models_embedding():
+def test_embed_returns_the_models_embedding():
     client = _FakeBedrockClient(embedding=[0.1, 0.2, 0.3])
 
-    result = bedrock_embeddings.embed_text(client, "dreamers")
+    result = bedrock.embed(client, "dreamers")
 
     assert result == [0.1, 0.2, 0.3]
 
 
-def test_embed_text_calls_titan_v2_with_expected_request_shape():
+def test_embed_calls_titan_v2_with_expected_request_shape():
     client = _FakeBedrockClient(embedding=[0.0])
 
-    bedrock_embeddings.embed_text(client, "immigration reform")
+    bedrock.embed(client, "immigration reform")
 
     call = client.calls[0]
     assert call["modelId"] == "amazon.titan-embed-text-v2:0"
     assert call["body"] == {
         "inputText": "immigration reform",
-        "dimensions": bedrock_embeddings.EMBEDDING_DIMENSIONS,
+        "dimensions": bedrock.EMBEDDING_DIMENSIONS,
         "normalize": True,
     }
     assert call["contentType"] == "application/json"
@@ -52,10 +54,10 @@ def test_embed_text_calls_titan_v2_with_expected_request_shape():
 def test_build_bedrock_client_targets_bedrock_runtime(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        bedrock_embeddings.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
+        bedrock.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    bedrock_embeddings.build_bedrock_client()
+    bedrock.build_bedrock_client()
 
     assert len(calls) == 1
     args, kwargs = calls[0]
@@ -63,49 +65,69 @@ def test_build_bedrock_client_targets_bedrock_runtime(monkeypatch):
     assert "region_name" in kwargs  # falls back to a default -- must never raise NoRegionError
 
 
+def test_build_bedrock_client_omits_config_when_none_given(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        bedrock.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    bedrock.build_bedrock_client()
+
+    assert "config" not in calls[0][1]
+
+
+def test_build_bedrock_client_passes_the_given_config_through(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        bedrock.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    config = Config(connect_timeout=5, read_timeout=5, retries={"max_attempts": 1})
+
+    bedrock.build_bedrock_client(config)
+
+    assert calls[0][1]["config"] is config
+
+
 def test_build_bedrock_client_respects_aws_region_env_var(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
     calls = []
     monkeypatch.setattr(
-        bedrock_embeddings.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
+        bedrock.boto3, "client", lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
-    bedrock_embeddings.build_bedrock_client()
+    bedrock.build_bedrock_client()
 
     assert calls[0][1]["region_name"] == "eu-west-1"
 
 
 def test_build_bedrock_client_leaves_a_real_aws_profile_env_var_untouched(monkeypatch):
     monkeypatch.setenv("AWS_PROFILE", "local-bedrock")
-    monkeypatch.setattr(bedrock_embeddings.boto3, "client", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bedrock.boto3, "client", lambda *args, **kwargs: None)
 
-    bedrock_embeddings.build_bedrock_client()
+    bedrock.build_bedrock_client()
 
     assert os.environ["AWS_PROFILE"] == "local-bedrock"
 
 
 def test_build_bedrock_client_clears_an_empty_aws_profile_env_var(monkeypatch):
-    # Regression test: docker-compose.yml's AWS_PROFILE: ${AWS_PROFILE:-}
-    # always defines this env var inside the container, just empty when
-    # unset in .env -- boto3 treats an empty-but-present AWS_PROFILE as
-    # "load a profile literally named ''", raising ProfileNotFound
-    # immediately (confirmed empirically: this crashed CI, which has no
-    # .env at all -- passing profile_name=None to boto3.Session() does
-    # NOT fix this, since botocore's config-provider chain still reads
-    # the raw env var itself regardless). Only actually removing the
-    # var from the environment works.
+    # An empty-but-present AWS_PROFILE (a container that always defines
+    # `AWS_PROFILE: ${AWS_PROFILE:-}`, just empty when unset) makes
+    # botocore raise ProfileNotFound at construction rather than falling
+    # back to the default credential chain. Passing profile_name=None does
+    # NOT fix this (botocore's config-provider chain reads the raw env var
+    # regardless) -- only removing the var from the environment works.
     monkeypatch.setenv("AWS_PROFILE", "")
-    monkeypatch.setattr(bedrock_embeddings.boto3, "client", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bedrock.boto3, "client", lambda *args, **kwargs: None)
 
-    bedrock_embeddings.build_bedrock_client()
+    bedrock.build_bedrock_client()
 
     assert "AWS_PROFILE" not in os.environ
 
 
 def test_build_bedrock_client_tolerates_aws_profile_already_unset(monkeypatch):
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.setattr(bedrock_embeddings.boto3, "client", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bedrock.boto3, "client", lambda *args, **kwargs: None)
 
-    bedrock_embeddings.build_bedrock_client()  # must not raise
+    bedrock.build_bedrock_client()  # must not raise
 
     assert "AWS_PROFILE" not in os.environ

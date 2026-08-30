@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg2.extras import Json
 
-from cd.api import bedrock
+from cd.lib import bedrock
 from cd.api import db
 from cd.api.app import app, handler
 from conftest import random_number
@@ -736,7 +736,7 @@ def test_get_bills_search_bedrock_failure_returns_503(monkeypatch, pg_conn):
     def _boom(client, text):
         raise RuntimeError("bedrock unavailable")
 
-    monkeypatch.setattr(bedrock, "embed_query", _boom)
+    monkeypatch.setattr(bedrock, "embed", _boom)
 
     try:
         client = TestClient(app, raise_server_exceptions=False)
@@ -768,7 +768,7 @@ def test_get_bills_search_tier1_vocab_match_includes_the_members_vote(monkeypatc
     pg_conn.commit()
 
     monkeypatch.setattr(
-        bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
+        bedrock, "embed", lambda client, text: _vector(1.0, 0.0)
     )
 
     try:
@@ -812,7 +812,7 @@ def test_get_bills_search_falls_back_to_similarity_when_no_close_vocab_match(
     pg_conn.commit()
 
     monkeypatch.setattr(
-        bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
+        bedrock, "embed", lambda client, text: _vector(1.0, 0.0)
     )
 
     try:
@@ -852,7 +852,7 @@ def test_get_bills_search_omits_bills_beyond_the_relevance_floor(monkeypatch, pg
     pg_conn.commit()
 
     monkeypatch.setattr(
-        bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
+        bedrock, "embed", lambda client, text: _vector(1.0, 0.0)
     )
 
     try:

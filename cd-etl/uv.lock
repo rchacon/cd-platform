@@ -508,6 +508,7 @@ dependencies = [
     { name = "apache-airflow-providers-fab" },
     { name = "apache-airflow-providers-postgres" },
     { name = "boto3" },
+    { name = "cd-lib" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -526,10 +527,29 @@ requires-dist = [
     { name = "apache-airflow-providers-fab", specifier = ">=3.8.0" },
     { name = "apache-airflow-providers-postgres", specifier = ">=6.8.0" },
     { name = "boto3", specifier = ">=1.35.0" },
+    { name = "cd-lib", editable = "../cd-lib" },
     { name = "psycopg2-binary", specifier = ">=2.9.12" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "requests", specifier = ">=2.34.2" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
+name = "cd-lib"
+version = "0.1.0"
+source = { editable = "../cd-lib" }
+dependencies = [
+    { name = "boto3" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.35.0" },
+    { name = "pydantic", specifier = ">=2.9.0" },
 ]
 
 [package.metadata.requires-dev]
