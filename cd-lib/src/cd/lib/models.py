@@ -2,17 +2,21 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
+
+# These models are a shared *contract*, consumed by cd-server (which
+# bundles its own, independently-versioned copy of cd-lib) as well as by
+# cd-api. So they follow the robustness principle: liberal in what they
+# accept. Pydantic's default extra="ignore" means a field cd-api adds to
+# a response never breaks a not-yet-updated consumer -- it's just dropped
+# on the consumer side until that consumer's cd-lib catches up. cd-api
+# keeps its own producer-side drift guard via its OpenAPI schema tests
+# (test_openapi_*_documents_*_fields) and its shaper unit tests, which
+# assert the exact field set -- that strictness belongs with the
+# producer, not baked into the shared model.
 
 
 class Member(BaseModel):
-    # Guards against cd-api's transform.py (_person()) growing a field
-    # this model doesn't know about -- response validation then fails
-    # loudly (a 500 via cd-api's catch-all Exception handler) instead of
-    # the exported spec silently drifting out of sync with the real
-    # response shape again.
-    model_config = ConfigDict(extra="forbid")
-
     bioguide_id: str = Field(description="Congress.gov's stable identifier for this member.")
     first_name: str | None = Field(None, description="Given name.")
     middle_name: str | None = None
@@ -52,16 +56,12 @@ class MemberDetail(Member):
     # scoped to one state). Kept separate from Member rather than adding
     # a nullable `state` there, so GET /members' shape -- and every
     # consumer validating it against Member -- is untouched.
-    model_config = ConfigDict(extra="forbid")
-
     state: str = Field(
         description="2-letter USPS state/territory code for this member's seat."
     )
 
 
 class BillVote(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     vote_cast: str = Field(description="YEA, NAY, PRESENT, or NOT_VOTING.")
     vote_question: str
     result: str
@@ -69,8 +69,6 @@ class BillVote(BaseModel):
 
 
 class Bill(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     id: str = Field(
         description=(
             'Canonical bill id -- "<congress>-<bill_type lowercased>-'
@@ -98,8 +96,6 @@ class Bill(BaseModel):
 
 
 class BillSearchResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     query: str
     bioguide_id: str
     bills: list[Bill]

@@ -49,6 +49,13 @@ def test_shape_bill_search_response_bill_fields_pass_through():
     assert bill["title"] == "Dream Act"
     assert bill["policy_area"] == "Immigration"
     assert bill["crs_summary"] == "A bill about dreamers."
+    # cd-lib's Bill is lenient, so an accidental extra key would be
+    # dropped from the response rather than rejected -- assert the exact
+    # set so a shaper change can't silently drift from the model.
+    assert set(bill) == {
+        "id", "congress", "bill_type", "bill_number", "title",
+        "policy_area", "crs_summary", "votes",
+    }
 
 
 def test_shape_bill_search_response_bill_with_no_votes_gets_empty_list():

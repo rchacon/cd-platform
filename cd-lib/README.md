@@ -27,6 +27,17 @@ own models happen to live. `cd-api` still owns *building* `Member`s
 in `app.py`) -- only the `Member`/`MembersResponse` *definitions*
 moved, not the logic that populates them.
 
+These models are deliberately **lenient** (Pydantic's default
+`extra="ignore"`, no `extra="forbid"`): they're a shared contract, and
+`cd-server` bundles its own independently-versioned copy of `cd-lib`, so
+a field `cd-api` adds to a response must not break a `cd-server` that
+hasn't picked up the new `cd-lib` yet -- the unknown field is just
+dropped consumer-side until it does. `cd-api`'s producer-side guard
+against its own response shape drifting from the OpenAPI spec lives in
+its tests (`test_openapi_*_documents_*_fields` plus the `transform.py`/
+`search.py` shaper unit tests, which assert the exact field set), not in
+the shared model.
+
 `src/cd/lib/models.py` also has `BillVote`, `Bill`, and
 `BillSearchResponse`, for `cd-platform#9`'s semantic search over bills
 (`cd-api`'s `GET /bills/search`). Placed here rather than in

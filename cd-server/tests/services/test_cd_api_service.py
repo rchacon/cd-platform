@@ -263,6 +263,20 @@ def test_cd_api_service_get_representatives_validates_and_returns_members():
     assert members[0].district == 12
 
 
+def test_cd_api_service_ignores_unknown_fields_from_cd_api():
+    # cd-lib's Member is lenient (extra="ignore"), so a field cd-api adds
+    # to a /members response doesn't break a cd-server whose bundled
+    # cd-lib predates it -- the unknown field is dropped, not rejected.
+    ahead_of_cd_lib = {**_MEMBER, "state": "CA", "some_future_field": 1}
+    service = CdApiService(_FakeTransport({"representatives": [ahead_of_cd_lib], "senators": []}))
+
+    members = asyncio.run(service.get_representatives("CA", 12))
+
+    assert len(members) == 1
+    assert members[0].bioguide_id == "D000001"
+    assert not hasattr(members[0], "some_future_field")
+
+
 def test_cd_api_service_get_senators_validates_and_returns_members():
     transport = _FakeTransport({"representatives": [], "senators": [_SENATOR]})
     service = CdApiService(transport)
