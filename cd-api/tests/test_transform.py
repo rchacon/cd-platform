@@ -1,4 +1,4 @@
-from cd.api.transform import group_representatives
+from cd.api.transform import group_representatives, person
 
 
 def _row(**overrides) -> dict:
@@ -109,3 +109,14 @@ def test_person_does_not_carry_state():
     # `state` is a GET /members/{bioguide_id} (MemberDetail) addition,
     # layered on in the route -- the shared shape stays as GET /members has it.
     assert "state" not in group_representatives([_row()])["senators"][0]
+
+
+def test_person_returns_exactly_the_documented_field_set():
+    # cd-lib's Member is lenient (extra="ignore"), so an accidental extra
+    # key here would be silently dropped from the response rather than
+    # rejected -- this is the guard that a shaper change stays in sync
+    # with the model / OpenAPI spec.
+    assert set(person(_row())) == {
+        "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
+        "suffix", "role", "party", "phone", "website", "photo_url", "district",
+    }
