@@ -1,4 +1,4 @@
-from cd.api.apportionment import is_valid_district, max_valid_district
+from cd.api.routes.members import is_valid_district, max_valid_district
 
 # SEATS_PER_STATE's own data (50-state coverage, non-voting territories)
 # is tested in cd-lib/tests/test_apportionment.py, where the data now

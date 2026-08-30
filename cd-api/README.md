@@ -35,8 +35,8 @@ Commissioner"` specifically for Puerto Rico's non-voting seat), `party`,
 Senator, `0` for an at-large House seat, `1+` for a numbered one). An
 unknown state returns `404`. A `district`
 that doesn't exist for that state (validated against real House
-apportionment via `src/cd/api/apportionment.py`'s
-`max_valid_district`/`is_valid_district`, built on `../cd-lib`'s shared
+apportionment by `max_valid_district`/`is_valid_district` in
+`src/cd/api/routes/members.py`, built on `../cd-lib`'s shared
 `SEATS_PER_STATE` table -- see `cd-lib/README.md`) also returns `404` -- e.g.
 `district=99` for a 14-district state. A `district` that *does* exist but
 currently has no representative (a genuine vacancy) still returns `200` with
