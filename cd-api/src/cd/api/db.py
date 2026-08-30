@@ -55,8 +55,14 @@ def fetch_member(bioguide_id: str) -> dict | None:
     # instead. So a member who left mid-term is served here (with
     # in_office false) rather than 404'd, keeping a bookmarked
     # /members/{id} page resolving after a resignation. 404 is kept only
-    # for an id with no current-Congress term at all. ORDER BY end_year
-    # picks the still-open term when a mid-Congress chamber switch left two.
+    # for an id with no current-Congress term at all.
+    #
+    # ORDER BY picks the term the member currently holds when a
+    # mid-Congress chamber switch left two current-Congress rows:
+    # `end_year DESC NULLS FIRST` prefers a still-open term; `start_year
+    # DESC` breaks the tie in the window before Congress.gov reports an
+    # endYear for the vacated seat (both rows end_year IS NULL); the PK
+    # is a final deterministic tiebreaker.
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -64,7 +70,7 @@ def fetch_member(bioguide_id: str) -> dict | None:
                 """
                 SELECT * FROM current_members
                 WHERE bioguide_id = %(bioguide_id)s
-                ORDER BY end_year DESC NULLS FIRST
+                ORDER BY end_year DESC NULLS FIRST, start_year DESC, member_term_id DESC
                 LIMIT 1
                 """,
                 {"bioguide_id": bioguide_id},
