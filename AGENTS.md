@@ -103,12 +103,14 @@ itself built them from (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
 since `cd-server` never touches them -- `cd-lib` is for code that's
 actually shared, not a dumping ground for every model cd-api happens to
 have; see `cd-lib/README.md`), and `apportionment.py`'s
-`SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` -- moved out of
-`cd-api/src/cd/api/apportionment.py` (which still owns the
-`max_valid_district`/`is_valid_district` validation logic built on that
-table, only the data moved) once `cd-server`'s `getStates` needed the
-same seat counts/voting status cd-api already validates `district`
-against. `cd-etl` doesn't depend on `cd-lib` yet.
+`SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` -- only the data lives in
+`cd-lib` now; cd-api's `max_valid_district`/`is_valid_district`
+validation built on that table sits in
+`cd-api/src/cd/api/routes/members.py` (its only caller -- a future
+`validation/` package if more request-validation accrues). `cd-server`'s
+`getStates` needed the same seat counts/voting status cd-api already
+validates `district` against, hence the data move. `cd-etl` doesn't
+depend on `cd-lib` yet.
 Whether to use `editable = true` on the
 `[tool.uv.sources]` entry is a real, load-bearing choice, not a style
 preference: `cd-server` uses it (fine -- its whole life happens inside a

@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg2.extras import Json
 
-from cd.api import app as app_module
+from cd.api import bedrock
 from cd.api import db
 from cd.api.app import app, handler
 from conftest import random_number
@@ -129,7 +129,7 @@ def test_openapi_json_documents_production_server_url():
 
 def test_openapi_json_documents_api_key_security_scheme():
     # X-Api-Key is enforced by API Gateway, not a FastAPI Security(...)
-    # dependency -- pins that _custom_openapi() still documents it by
+    # dependency -- pins that build_openapi() still documents it by
     # hand, since nothing derives it automatically from the routes.
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
@@ -243,7 +243,7 @@ def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path)
     # cd-platform#29: local dev/CI never has a VERSION file -- only the
     # deploy workflow writes one into the Lambda zip -- so this is the
     # default a developer actually sees.
-    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
     client = TestClient(app)
     response = client.get("/version")
 
@@ -254,7 +254,7 @@ def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path)
 def test_get_version_returns_file_contents_when_present(monkeypatch, tmp_path):
     version_file = tmp_path / "VERSION"
     version_file.write_text("0.1.0\n")
-    monkeypatch.setattr("cd.api.app.VERSION_FILE", version_file)
+    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", version_file)
     client = TestClient(app)
     response = client.get("/version")
 
@@ -284,7 +284,7 @@ def test_handler_strips_v1_base_path(monkeypatch, tmp_path):
     # Mangum() call below. A TestClient-based test against `app` directly
     # (like the two above) would never catch this class of bug, since it
     # never goes through Mangum's event handling at all.
-    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
     response = handler(_api_gateway_event("/v1/version"), None)
 
     assert response["statusCode"] == 200
@@ -295,7 +295,7 @@ def test_handler_leaves_unprefixed_path_unchanged(monkeypatch, tmp_path):
     # The existing execute-api URL never had a /v1 segment (its stage
     # segment is excluded from event["path"] entirely by API Gateway
     # itself) -- api_gateway_base_path must not affect that request shape.
-    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
     response = handler(_api_gateway_event("/version"), None)
 
     assert response["statusCode"] == 200
@@ -308,7 +308,7 @@ def test_handler_returns_decoded_problem_json_not_base64(monkeypatch, tmp_path):
     # was base64-encoded with isBase64Encoded=true, and API Gateway (no
     # matching binaryMediaTypes entry) forwarded the raw base64 string to
     # clients untouched instead of decoding it.
-    monkeypatch.setattr("cd.api.app.VERSION_FILE", tmp_path / "VERSION")
+    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
     response = handler(_api_gateway_event("/v1/members"), None)  # no `state` -> 422
 
     assert response["statusCode"] == 422
@@ -424,7 +424,7 @@ def test_get_members_unhandled_exception_returns_500_problem_detail(monkeypatch,
     def _boom(state, district):
         raise RuntimeError("db exploded")
 
-    monkeypatch.setattr("cd.api.app.fetch_current_members", _boom)
+    monkeypatch.setattr("cd.api.routes.members.fetch_current_members", _boom)
     client = TestClient(app, raise_server_exceptions=False)
     with caplog.at_level("ERROR"):
         response = client.get("/members", params={"state": "ZZ", "district": 1})
@@ -736,7 +736,7 @@ def test_get_bills_search_bedrock_failure_returns_503(monkeypatch, pg_conn):
     def _boom(client, text):
         raise RuntimeError("bedrock unavailable")
 
-    monkeypatch.setattr(app_module.bedrock, "embed_query", _boom)
+    monkeypatch.setattr(bedrock, "embed_query", _boom)
 
     try:
         client = TestClient(app, raise_server_exceptions=False)
@@ -768,7 +768,7 @@ def test_get_bills_search_tier1_vocab_match_includes_the_members_vote(monkeypatc
     pg_conn.commit()
 
     monkeypatch.setattr(
-        app_module.bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
+        bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
     )
 
     try:
@@ -812,7 +812,7 @@ def test_get_bills_search_falls_back_to_similarity_when_no_close_vocab_match(
     pg_conn.commit()
 
     monkeypatch.setattr(
-        app_module.bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
+        bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
     )
 
     try:
@@ -847,12 +847,12 @@ def test_get_bills_search_omits_bills_beyond_the_relevance_floor(monkeypatch, pg
     _insert_member(pg_conn, bioguide_id, "Jill", "Jensen")
     _insert_vocab_term(pg_conn, "POLICY_AREA", unrelated_term, _vector(0.0, 1.0))
     # cosine distance from the query embedding below is 1.0 -- well past
-    # app_module.BILL_SIMILARITY_THRESHOLD (0.80).
+    # the bills route's BILL_SIMILARITY_THRESHOLD (0.80).
     bill_id = _insert_bill(pg_conn, bill_number, embedding=_vector(0.0, 1.0))
     pg_conn.commit()
 
     monkeypatch.setattr(
-        app_module.bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
+        bedrock, "embed_query", lambda client, text: _vector(1.0, 0.0)
     )
 
     try:
