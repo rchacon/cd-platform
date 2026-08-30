@@ -275,7 +275,10 @@ def get_members(
     response_model=MemberDetail,
     responses={
         404: _problem_response(
-            "No current member has this bioguide_id.", "ProblemDetail"
+            "No member of the current Congress has this bioguide_id. A "
+            "member who left the current Congress mid-term is still "
+            "returned (200, `in_office: false`), not 404.",
+            "ProblemDetail",
         ),
         405: _problem_response("HTTP method not allowed for this path.", "ProblemDetail"),
         # No path-param constraints make a 422 practically unreachable, but
