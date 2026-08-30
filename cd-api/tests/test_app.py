@@ -1,3 +1,4 @@
+import datetime
 import json
 import uuid
 
@@ -13,6 +14,11 @@ from conftest import random_number
 STATE = "ZZ"
 DISTRICT = 1
 CONGRESS = 119
+
+# A year the view's `end_year >= EXTRACT(YEAR FROM CURRENT_DATE)` test
+# treats as "already left" -- derived, not hard-coded, so these tests
+# don't silently pin a wall-clock year.
+LAST_YEAR = datetime.date.today().year - 1
 
 
 def _insert_member(pg_conn, bioguide_id: str, given_name: str, family_name: str) -> None:
@@ -520,7 +526,7 @@ def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
     _insert_member(pg_conn, sen, "Sam", "Stone")
     _insert_member(pg_conn, rep, "Rita", "Reyes")
     _insert_term(pg_conn, sen, "SENATE", None, state="GA")
-    _insert_term(pg_conn, rep, "HOUSE", 5, state="GA", end_year=2025)
+    _insert_term(pg_conn, rep, "HOUSE", 5, state="GA", end_year=LAST_YEAR)
     pg_conn.commit()
 
     try:
@@ -554,7 +560,7 @@ def test_get_member_by_id_returns_a_sitting_member_with_state_and_in_office(seed
 def test_get_member_by_id_serves_a_departed_member_with_in_office_false(pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id, "Gone", "Gomez")
-    _insert_term(pg_conn, bioguide_id, "HOUSE", 4, state="TX", end_year=2025)
+    _insert_term(pg_conn, bioguide_id, "HOUSE", 4, state="TX", end_year=LAST_YEAR)
     pg_conn.commit()
 
     try:

@@ -1,3 +1,4 @@
+import datetime
 import uuid
 
 from conftest import random_number
@@ -5,6 +6,11 @@ from conftest import random_number
 from cd.api import db
 
 CONGRESS = 119
+
+# Derived, not hard-coded: the view treats end_year >= the server's
+# current year as "still in office", so a "departed" fixture year must
+# track the wall clock.
+LAST_YEAR = datetime.date.today().year - 1
 
 
 def _bill_number() -> int:
@@ -180,7 +186,7 @@ def test_fetch_member_serves_a_departed_current_congress_member(pg_conn):
     # Left the current Congress mid-term -> still served, in_office false.
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id)
-    _insert_term(pg_conn, bioguide_id, state="GA", end_year=2025)
+    _insert_term(pg_conn, bioguide_id, state="GA", end_year=LAST_YEAR)
     pg_conn.commit()
 
     try:
