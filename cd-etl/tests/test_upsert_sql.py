@@ -346,37 +346,44 @@ def test_current_members_exposes_state_rank(
         assert cursor.fetchone()[0] == "SENIOR"
 
 
-def test_current_members_excludes_prior_year_end_year(
+def _in_office(pg_conn, bioguide_id):
+    with pg_conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT in_office FROM current_members WHERE bioguide_id = %s", (bioguide_id,)
+        )
+        row = cursor.fetchone()
+    return row and row[0]
+
+
+def test_current_members_flags_prior_year_end_year_as_not_in_office(
     pg_conn, test_bioguide_id, current_congress_number, current_year
 ):
+    # A member who left the current Congress last year: still in the view
+    # (0007 dropped the currency filter), flagged in_office = false.
     _insert_member_term(pg_conn, test_bioguide_id, current_congress_number, current_year - 1)
     pg_conn.commit()
 
-    with pg_conn.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM current_members WHERE bioguide_id = %s", (test_bioguide_id,))
-        assert cursor.fetchone() is None
+    assert _in_office(pg_conn, test_bioguide_id) is False
 
 
-def test_current_members_includes_null_end_year(pg_conn, test_bioguide_id, current_congress_number):
+def test_current_members_flags_null_end_year_as_in_office(
+    pg_conn, test_bioguide_id, current_congress_number
+):
     _insert_member_term(pg_conn, test_bioguide_id, current_congress_number, None)
     pg_conn.commit()
 
-    with pg_conn.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM current_members WHERE bioguide_id = %s", (test_bioguide_id,))
-        assert cursor.fetchone() is not None
+    assert _in_office(pg_conn, test_bioguide_id) is True
 
 
-def test_current_members_includes_current_year_end_year(
+def test_current_members_flags_current_year_end_year_as_in_office(
     pg_conn, test_bioguide_id, current_congress_number, current_year
 ):
     # Pins the known, tracked limitation (issue #14): year-only precision
     # can't distinguish "departed earlier this year" from "still serving
-    # the rest of this year," so a same-year departure is still included.
-    # Not a bug -- this test exists so a future accidental tightening of
-    # the filter doesn't silently change this documented behavior.
+    # the rest of this year," so a same-year departure still reads as
+    # in_office. Not a bug -- this test exists so a future accidental
+    # tightening of the expression doesn't silently change it.
     _insert_member_term(pg_conn, test_bioguide_id, current_congress_number, current_year)
     pg_conn.commit()
 
-    with pg_conn.cursor() as cursor:
-        cursor.execute("SELECT 1 FROM current_members WHERE bioguide_id = %s", (test_bioguide_id,))
-        assert cursor.fetchone() is not None
+    assert _in_office(pg_conn, test_bioguide_id) is True

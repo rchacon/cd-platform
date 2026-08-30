@@ -1,3 +1,4 @@
+import datetime
 import uuid
 
 from conftest import random_number
@@ -5,6 +6,11 @@ from conftest import random_number
 from cd.api import db
 
 CONGRESS = 119
+
+# Derived, not hard-coded: the view treats end_year >= the server's
+# current year as "still in office", so a "departed" fixture year must
+# track the wall clock.
+LAST_YEAR = datetime.date.today().year - 1
 
 
 def _bill_number() -> int:
@@ -35,17 +41,34 @@ def _insert_member(pg_conn, bioguide_id: str) -> None:
         )
 
 
-def _insert_term(pg_conn, bioguide_id: str, state: str = "ZZ") -> None:
-    # A current-Congress HOUSE term, so the row shows up in current_members.
+def _insert_term(
+    pg_conn,
+    bioguide_id: str,
+    state: str = "ZZ",
+    end_year: int | None = None,
+    congress: int = 119,
+) -> None:
+    # A HOUSE term. Defaults to the current Congress (119, seeded by
+    # migration 0001). end_year=None -> still serving; a past year ->
+    # left mid-term (in_office should be false).
     with pg_conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO member_terms (
                 bioguide_id, congress, chamber, member_type, state, district,
-                start_year, source_hash
-            ) VALUES (%s, 119, 'HOUSE', 'Representative', %s, 7, 2023, %s)
+                start_year, end_year, source_hash
+            ) VALUES (%s, %s, 'HOUSE', 'Representative', %s, 7, 2023, %s, %s)
             """,
-            (bioguide_id, state, f"hash-term-{bioguide_id}"),
+            (bioguide_id, congress, state, end_year, f"hash-term-{bioguide_id}"),
+        )
+
+
+def _insert_congress(pg_conn, congress: int, start_date: str, end_date: str) -> None:
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO congresses (congress, start_date, end_date) "
+            "VALUES (%s, %s, %s) ON CONFLICT (congress) DO NOTHING",
+            (congress, start_date, end_date),
         )
 
 
@@ -140,7 +163,7 @@ def test_member_exists_false_for_an_unknown_bioguide_id():
     assert db.member_exists("NOTAREALID99") is False
 
 
-def test_fetch_member_returns_the_current_members_row(pg_conn):
+def test_fetch_member_returns_a_sitting_member_with_in_office_true(pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id)
     _insert_term(pg_conn, bioguide_id, state="GA")
@@ -152,14 +175,54 @@ def test_fetch_member_returns_the_current_members_row(pg_conn):
         assert row["bioguide_id"] == bioguide_id
         assert row["state"] == "GA"
         assert row["member_type"] == "Representative"
+        assert row["in_office"] is True
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
         pg_conn.commit()
 
 
-def test_fetch_member_returns_none_for_a_member_with_no_current_term(pg_conn):
-    # In `members` but not `current_members` -- a former member.
+def test_fetch_member_serves_a_departed_current_congress_member(pg_conn):
+    # Left the current Congress mid-term -> still served, in_office false.
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id)
+    _insert_term(pg_conn, bioguide_id, state="GA", end_year=LAST_YEAR)
+    pg_conn.commit()
+
+    try:
+        row = db.fetch_member(bioguide_id)
+        assert row is not None
+        assert row["bioguide_id"] == bioguide_id
+        assert row["in_office"] is False
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
+
+
+def test_fetch_member_returns_none_when_only_term_is_a_past_congress(pg_conn):
+    # member_terms rows are never deleted, so once the 120th Congress is
+    # synced a 119th-only member still has a row -- but fetch_member is
+    # scoped (via current_members) to current_congress(), so it 404s.
+    # Simulated here with a 118th term while 119 is current.
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_congress(pg_conn, 118, "2023-01-03", "2025-01-03")
+    _insert_member(pg_conn, bioguide_id)
+    _insert_term(pg_conn, bioguide_id, congress=118)
+    pg_conn.commit()
+
+    try:
+        assert db.fetch_member(bioguide_id) is None
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+            cur.execute("DELETE FROM congresses WHERE congress = 118")
+        pg_conn.commit()
+
+
+def test_fetch_member_returns_none_for_a_member_with_no_term_at_all(pg_conn):
+    # Defensive: a members row with no member_terms row (not a state the
+    # ETL produces, but fetch_member shouldn't blow up on it).
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id)
     pg_conn.commit()

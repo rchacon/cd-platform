@@ -275,7 +275,10 @@ def get_members(
     response_model=MemberDetail,
     responses={
         404: _problem_response(
-            "No current member has this bioguide_id.", "ProblemDetail"
+            "No member of the current Congress has this bioguide_id. A "
+            "member who left the current Congress mid-term is still "
+            "returned (200, `in_office: false`), not 404.",
+            "ProblemDetail",
         ),
         405: _problem_response("HTTP method not allowed for this path.", "ProblemDetail"),
         # No path-param constraints make a 422 practically unreachable, but
@@ -288,18 +291,20 @@ def get_members(
     },
 )
 def get_member(bioguide_id: str) -> dict:
-    """Look up a single current member by their Congress.gov bioguide id.
+    """Look up a single member of the current Congress by bioguide id.
 
-    `404` for an id that isn't a member of the *current* Congress --
-    former members (resigned, defeated, deceased) aren't retained. Carries
-    `state` on top of the `GET /members` shape.
+    Serves both sitting members and those who left the current Congress
+    mid-term (`in_office: false`) -- so a bookmarked page keeps resolving
+    after a resignation. `404` only when the id has no current-Congress
+    term at all (e.g. a member of a past Congress -- not served here).
+    Carries `state` and `in_office` on top of the `GET /members` shape.
     """
     row = fetch_member(bioguide_id)
     if row is None:
         raise HTTPException(
-            status_code=404, detail=f"No current member with bioguide_id {bioguide_id}"
+            status_code=404, detail=f"No current-Congress member with bioguide_id {bioguide_id}"
         )
-    return {**person(row), "state": row["state"]}
+    return {**person(row), "state": row["state"], "in_office": row["in_office"]}
 
 
 @app.get(

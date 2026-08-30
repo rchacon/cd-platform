@@ -59,6 +59,15 @@ class MemberDetail(Member):
     state: str = Field(
         description="2-letter USPS state/territory code for this member's seat."
     )
+    in_office: bool = Field(
+        description=(
+            "True while this member is serving the current Congress; "
+            "false once they have left it (resigned, died, expelled) -- "
+            "the endpoint still serves them so a bookmarked page keeps "
+            "resolving. Always scoped to the current Congress; members of "
+            "a past Congress are not served here."
+        )
+    )
 
 
 class BillVote(BaseModel):
