@@ -27,6 +27,11 @@ def fetch_current_members(state: str, district: int | None) -> list[dict]:
     # yields senators only, with no special-casing needed. The HOUSE check
     # is redundant given chamber_type is a strict two-value enum -- once
     # chamber != 'SENATE' it's necessarily 'HOUSE'.
+    #
+    # `AND in_office`: current_members (cd-etl migration 0007) no longer
+    # filters departed members out -- it exposes `in_office` instead, so
+    # GET /members/{bioguide_id} can still serve them. This roster
+    # endpoint wants sitting-only, so it re-applies the filter here.
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -34,6 +39,7 @@ def fetch_current_members(state: str, district: int | None) -> list[dict]:
                 """
                 SELECT * FROM current_members
                 WHERE state = %(state)s
+                  AND in_office
                   AND (chamber = 'SENATE' OR district = %(district)s)
                 """,
                 {"state": state, "district": district},
@@ -44,14 +50,23 @@ def fetch_current_members(state: str, district: int | None) -> list[dict]:
 
 
 def fetch_member(bioguide_id: str) -> dict | None:
-    # current_members is already scoped to the current Congress and to
-    # not-yet-departed terms, so an id that isn't a sitting member simply
-    # matches no row -> the route turns that into a 404.
+    # current_members (cd-etl migration 0007) is scoped to the current
+    # Congress but NOT to still-seated members -- it carries `in_office`
+    # instead. So a member who left mid-term is served here (with
+    # in_office false) rather than 404'd, keeping a bookmarked
+    # /members/{id} page resolving after a resignation. 404 is kept only
+    # for an id with no current-Congress term at all. ORDER BY end_year
+    # picks the still-open term when a mid-Congress chamber switch left two.
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM current_members WHERE bioguide_id = %(bioguide_id)s",
+                """
+                SELECT * FROM current_members
+                WHERE bioguide_id = %(bioguide_id)s
+                ORDER BY end_year DESC NULLS FIRST
+                LIMIT 1
+                """,
                 {"bioguide_id": bioguide_id},
             )
             return cur.fetchone()

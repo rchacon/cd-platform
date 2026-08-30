@@ -44,6 +44,7 @@ def _insert_term(
     district: int | None,
     member_type: str | None = None,
     state: str = STATE,
+    end_year: int | None = None,
 ) -> None:
     if member_type is None:
         member_type = "Senator" if chamber == "SENATE" else "Representative"
@@ -52,10 +53,13 @@ def _insert_term(
             """
             INSERT INTO member_terms (
                 bioguide_id, congress, chamber, member_type, state, district,
-                start_year, source_hash
-            ) VALUES (%s, 119, %s, %s, %s, %s, 2023, %s)
+                start_year, end_year, source_hash
+            ) VALUES (%s, 119, %s, %s, %s, %s, 2023, %s, %s)
             """,
-            (bioguide_id, chamber, member_type, state, district, f"hash-term-{bioguide_id}"),
+            (
+                bioguide_id, chamber, member_type, state, district, end_year,
+                f"hash-term-{bioguide_id}",
+            ),
         )
 
 
@@ -509,7 +513,31 @@ def test_get_members_valid_but_vacant_district_still_returns_200(pg_conn):
         pg_conn.commit()
 
 
-def test_get_member_by_id_returns_the_member_with_state(seeded_state):
+def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
+    # current_members (cd-etl 0007) now keeps departed members, flagged
+    # in_office=false -- this roster endpoint must still exclude them.
+    sen, rep = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
+    _insert_member(pg_conn, sen, "Sam", "Stone")
+    _insert_member(pg_conn, rep, "Rita", "Reyes")
+    _insert_term(pg_conn, sen, "SENATE", None, state="GA")
+    _insert_term(pg_conn, rep, "HOUSE", 5, state="GA", end_year=2025)
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        response = client.get("/members", params={"state": "GA", "district": 5})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["representatives"] == []
+        assert [p["bioguide_id"] for p in body["senators"]] == [sen]
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sen, rep],))
+        pg_conn.commit()
+
+
+def test_get_member_by_id_returns_a_sitting_member_with_state_and_in_office(seeded_state):
     client = TestClient(app)
     response = client.get(f"/members/{seeded_state['rep']}")
 
@@ -520,6 +548,28 @@ def test_get_member_by_id_returns_the_member_with_state(seeded_state):
     assert body["role"] == "Representative"
     assert body["district"] == DISTRICT
     assert body["state"] == STATE
+    assert body["in_office"] is True
+
+
+def test_get_member_by_id_serves_a_departed_member_with_in_office_false(pg_conn):
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id, "Gone", "Gomez")
+    _insert_term(pg_conn, bioguide_id, "HOUSE", 4, state="TX", end_year=2025)
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        response = client.get(f"/members/{bioguide_id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["bioguide_id"] == bioguide_id
+        assert body["state"] == "TX"
+        assert body["in_office"] is False
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
 
 
 def test_get_member_by_id_unknown_bioguide_id_returns_404(pg_conn):
@@ -541,11 +591,11 @@ def test_openapi_member_by_id_route_is_documented():
         assert list(responses[status]["content"]) == ["application/problem+json"]
 
     detail = schema["components"]["schemas"]["MemberDetail"]
-    assert "state" in detail["required"]
+    assert {"state", "in_office"} <= set(detail["required"])
     assert set(detail["properties"]) == {
         "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
         "suffix", "role", "party", "phone", "website", "photo_url", "district",
-        "state",
+        "state", "in_office",
     }
 
 
