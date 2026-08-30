@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 
+from botocore.config import Config
 from fastapi import APIRouter, HTTPException, Query
 
-from cd.api import bedrock
 from cd.api.db import (
     fetch_bills_by_policy_area,
     fetch_bills_by_similarity,
@@ -15,14 +15,35 @@ from cd.api.db import (
 )
 from cd.api.openapi import error_response
 from cd.api.transform import shape_bill_search_response
+from cd.lib import bedrock
 from cd.lib.models import BillSearchResponse
 
 logger = logging.getLogger(__name__)
 
 # Built once at import time (Lambda cold start), same precedent as
-# cd-etl's own bedrock_embeddings._BEDROCK_CLIENT module-level construction
-# in bills_etl.py/house_votes_etl.py.
-_BEDROCK_CLIENT = bedrock.build_bedrock_client()
+# cd-etl's DAG modules.
+#
+# The Config bounds the whole embed call -- every retry, both phases --
+# inside the Lambda's 25s function timeout. botocore's own defaults (60s
+# connect, 60s read) outlast it, so when the network path to Bedrock is
+# broken -- e.g. the Lambda's SG missing a 443 egress rule, exactly how
+# GET /bills/search first shipped -- invoke_model() would hang past the
+# timeout and the sandbox is killed mid-call, surfacing as an uncatchable
+# 500 rather than reaching the except -> 503 below. total_max_attempts is
+# max_attempts + 1 == 2, a single attempt's worst case is
+# connect_timeout + read_timeout == 10s, so the ceiling is ~21s (2*10s +
+# one standard-mode backoff), leaving room for the handler's own DB round
+# trips. A healthy embed of a <=500-char query returns well under 1s, so
+# 5s read is generous; 5s connect is the conventional AWS-SDK floor and
+# tolerates a cold VPC Lambda's first TLS-through-NAT handshake. More real
+# headroom needs the Lambda's own timeout/memory raised (cd-infra#58).
+_BEDROCK_CLIENT = bedrock.build_bedrock_client(
+    Config(
+        connect_timeout=5,
+        read_timeout=5,
+        retries={"max_attempts": 1, "mode": "standard"},
+    )
+)
 
 # A query embedding within this cosine distance of the closest vocab term
 # is treated as a confident tier-1 match (exact policy_area/subject_name
@@ -88,7 +109,7 @@ def get_bills_search(
         raise HTTPException(status_code=404, detail=f"Unknown bioguide_id {bioguide_id}")
 
     try:
-        query_embedding = bedrock.embed_query(_BEDROCK_CLIENT, q)
+        query_embedding = bedrock.embed(_BEDROCK_CLIENT, q)
     except Exception as exc:
         # Unlike cd-etl's degrade-gracefully precedent for a stale
         # embedding, there's nothing to fall back to here -- the

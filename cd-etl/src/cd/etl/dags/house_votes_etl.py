@@ -35,7 +35,8 @@ from typing import Any
 import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bedrock_embeddings, bills_common, congress_api, db
+from cd.etl import bills_common, congress_api, db
+from cd.lib import bedrock
 from cd.etl.congress_models import (
     AmendmentResponse,
     HouseVoteDetailResponse,
@@ -67,7 +68,7 @@ POSTGRES_CONN_ID = "congressional_postgres"
 VOTE_BATCH_SIZE = 50
 
 _API_SESSION = congress_api.build_session(pool_maxsize=MEMBER_VOTES_FETCH_WORKERS)
-_BEDROCK_CLIENT = bedrock_embeddings.build_bedrock_client()
+_BEDROCK_CLIENT = bedrock.build_bedrock_client()
 
 # House roll calls report different literal values depending on voteType
 # ("Recorded Vote" uses Aye/No/Not Voting; "Yea-and-Nay" uses Yea/Nay/Not

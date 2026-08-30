@@ -20,7 +20,8 @@ from datetime import date
 from typing import Any
 
 import requests
-from cd.etl import bedrock_embeddings, congress_api, db
+from cd.etl import congress_api, db
+from cd.lib import bedrock
 from cd.etl.congress_models import (
     BillDetailResponse,
     BillSubjectsResponse,
@@ -121,7 +122,7 @@ def _embed_missing_vocab_terms(
 
     for term in (t for t in distinct if t not in existing):
         try:
-            embedding = bedrock_embeddings.embed_text(bedrock_client, term)
+            embedding = bedrock.embed(bedrock_client, term)
         except Exception as exc:
             logger.warning(
                 "Failed to embed vocab term %r (%s): %s -- skipping", term, kind, exc,
@@ -233,7 +234,7 @@ def sync_bill(
             embed_input = "\n\n".join(part for part in (bill.title, crs_summary) if part)
             if embed_input:
                 try:
-                    embedding = bedrock_embeddings.embed_text(bedrock_client, embed_input)
+                    embedding = bedrock.embed(bedrock_client, embed_input)
                     cursor.execute(
                         "UPDATE bills SET crs_summary_embedding = %s::vector WHERE bill_id = %s",
                         (db.to_pgvector_literal(embedding), bill_id),

@@ -18,10 +18,10 @@ CONGRESS = 119
 @pytest.fixture(autouse=True)
 def _stub_bedrock(monkeypatch):
     # Every existing test in this file passes bedrock_client=None and
-    # doesn't care what embed_text returns -- only the embedding-specific
+    # doesn't care what embed() returns -- only the embedding-specific
     # tests further down override this locally (a test's own
     # monkeypatch.setattr call wins, since it runs after this fixture's).
-    monkeypatch.setattr(bills_common.bedrock_embeddings, "embed_text", lambda client, text: [0.1] * 1024)
+    monkeypatch.setattr(bills_common.bedrock, "embed", lambda client, text: [0.1] * 1024)
 
 
 @pytest.fixture
@@ -342,7 +342,7 @@ def test_sync_bill_does_not_reembed_the_bill_when_content_is_unchanged(
     # bill's unchanged content on every single run forever.
     embed_calls = []
     monkeypatch.setattr(
-        bills_common.bedrock_embeddings, "embed_text",
+        bills_common.bedrock, "embed",
         lambda client, text: (embed_calls.append(text), [0.1] * 1024)[1],
     )
     monkeypatch.setattr(
@@ -367,7 +367,7 @@ def test_sync_bill_does_not_reembed_the_bill_when_content_is_unchanged(
 def test_sync_bill_reembeds_when_content_changes(pg_conn, test_bill_number, monkeypatch):
     embed_calls = []
     monkeypatch.setattr(
-        bills_common.bedrock_embeddings, "embed_text",
+        bills_common.bedrock, "embed",
         lambda client, text: (embed_calls.append(text), [0.1] * 1024)[1],
     )
     monkeypatch.setattr(
@@ -401,7 +401,7 @@ def test_sync_bill_degrades_gracefully_when_bedrock_embed_fails(
     # search, unrelated to bill_id's own correctness as an FK target, so
     # it must not fail the sync.
     monkeypatch.setattr(
-        bills_common.bedrock_embeddings, "embed_text",
+        bills_common.bedrock, "embed",
         lambda client, text: (_ for _ in ()).throw(RuntimeError("simulated Bedrock failure")),
     )
     monkeypatch.setattr(
@@ -428,12 +428,12 @@ def test_sync_bill_embeds_a_shared_policy_area_exactly_once_across_two_bills(
     bill_number_b = random_number(24000, 28000)
     vocab_embed_calls = []
 
-    def fake_embed_text(client, text):
+    def fake_embed(client, text):
         if text == term:
             vocab_embed_calls.append(text)
         return [0.1] * 1024
 
-    monkeypatch.setattr(bills_common.bedrock_embeddings, "embed_text", fake_embed_text)
+    monkeypatch.setattr(bills_common.bedrock, "embed", fake_embed)
 
     try:
         monkeypatch.setattr(

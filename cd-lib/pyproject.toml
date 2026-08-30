@@ -6,6 +6,7 @@ version = "0.1.0"
 description = "Shared code for cd-platform's Python services (cd-api, cd-etl, cd-server)"
 requires-python = ">=3.12"
 dependencies = [
+    "boto3>=1.35.0",
     "pydantic>=2.9.0",
 ]
 
