@@ -14,7 +14,7 @@ from cd.api.db import (
     member_exists,
 )
 from cd.api.openapi import error_response
-from cd.api.search import shape_bill_search_response
+from cd.api.transform import shape_bill_search_response
 from cd.lib.models import BillSearchResponse
 
 logger = logging.getLogger(__name__)
