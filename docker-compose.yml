@@ -46,8 +46,11 @@ services:
     # this service reuse it without rebuilding.
     image: cd-etl:dev
     build:
-      context: ./cd-etl
-      dockerfile: docker/Dockerfile
+      # Repo root, not ./cd-etl -- cd-etl/docker/Dockerfile also COPYs in
+      # cd-lib, a sibling directory Docker can't reach from a narrower
+      # context. See that Dockerfile's own comment.
+      context: .
+      dockerfile: cd-etl/docker/Dockerfile
       target: development
     restart: unless-stopped
     depends_on:

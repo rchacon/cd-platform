@@ -9,11 +9,19 @@ dependencies = [
     "apache-airflow-providers-fab>=3.8.0",
     "apache-airflow-providers-postgres>=6.8.0",
     "boto3>=1.35.0",
+    "cd-lib",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.9",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
 ]
+
+# editable, like cd-server's own cd-lib source (also Docker-only) -- a
+# container whose filesystem is stable between build and run. cd-api
+# deliberately does NOT (its Lambda zip has no persistent source tree).
+# See cd-lib/README.md's "Consuming it" section.
+[tool.uv.sources]
+cd-lib = { path = "../cd-lib", editable = true }
 
 [dependency-groups]
 dev = [

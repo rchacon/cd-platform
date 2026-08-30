@@ -18,7 +18,7 @@ jobs:
       - name: Build development image (cached)
         uses: docker/build-push-action@v6
         with:
-          context: cd-etl
+          context: .
           file: cd-etl/docker/Dockerfile
           target: development
           tags: cd-etl:dev
@@ -48,7 +48,7 @@ jobs:
       - name: Build production image (cached)
         uses: docker/build-push-action@v6
         with:
-          context: cd-etl
+          context: .
           file: cd-etl/docker/Dockerfile
           target: production
           tags: cd-etl:production
