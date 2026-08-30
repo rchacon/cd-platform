@@ -8,7 +8,8 @@ dependencies = [
     "apache-airflow>=3.3.0",
     "apache-airflow-providers-fab>=3.8.0",
     "apache-airflow-providers-postgres>=6.8.0",
-    "boto3>=1.35.0",
+    # boto3 is a transitive dep via cd-lib (cd.lib.bedrock) -- cd-etl's
+    # own code imports nothing from boto directly since bedrock moved.
     "cd-lib",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.9",

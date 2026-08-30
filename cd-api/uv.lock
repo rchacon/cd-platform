@@ -66,7 +66,7 @@ name = "cd-api"
 version = "0.3.4"
 source = { virtual = "." }
 dependencies = [
-    { name = "boto3" },
+    { name = "botocore" },
     { name = "cd-lib" },
     { name = "fastapi" },
     { name = "mangum" },
@@ -83,7 +83,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", specifier = ">=1.35.0" },
+    { name = "botocore", specifier = ">=1.35.0" },
     { name = "cd-lib", directory = "../cd-lib" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "mangum", specifier = ">=0.19.0" },
