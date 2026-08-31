@@ -318,6 +318,34 @@ def test_handler_returns_decoded_problem_json_not_base64(monkeypatch, tmp_path):
     assert body["status"] == 422
 
 
+def test_handler_returns_decoded_vnd_api_json_not_base64(monkeypatch, tmp_path):
+    # cd-platform#38 again, for the JSON:API media type: application/vnd.api+json
+    # must also be in Mangum's text_mime_types or every JSON:API response
+    # (success and error) comes back base64-encoded with isBase64Encoded=true.
+    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
+    # no filter[bill] -> 422 from the JSON:API route
+    response = handler(_api_gateway_event("/v1/members/K000001/votes"), None)
+
+    assert response["statusCode"] == 422
+    assert response["isBase64Encoded"] is False
+    body = json.loads(response["body"])
+    assert body["errors"][0]["status"] == "422"
+
+
+def test_handler_jsonapi_path_405_is_a_jsonapi_error_document(monkeypatch, tmp_path):
+    # A routing-layer 405 (wrong method) never reaches JsonApiRoute -- app.py
+    # must still format it as JSON:API for a JSON:API path.
+    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
+    event = _api_gateway_event("/v1/members/K000001/votes")
+    event["httpMethod"] = "POST"
+    response = handler(event, None)
+
+    assert response["statusCode"] == 405
+    assert "application/vnd.api+json" in response["headers"]["content-type"]
+    body = json.loads(response["body"])
+    assert body["errors"][0]["status"] == "405"
+
+
 def test_get_members_returns_senators_and_representative(seeded_state):
     client = TestClient(app)
     response = client.get("/members", params={"state": STATE, "district": DISTRICT})
@@ -543,18 +571,26 @@ def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
         pg_conn.commit()
 
 
-def test_get_member_by_id_returns_a_sitting_member_with_state_and_in_office(seeded_state):
+def test_get_member_by_id_returns_a_sitting_member_as_a_jsonapi_document(seeded_state):
     client = TestClient(app)
     response = client.get(f"/members/{seeded_state['rep']}")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["bioguide_id"] == seeded_state["rep"]
-    assert body["last_name"] == "Clark"
-    assert body["role"] == "Representative"
-    assert body["district"] == DISTRICT
-    assert body["state"] == STATE
-    assert body["in_office"] is True
+    assert set(body) == {"data"}
+    assert body["data"]["type"] == "member"
+    assert body["data"]["id"] == seeded_state["rep"]
+    # No relationships on this resource -> the member is omitted, never
+    # `"relationships": null` (invalid per JSON:API).
+    assert "relationships" not in body["data"]
+    attributes = body["data"]["attributes"]
+    # Identity lives on the resource, not in attributes.
+    assert "bioguide_id" not in attributes
+    assert attributes["last_name"] == "Clark"
+    assert attributes["role"] == "Representative"
+    assert attributes["district"] == DISTRICT
+    assert attributes["state"] == STATE
+    assert attributes["in_office"] is True
 
 
 def test_get_member_by_id_serves_a_departed_member_with_in_office_false(pg_conn):
@@ -569,9 +605,9 @@ def test_get_member_by_id_serves_a_departed_member_with_in_office_false(pg_conn)
 
         assert response.status_code == 200
         body = response.json()
-        assert body["bioguide_id"] == bioguide_id
-        assert body["state"] == "TX"
-        assert body["in_office"] is False
+        assert body["data"]["id"] == bioguide_id
+        assert body["data"]["attributes"]["state"] == "TX"
+        assert body["data"]["attributes"]["in_office"] is False
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
@@ -583,26 +619,369 @@ def test_get_member_by_id_unknown_bioguide_id_returns_404(pg_conn):
     response = client.get("/members/NOTAREALID99")
 
     assert response.status_code == 404
-    assert response.headers["content-type"] == "application/problem+json"
-    assert response.json()["status"] == 404
+    # JSON:API error document, not RFC 9457 problem+json.
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    error = response.json()["errors"][0]
+    assert error["status"] == "404"
+    assert error["title"] == "Not Found"
+
+
+def test_get_member_by_id_rejects_an_unsupported_query_param(seeded_state):
+    client = TestClient(app)
+    response = client.get(f"/members/{seeded_state['rep']}", params={"include": "terms"})
+
+    assert response.status_code == 400
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert "include" in response.json()["errors"][0]["detail"]
+
+
+def test_get_member_by_id_success_is_vnd_api_json(seeded_state):
+    client = TestClient(app)
+    response = client.get(f"/members/{seeded_state['rep']}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/vnd.api+json"
+
+
+def _follow_ref(schema: dict, ref: str) -> dict:
+    # "#/components/schemas/Foo" -> schema["components"]["schemas"]["Foo"]
+    node = schema
+    for part in ref.lstrip("#/").split("/"):
+        node = node[part]
+    return node
+
+
+JSONAPI_MEDIA_TYPE = "application/vnd.api+json"
 
 
 def test_openapi_member_by_id_route_is_documented():
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
-    responses = schema["paths"]["/members/{bioguide_id}"]["get"]["responses"]
+    get = schema["paths"]["/members/{bioguide_id}"]["get"]
+    responses = get["responses"]
     assert "200" in responses
-    for status in ("404", "405", "422", "500"):
-        assert list(responses[status]["content"]) == ["application/problem+json"]
+    for status in ("400", "404", "405", "406", "415", "422", "500"):
+        assert list(responses[status]["content"]) == [JSONAPI_MEDIA_TYPE]
+        ref = responses[status]["content"][JSONAPI_MEDIA_TYPE]["schema"]["$ref"]
+        assert ref.endswith("/JsonApiErrorDocument")
 
-    detail = schema["components"]["schemas"]["MemberDetail"]
+    # 200 is a JSON:API single-resource document wrapping MemberDetail.
+    document = _follow_ref(
+        schema, responses["200"]["content"][JSONAPI_MEDIA_TYPE]["schema"]["$ref"]
+    )
+    assert set(document["properties"]) == {"data"}
+    resource = _follow_ref(schema, document["properties"]["data"]["$ref"])
+    assert set(resource["properties"]) == {"type", "id", "attributes", "relationships"}
+    detail = _follow_ref(schema, resource["properties"]["attributes"]["$ref"])
     assert {"state", "in_office"} <= set(detail["required"])
     assert set(detail["properties"]) == {
-        "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
-        "suffix", "role", "party", "phone", "website", "photo_url", "district",
+        "first_name", "middle_name", "last_name", "nickname", "suffix",
+        "role", "party", "phone", "website", "photo_url", "district",
         "state", "in_office",
     }
+    assert "bioguide_id" not in detail["properties"]
+
+
+def test_openapi_member_votes_route_is_documented():
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    get = schema["paths"]["/members/{bioguide_id}/votes"]["get"]
+    responses = get["responses"]
+    assert "200" in responses
+    for status in ("400", "404", "405", "406", "415", "422", "500"):
+        assert list(responses[status]["content"]) == [JSONAPI_MEDIA_TYPE]
+
+    parameters = {p["name"]: p for p in get["parameters"]}
+    assert parameters["filter[bill]"]["required"] is True
+
+    document = _follow_ref(
+        schema, responses["200"]["content"][JSONAPI_MEDIA_TYPE]["schema"]["$ref"]
+    )
+    assert set(document["properties"]) == {"data", "meta"}
+    resource = _follow_ref(
+        schema, document["properties"]["data"]["items"]["$ref"]
+    )
+    assert set(resource["properties"]) == {"type", "id", "attributes", "relationships"}
+    attrs = _follow_ref(schema, resource["properties"]["attributes"]["$ref"])
+    assert set(attrs["properties"]) == {
+        "vote_cast", "vote_question", "result", "vote_date",
+    }
+
+
+def test_openapi_registers_the_jsonapi_error_document_schema():
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    doc = schema["components"]["schemas"]["JsonApiErrorDocument"]
+    assert doc["required"] == ["errors"]
+    item = doc["properties"]["errors"]["items"]
+    assert set(item["required"]) == {"status", "title"}
+    assert {"status", "title", "detail", "source"} <= set(item["properties"])
+
+
+def _seed_roll_call(
+    pg_conn, bioguide_id: str, bill_id: int, *, cast: str | None = "YEA",
+    question: str = "On Passage", vote_date: str = "2026-05-20",
+    chamber: str = "HOUSE",
+) -> int:
+    # Inserts one roll call on `bill_id` and, unless cast is None, this
+    # member's vote on it. Returns vote_number so the caller can build the
+    # expected roll_call id "<congress>-<chamber>-1-<vote_number>".
+    vote_number = random_number(40000, 49000)
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO roll_calls (
+                chamber, congress, session, vote_number, bill_id,
+                vote_question, result, vote_date, source_hash
+            ) VALUES (%s, %s, 1, %s, %s, %s, 'Passed', %s, %s)
+            RETURNING roll_call_id
+            """,
+            (chamber, CONGRESS, vote_number, bill_id, question, vote_date,
+             f"hash-rc-{bill_id}-{vote_number}"),
+        )
+        roll_call_id = cur.fetchone()[0]
+        if cast is not None:
+            cur.execute(
+                "INSERT INTO roll_call_member_votes (roll_call_id, bioguide_id, vote_cast) "
+                "VALUES (%s, %s, %s)",
+                (roll_call_id, bioguide_id, cast),
+            )
+    return vote_number
+
+
+def test_get_member_votes_returns_roll_call_vote_resources_with_relationships(pg_conn):
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id, "Vera", "Voss")
+    _insert_term(pg_conn, bioguide_id, "HOUSE", 3, state="CA")
+    voted = random_number(20000, 24000)
+    no_vote = random_number(24000, 28000)
+    b_voted = _insert_bill(pg_conn, voted)
+    b_no_vote = _insert_bill(pg_conn, no_vote)  # synced, member never voted
+    vote_number = _seed_roll_call(pg_conn, bioguide_id, b_voted)
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        response = client.get(
+            f"/members/{bioguide_id}/votes",
+            params={"filter[bill]": f"119-hr-{no_vote},119-hr-{voted},119-hr-99999"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+
+        # One roll_call_vote resource, for the bill actually voted on.
+        assert len(body["data"]) == 1
+        vote = body["data"][0]
+        assert vote["type"] == "roll_call_vote"
+        assert vote["id"] == f"119-house-1-{vote_number}:{bioguide_id}"
+        assert vote["attributes"] == {
+            "vote_cast": "YEA", "vote_question": "On Passage",
+            "result": "Passed", "vote_date": "2026-05-20",
+        }
+        assert vote["relationships"] == {
+            "member": {"data": {"type": "member", "id": bioguide_id}},
+            "roll_call": {"data": {"type": "roll_call", "id": f"119-house-1-{vote_number}"}},
+            "bill": {"data": {"type": "bill", "id": f"119-hr-{voted}"}},
+        }
+
+        # Synced-but-no-vote bill -> meta; the unknown id -> nowhere.
+        assert body["meta"]["bills_without_votes"] == [f"119-hr-{no_vote}"]
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM roll_calls WHERE bill_id = ANY(%s)", ([b_voted, b_no_vote],)
+            )
+            cur.execute(
+                "DELETE FROM bills WHERE bill_id = ANY(%s)", ([b_voted, b_no_vote],)
+            )
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
+
+
+def test_get_member_votes_orders_by_requested_bill_then_oldest_first(pg_conn):
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id, "Otto", "Ordway")
+    _insert_term(pg_conn, bioguide_id, "HOUSE", 3, state="CA")
+    a = random_number(20000, 24000)
+    b = random_number(24000, 28000)
+    bill_a = _insert_bill(pg_conn, a)
+    bill_b = _insert_bill(pg_conn, b)
+    _seed_roll_call(pg_conn, bioguide_id, bill_a, question="On Motion to Recommit",
+                    vote_date="2026-05-19")
+    _seed_roll_call(pg_conn, bioguide_id, bill_a, question="On Passage",
+                    vote_date="2026-05-20", cast="NAY")
+    _seed_roll_call(pg_conn, bioguide_id, bill_b, question="On Cloture",
+                    vote_date="2026-04-01")
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        # Request bill b first, though its vote is chronologically earliest.
+        response = client.get(
+            f"/members/{bioguide_id}/votes",
+            params={"filter[bill]": f"119-hr-{b},119-hr-{a}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert [
+            (v["relationships"]["bill"]["data"]["id"], v["attributes"]["vote_question"])
+            for v in data
+        ] == [
+            (f"119-hr-{b}", "On Cloture"),
+            (f"119-hr-{a}", "On Motion to Recommit"),
+            (f"119-hr-{a}", "On Passage"),
+        ]
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM roll_calls WHERE bill_id = ANY(%s)", ([bill_a, bill_b],))
+            cur.execute("DELETE FROM bills WHERE bill_id = ANY(%s)", ([bill_a, bill_b],))
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
+
+
+def test_get_member_votes_unknown_member_returns_404(pg_conn):
+    client = TestClient(app)
+    response = client.get(
+        "/members/NOTAREALID99/votes", params={"filter[bill]": "119-hr-1"}
+    )
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    assert response.json()["errors"][0]["status"] == "404"
+
+
+def test_get_member_votes_malformed_bill_id_returns_400(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}/votes",
+        params={"filter[bill]": "119-hr-2616,not-a-bill"},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    assert "not-a-bill" in response.json()["errors"][0]["detail"]
+
+
+def test_get_member_votes_missing_filter_returns_422_with_source_parameter(seeded_state):
+    client = TestClient(app)
+    response = client.get(f"/members/{seeded_state['rep']}/votes")
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    error = response.json()["errors"][0]
+    assert error["status"] == "422"
+    assert error["source"]["parameter"] == "filter[bill]"
+
+
+def test_get_member_votes_too_many_bills_returns_422(seeded_state):
+    client = TestClient(app)
+    bills = ",".join(f"119-hr-{i}" for i in range(1, 52))
+    response = client.get(
+        f"/members/{seeded_state['rep']}/votes", params={"filter[bill]": bills}
+    )
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+
+
+def test_get_member_votes_success_is_vnd_api_json(pg_conn):
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id, "Sue", "Serrano")
+    _insert_term(pg_conn, bioguide_id, "HOUSE", 3, state="CA")
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        response = client.get(
+            f"/members/{bioguide_id}/votes",
+            params={"filter[bill]": "119-hr-1"},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
+
+
+@pytest.mark.parametrize("bad_param", ["include=roll_call", "sort=vote_date", "fields[bill]=title"])
+def test_get_member_votes_rejects_unsupported_query_params(seeded_state, bad_param):
+    client = TestClient(app)
+    key, value = bad_param.split("=")
+    response = client.get(
+        f"/members/{seeded_state['rep']}/votes",
+        params={"filter[bill]": "119-hr-1", key: value},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    assert key.split("[")[0] in response.json()["errors"][0]["detail"]
+
+
+def test_jsonapi_route_rejects_a_parametrized_content_type(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}",
+        headers={"Content-Type": "application/vnd.api+json; charset=utf-8"},
+    )
+
+    assert response.status_code == 415
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+
+
+def test_jsonapi_route_rejects_an_only_parametrized_accept(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}",
+        headers={"Accept": "application/vnd.api+json; version=1.1"},
+    )
+
+    assert response.status_code == 406
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+
+
+def test_jsonapi_route_allows_an_unparametrized_accept_alongside_a_parametrized_one(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}",
+        headers={"Accept": "application/vnd.api+json, application/vnd.api+json; version=1"},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "accept",
+    [
+        "application/vnd.api+json; q=0.9",  # q is an RFC 9110 weight, not a media-type param
+        'application/vnd.api+json; profile="https://example.com/last-modified"',  # 1.1-exempt
+        "application/vnd.api+json;q=0.8, text/html;q=0.9",
+    ],
+)
+def test_jsonapi_route_does_not_406_on_q_or_profile(seeded_state, accept):
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}", headers={"Accept": accept}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+
+
+def test_jsonapi_route_does_not_415_on_a_profile_content_type(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}",
+        headers={"Content-Type": 'application/vnd.api+json; profile="https://example.com/x"'},
+    )
+
+    assert response.status_code == 200
 
 
 def _vector(*first_values: float, dimensions: int = 1024) -> list[float]:

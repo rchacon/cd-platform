@@ -2,8 +2,10 @@ import datetime
 
 from cd.api.transform import (
     group_representatives,
+    member_document,
     person,
     shape_bill_search_response,
+    shape_member_votes,
 )
 
 
@@ -126,6 +128,144 @@ def test_person_returns_exactly_the_documented_field_set():
         "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
         "suffix", "role", "party", "phone", "website", "photo_url", "district",
     }
+
+
+def _detail_row(**overrides) -> dict:
+    return _row(**{"state": "GA", "in_office": True, **overrides})
+
+
+def test_member_document_is_a_jsonapi_single_resource():
+    doc = member_document(_detail_row(bioguide_id="C000127"))
+
+    assert set(doc) == {"data"}
+    assert doc["data"]["type"] == "member"
+    assert doc["data"]["id"] == "C000127"
+
+
+def test_member_document_moves_identity_out_of_attributes():
+    attributes = member_document(_detail_row())["data"]["attributes"]
+
+    assert "bioguide_id" not in attributes
+    # Exact set so a shaper change can't drift from MemberDetail / the
+    # OpenAPI spec (the model is lenient and would just drop extras).
+    assert set(attributes) == {
+        "first_name", "middle_name", "last_name", "nickname", "suffix",
+        "role", "party", "phone", "website", "photo_url", "district",
+        "state", "in_office",
+    }
+
+
+def test_member_document_carries_state_and_in_office():
+    attributes = member_document(
+        _detail_row(state="TX", in_office=False)
+    )["data"]["attributes"]
+
+    assert attributes["state"] == "TX"
+    assert attributes["in_office"] is False
+
+
+def _mv_row(**overrides) -> dict:
+    # A fetch_member_votes row: bill_key + the roll call's natural-key
+    # parts + the roll call's own fields + this member's vote_cast.
+    row = {
+        "bill_key": "119-hr-2616",
+        "chamber": "HOUSE",
+        "congress": 119,
+        "session": 1,
+        "vote_number": 327,
+        "vote_question": "On Passage",
+        "result": "Passed",
+        "vote_date": datetime.date(2026, 5, 20),
+        "vote_cast": "YEA",
+    }
+    row.update(overrides)
+    return row
+
+
+def _no_vote_row(**overrides) -> dict:
+    # What the LEFT JOIN emits for a synced bill this member never voted
+    # on: the bill_key, everything else NULL.
+    return _mv_row(**{
+        "chamber": None, "session": None, "vote_number": None,
+        "vote_question": None, "result": None, "vote_date": None,
+        "vote_cast": None, **overrides,
+    })
+
+
+def test_shape_member_votes_empty_when_no_rows():
+    assert shape_member_votes([], "K000401", ["119-hr-2616"]) == {
+        "data": [], "meta": {"bills_without_votes": []},
+    }
+
+
+def test_shape_member_votes_builds_one_roll_call_vote_resource_per_vote():
+    result = shape_member_votes([_mv_row()], "K000401", ["119-hr-2616"])
+
+    assert result["data"] == [{
+        "type": "roll_call_vote",
+        "id": "119-house-1-327:K000401",
+        "attributes": {
+            "vote_cast": "YEA",
+            "vote_question": "On Passage",
+            "result": "Passed",
+            "vote_date": datetime.date(2026, 5, 20),
+        },
+        "relationships": {
+            "member": {"data": {"type": "member", "id": "K000401"}},
+            "roll_call": {"data": {"type": "roll_call", "id": "119-house-1-327"}},
+            "bill": {"data": {"type": "bill", "id": "119-hr-2616"}},
+        },
+    }]
+    assert result["meta"] == {"bills_without_votes": []}
+
+
+def test_shape_member_votes_synced_bill_with_no_vote_goes_to_meta_not_data():
+    result = shape_member_votes(
+        [_no_vote_row()], "K000401", ["119-hr-2616"]
+    )
+
+    assert result["data"] == []
+    assert result["meta"]["bills_without_votes"] == ["119-hr-2616"]
+
+
+def test_shape_member_votes_unsynced_bill_is_in_neither_data_nor_meta():
+    # A requested key that matched no row at all -- not a synced bill.
+    result = shape_member_votes([_mv_row()], "K000401", ["119-hr-2616", "119-s-9999"])
+
+    assert [r["relationships"]["bill"]["data"]["id"] for r in result["data"]] == [
+        "119-hr-2616"
+    ]
+    assert result["meta"]["bills_without_votes"] == []
+
+
+def test_shape_member_votes_orders_by_requested_bill_then_oldest_first():
+    rows = [
+        # arrives already ordered by (vote_date, roll_call_id) from the query
+        _mv_row(bill_key="119-s-5", chamber="SENATE", vote_number=88,
+                vote_question="On the Motion", vote_date=datetime.date(2026, 3, 1)),
+        _mv_row(vote_number=100, vote_question="On Motion to Recommit",
+                vote_date=datetime.date(2026, 5, 19)),
+        _mv_row(vote_number=101, vote_question="On Passage",
+                vote_date=datetime.date(2026, 5, 20)),
+    ]
+    result = shape_member_votes(rows, "K000401", ["119-hr-2616", "119-s-5"])
+
+    assert [r["attributes"]["vote_question"] for r in result["data"]] == [
+        "On Motion to Recommit", "On Passage", "On the Motion",
+    ]
+    assert [r["relationships"]["roll_call"]["data"]["id"] for r in result["data"]] == [
+        "119-house-1-100", "119-house-1-101", "119-senate-1-88",
+    ]
+
+
+def test_shape_member_votes_mixes_voted_and_no_vote_bills():
+    rows = [_no_vote_row(bill_key="119-s-5"), _mv_row(bill_key="119-hr-2616")]
+    result = shape_member_votes(rows, "K000401", ["119-hr-2616", "119-s-5"])
+
+    assert [r["relationships"]["bill"]["data"]["id"] for r in result["data"]] == [
+        "119-hr-2616"
+    ]
+    assert result["meta"]["bills_without_votes"] == ["119-s-5"]
 
 
 def _bill_row(**overrides) -> dict:

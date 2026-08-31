@@ -3,9 +3,25 @@ from __future__ import annotations
 from typing import Any
 
 # DB row(s) -> API response dict. `person`/`group_representatives` shape
-# current_members rows for GET /members[/{bioguide_id}];
-# `shape_bill_search_response` shapes bills + votes rows for
-# GET /bills/search.
+# current_members rows for GET /members (bespoke {senators,
+# representatives} shape); `member_document` shapes one current_members
+# row into the JSON:API single-resource document GET /members/{bioguide_id}
+# now returns; `shape_member_votes` shapes fetch_member_votes rows into
+# the JSON:API `roll_call_vote` collection GET /members/{bioguide_id}/votes
+# returns; `shape_bill_search_response` shapes bills + votes rows for
+# GET /bills/search (still bespoke -- reshaped in a later PR).
+
+
+def _roll_call_id(row: dict[str, Any]) -> str:
+    # The canonical roll_call id: "<congress>-<chamber>-<session>-<vote_number>",
+    # e.g. "119-house-1-327". Built from roll_calls' NOT NULL unique
+    # (chamber, congress, session, vote_number) natural key -- same
+    # single-source-of-truth idea as bills.bill_key, just assembled here
+    # rather than in a generated column (yet).
+    return (
+        f"{row['congress']}-{row['chamber'].lower()}-"
+        f"{row['session']}-{row['vote_number']}"
+    )
 
 
 def person(row: dict[str, Any]) -> dict[str, Any]:
@@ -36,6 +52,87 @@ def group_representatives(rows: list[dict[str, Any]]) -> dict[str, list[dict[str
         "senators": [person(row) for row in rows if row["chamber"] == "SENATE"],
         "representatives": [person(row) for row in rows if row["chamber"] == "HOUSE"],
     }
+
+
+def member_document(row: dict[str, Any]) -> dict[str, Any]:
+    # GET /members/{bioguide_id}'s JSON:API single-resource document:
+    # {"data": {"type": "member", "id": "<bioguide_id>", "attributes":
+    # {...}}}. Identity moves to the resource `id`, so `attributes` is
+    # `person(row)` minus bioguide_id, plus the two fields this endpoint
+    # carries over GET /members' shape (state, in_office).
+    attributes = {k: v for k, v in person(row).items() if k != "bioguide_id"}
+    attributes["state"] = row["state"]
+    attributes["in_office"] = row["in_office"]
+    return {
+        "data": {
+            "type": "member",
+            "id": row["bioguide_id"],
+            "attributes": attributes,
+        }
+    }
+
+
+def shape_member_votes(
+    vote_rows: list[dict[str, Any]],
+    bioguide_id: str,
+    requested_bill_keys: list[str],
+) -> dict[str, Any]:
+    # GET /members/{bioguide_id}/votes' JSON:API collection of
+    # `roll_call_vote` resources -- one per roll call this member cast,
+    # each linking (relationships, linkage only) to the `member`, the
+    # `roll_call`, and the `bill` it was a vote on. The `bill` edge is a
+    # denormalised convenience (structurally a roll_call_vote reaches a
+    # bill *via* its roll_call) -- carried directly so a caller can group
+    # votes by bill without fetching the roll_call. vote_question/result/
+    # vote_date are likewise denormalised from the roll call: there's no
+    # `included`, so the fields a client needs to render a vote ride
+    # along on the vote itself.
+    #
+    # Ordering: `data` follows the caller's requested bill order; within
+    # a bill, oldest vote first (fetch_member_votes' ORDER BY).
+    #
+    # Three cases for a requested bill_key:
+    #   - matched rows with a cast vote  -> one resource per vote
+    #   - matched rows, no cast vote     -> id in meta.bills_without_votes
+    #     (synced bill, member just never had a floor vote on it)
+    #   - matched no row at all          -> absent entirely (not a synced
+    #     bill) -- distinguishable from "no vote" by being in neither
+    #     `data` nor `meta`.
+    votes_by_bill: dict[str, list[dict[str, Any]]] = {}
+    bills_seen: set[str] = set()
+    for row in vote_rows:
+        bill_key = row["bill_key"]
+        bills_seen.add(bill_key)
+        if row["vote_cast"] is None:
+            continue
+        roll_call_id = _roll_call_id(row)
+        votes_by_bill.setdefault(bill_key, []).append({
+            "type": "roll_call_vote",
+            "id": f"{roll_call_id}:{bioguide_id}",
+            "attributes": {
+                "vote_cast": row["vote_cast"],
+                "vote_question": row["vote_question"],
+                "result": row["result"],
+                "vote_date": row["vote_date"],
+            },
+            "relationships": {
+                "member": {"data": {"type": "member", "id": bioguide_id}},
+                "roll_call": {"data": {"type": "roll_call", "id": roll_call_id}},
+                "bill": {"data": {"type": "bill", "id": bill_key}},
+            },
+        })
+
+    data = [
+        resource
+        for key in requested_bill_keys
+        for resource in votes_by_bill.get(key, [])
+    ]
+    bills_without_votes = [
+        key
+        for key in requested_bill_keys
+        if key in bills_seen and key not in votes_by_bill
+    ]
+    return {"data": data, "meta": {"bills_without_votes": bills_without_votes}}
 
 
 def shape_bill_search_response(

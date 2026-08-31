@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -9,6 +10,7 @@ from mangum import Mangum
 from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from cd.api import jsonapi
 from cd.api.openapi import build_openapi
 from cd.api.problem import MEDIA_TYPE, problem_response
 from cd.api.routes import bills, members, version
@@ -31,11 +33,16 @@ Gateway ahead of this application -- a missing or invalid key never \
 reaches this code, so it isn't reflected in any route's documented \
 responses below.
 
-**Errors:** every non-2xx response follows \
-[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem Details for \
-HTTP APIs") -- `Content-Type: application/problem+json`, body shaped \
-`{"type", "title", "status", "detail", ...}`, never a bespoke \
-`{"error": "..."}` shape.\
+**Errors:** the bespoke endpoints (`GET /members`, `GET /version`) \
+follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem \
+Details for HTTP APIs") -- `Content-Type: application/problem+json`, \
+body shaped `{"type", "title", "status", "detail", ...}`. The JSON:API \
+resource endpoints (`GET /members/{bioguide_id}`, \
+`GET /members/{bioguide_id}/votes`) instead return a \
+[JSON:API](https://jsonapi.org/format/#errors) error document -- \
+`Content-Type: application/vnd.api+json`, body \
+`{"errors": [{"status", "title", "detail", "source"?}]}`. Neither is \
+ever a bespoke `{"error": "..."}` shape.\
 """
 
 # Matches api_gateway_base_path below -- API Gateway's custom domain
@@ -59,6 +66,14 @@ def _openapi() -> dict:
 app.openapi = _openapi
 
 
+# The JSON:API resource routes (see routes/members.py's jsonapi_router).
+# A JsonApiRoute handles errors from *within* its own handler, so what
+# reaches the app-level handlers below on these paths is only the
+# routing-layer 404 (unmatched) / 405 (bad method) -- which must still
+# come back as JSON:API, not problem+json.
+_JSONAPI_PATH_RE = re.compile(r"^/members/[^/]+(?:/votes)?/?$")
+
+
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
 # Starlette's own router raises the base class directly for unmatched
 # routes (404) and disallowed methods (405), which a handler registered
@@ -69,6 +84,12 @@ app.openapi = _openapi
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
+    if _JSONAPI_PATH_RE.match(request.url.path):
+        return JSONResponse(
+            jsonapi.error_document(exc.status_code, exc.detail),
+            status_code=exc.status_code,
+            media_type=jsonapi.MEDIA_TYPE,
+        )
     return problem_response(status=exc.status_code, detail=exc.detail)
 
 
@@ -94,6 +115,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 app.include_router(version.router)
 app.include_router(members.router)
+app.include_router(members.jsonapi_router)
 app.include_router(bills.router)
 
 
@@ -104,15 +126,14 @@ app.include_router(bills.router)
 # plain /members, not /v1/members. api_gateway_base_path tells Mangum to
 # strip it itself before routing to the ASGI app.
 #
-# text_mime_types adds MEDIA_TYPE (application/problem+json) on top of
-# Mangum's own defaults -- without it, Mangum doesn't recognize that
-# content type as text, base64-encodes every error response body, and
-# sets isBase64Encoded=true. API Gateway only decodes that back for
-# content types in its own binaryMediaTypes config (cd-infra), which
-# isn't set for application/problem+json, so clients received raw base64
-# instead of JSON for every error response (cd-platform#38).
+# text_mime_types adds problem+json AND JSON:API's application/vnd.api+json
+# on top of Mangum's own defaults -- without it, Mangum doesn't recognize
+# those content types as text, base64-encodes the response body, and sets
+# isBase64Encoded=true. API Gateway only decodes that back for content
+# types in its own binaryMediaTypes config (cd-infra), which lists
+# neither, so clients received raw base64 instead of JSON (cd-platform#38).
 handler = Mangum(
     app,
     api_gateway_base_path="/v1",
-    text_mime_types=[*DEFAULT_TEXT_MIME_TYPES, MEDIA_TYPE],
+    text_mime_types=[*DEFAULT_TEXT_MIME_TYPES, MEDIA_TYPE, jsonapi.MEDIA_TYPE],
 )
