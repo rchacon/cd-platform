@@ -358,6 +358,17 @@ def test_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document():
     assert response.json()["errors"][0]["status"] == "404"
 
 
+def test_bills_405_is_a_jsonapi_error_document():
+    # POST /bills never reaches JsonApiRoute (routing-layer 405) --
+    # _JSONAPI_PATH_RE covers the /bills namespace so app.py formats it.
+    client = TestClient(app)
+    response = client.post("/bills")
+
+    assert response.status_code == 405
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert response.json()["errors"][0]["status"] == "405"
+
+
 def test_get_members_returns_senators_and_representative(seeded_state):
     client = TestClient(app)
     response = client.get("/members", params={"state": STATE, "district": DISTRICT})
@@ -684,7 +695,7 @@ def test_openapi_member_by_id_route_is_documented():
     )
     assert set(document["properties"]) == {"data"}
     resource = _follow_ref(schema, document["properties"]["data"]["$ref"])
-    assert set(resource["properties"]) == {"type", "id", "attributes", "relationships"}
+    assert set(resource["properties"]) == {"type", "id", "attributes", "relationships", "meta"}
     detail = _follow_ref(schema, resource["properties"]["attributes"]["$ref"])
     assert {"state", "in_office"} <= set(detail["required"])
     assert set(detail["properties"]) == {
@@ -715,7 +726,7 @@ def test_openapi_member_votes_route_is_documented():
     resource = _follow_ref(
         schema, document["properties"]["data"]["items"]["$ref"]
     )
-    assert set(resource["properties"]) == {"type", "id", "attributes", "relationships"}
+    assert set(resource["properties"]) == {"type", "id", "attributes", "relationships", "meta"}
     attrs = _follow_ref(schema, resource["properties"]["attributes"]["$ref"])
     assert set(attrs["properties"]) == {
         "vote_cast", "vote_question", "result", "vote_date",
@@ -1051,23 +1062,11 @@ def _insert_bill(
         return cur.fetchone()[0]
 
 
-def _insert_vote(pg_conn, bill_id: int, vote_number: int, bioguide_id: str) -> None:
+def _insert_subject(pg_conn, bill_id: int, subject_name: str) -> None:
     with pg_conn.cursor() as cur:
         cur.execute(
-            """
-            INSERT INTO roll_calls (
-                chamber, congress, session, vote_number, bill_id,
-                vote_question, result, vote_date, source_hash
-            ) VALUES ('HOUSE', %s, 1, %s, %s, 'On Passage', 'Passed', '2025-03-01', %s)
-            RETURNING roll_call_id
-            """,
-            (CONGRESS, vote_number, bill_id, f"hash-vote-{vote_number}"),
-        )
-        roll_call_id = cur.fetchone()[0]
-        cur.execute(
-            "INSERT INTO roll_call_member_votes (roll_call_id, bioguide_id, vote_cast) "
-            "VALUES (%s, %s, 'YEA')",
-            (roll_call_id, bioguide_id),
+            "INSERT INTO bill_subjects (bill_id, subject_name) VALUES (%s, %s)",
+            (bill_id, subject_name),
         )
 
 
@@ -1079,213 +1078,194 @@ def _insert_vocab_term(pg_conn, kind: str, term: str, embedding: list[float]) ->
         )
 
 
-def test_openapi_bills_search_response_documents_bill_and_vote_fields():
+def test_openapi_bills_search_is_a_jsonapi_bill_collection():
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
     schemas = schema["components"]["schemas"]
-    assert "BillSearchResponse" in schemas
-    assert set(schemas["BillSearchResponse"]["properties"]) == {"query", "bioguide_id", "bills"}
+    assert "BillSearchResponse" not in schemas
+    assert "BillVote" not in schemas
+    # `match` is per-resource meta, not a Bill attribute.
     assert set(schemas["Bill"]["properties"]) == {
-        "id", "congress", "bill_type", "bill_number", "title", "policy_area",
-        "crs_summary", "votes",
+        "congress", "bill_type", "bill_number", "title", "policy_area",
+        "crs_summary",
     }
-    assert set(schemas["BillVote"]["properties"]) == {
-        "vote_cast", "vote_question", "result", "vote_date",
-    }
+
+    get = schema["paths"]["/bills"]["get"]
+    document = _follow_ref(
+        schema, get["responses"]["200"]["content"][JSONAPI_MEDIA_TYPE]["schema"]["$ref"]
+    )
+    assert set(document["properties"]) == {"data", "meta"}
+    resource = _follow_ref(schema, document["properties"]["data"]["items"]["$ref"])
+    assert set(resource["properties"]) == {"type", "id", "attributes", "relationships", "meta"}
 
 
 def test_openapi_bills_search_documents_query_parameters():
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
-    parameters = {p["name"]: p for p in schema["paths"]["/bills/search"]["get"]["parameters"]}
-    assert parameters["q"]["required"] is True
-    assert parameters["bioguide_id"]["required"] is True
-    assert parameters["limit"]["required"] is False
+    parameters = {p["name"]: p for p in schema["paths"]["/bills"]["get"]["parameters"]}
+    assert set(parameters) == {"filter[query]", "page[size]"}
+    assert parameters["filter[query]"]["required"] is True
+    assert parameters["page[size]"]["required"] is False
 
 
-def test_openapi_bills_search_error_responses_use_problem_json_content_type():
+def test_openapi_bills_search_errors_use_vnd_api_json():
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
-    responses = schema["paths"]["/bills/search"]["get"]["responses"]
-    for status in ("404", "422", "500", "503"):
-        content = responses[status]["content"]
-        assert list(content) == ["application/problem+json"]
+    responses = schema["paths"]["/bills"]["get"]["responses"]
+    for status in ("400", "405", "406", "415", "422", "500", "503"):
+        assert list(responses[status]["content"]) == [JSONAPI_MEDIA_TYPE]
+    assert "404" not in responses
 
 
-def test_get_bills_search_unknown_bioguide_id_returns_404():
+def test_get_bills_search_missing_filter_query_returns_422(monkeypatch):
+    monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
     client = TestClient(app)
-    response = client.get(
-        "/bills/search", params={"q": "dreamers", "bioguide_id": "NOTAREALID99"}
-    )
+    response = client.get("/bills")
 
-    assert response.status_code == 404
-    assert response.headers["content-type"] == "application/problem+json"
-    body = response.json()
-    assert body["status"] == 404
-    assert "NOTAREALID99" in body["detail"]
+    assert response.status_code == 422
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    assert response.json()["errors"][0]["source"]["parameter"] == "filter[query]"
 
 
-def test_get_bills_search_missing_query_param_returns_422(pg_conn):
-    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
-    _insert_member(pg_conn, bioguide_id, "Fran", "Foster")
-    pg_conn.commit()
+def test_get_bills_search_rejects_the_old_query_params(monkeypatch):
+    # q / bioguide_id / limit are gone; JsonApiRoute 400s any undeclared param.
+    monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
+    client = TestClient(app)
+    response = client.get("/bills", params={"q": "dreamers", "bioguide_id": "X"})
 
-    try:
-        client = TestClient(app)
-        response = client.get("/bills/search", params={"bioguide_id": bioguide_id})
-
-        assert response.status_code == 422
-        assert response.headers["content-type"] == "application/problem+json"
-    finally:
-        with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
-        pg_conn.commit()
+    assert response.status_code == 400
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    detail = response.json()["errors"][0]["detail"]
+    assert "q" in detail and "bioguide_id" in detail
 
 
-def test_get_bills_search_bedrock_failure_returns_503(monkeypatch, pg_conn):
-    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
-    _insert_member(pg_conn, bioguide_id, "Gary", "Green")
-    pg_conn.commit()
-
+def test_get_bills_search_bedrock_failure_returns_503(monkeypatch):
     def _boom(client, text):
         raise RuntimeError("bedrock unavailable")
 
     monkeypatch.setattr(bedrock, "embed", _boom)
 
-    try:
-        client = TestClient(app, raise_server_exceptions=False)
-        response = client.get(
-            "/bills/search", params={"q": "dreamers", "bioguide_id": bioguide_id}
-        )
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/bills", params={"filter[query]": "dreamers"})
 
-        assert response.status_code == 503
-        assert response.headers["content-type"] == "application/problem+json"
-        body = response.json()
-        assert body["status"] == 503
-    finally:
-        with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
-        pg_conn.commit()
+    assert response.status_code == 503
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    assert response.json()["errors"][0]["status"] == "503"
 
 
-def test_get_bills_search_tier1_vocab_match_includes_the_members_vote(monkeypatch, pg_conn):
-    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+def test_get_bills_search_tier1_policy_area_match(monkeypatch, pg_conn):
     term = f"test-policy-area-{uuid.uuid4().hex[:8]}"
     bill_number = random_number(20000, 29000)
-    vote_number = random_number(30000, 39000)
-
-    _insert_member(pg_conn, bioguide_id, "Helen", "Hayes")
     _insert_vocab_term(pg_conn, "POLICY_AREA", term, _vector(1.0, 0.0))
     bill_id = _insert_bill(pg_conn, bill_number, policy_area=term)
     pg_conn.commit()
-    _insert_vote(pg_conn, bill_id, vote_number, bioguide_id)
-    pg_conn.commit()
-
-    monkeypatch.setattr(
-        bedrock, "embed", lambda client, text: _vector(1.0, 0.0)
-    )
+    monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
 
     try:
         client = TestClient(app)
         response = client.get(
-            "/bills/search", params={"q": "some free text", "bioguide_id": bioguide_id}
+            "/bills", params={"filter[query]": "some free text"}
         )
 
         assert response.status_code == 200
+        assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
         body = response.json()
-        assert body["query"] == "some free text"
-        assert body["bioguide_id"] == bioguide_id
-        matched = next(b for b in body["bills"] if b["bill_number"] == bill_number)
-        assert matched["id"] == f"119-hr-{bill_number}"
-        assert matched["policy_area"] == term
-        assert len(matched["votes"]) == 1
-        assert matched["votes"][0]["vote_cast"] == "YEA"
+        assert body["meta"] == {"query": "some free text"}
+        matched = next(
+            r for r in body["data"] if r["id"] == f"119-hr-{bill_number}"
+        )
+        assert matched["type"] == "bill"
+        assert "relationships" not in matched
+        assert matched["attributes"]["policy_area"] == term
+        assert matched["meta"] == {"match": "policy_area"}
+        assert "id" not in matched["attributes"]
+        assert "match" not in matched["attributes"]
+        assert "votes" not in matched["attributes"]
     finally:
         with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM roll_calls WHERE bill_id = %s", (bill_id,))
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
             cur.execute("DELETE FROM vocab_term_embeddings WHERE term = %s", (term,))
-            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
         pg_conn.commit()
 
 
-def test_get_bills_search_falls_back_to_similarity_when_no_close_vocab_match(
-    monkeypatch, pg_conn
-):
-    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
-    unrelated_term = f"test-unrelated-{uuid.uuid4().hex[:8]}"
+def test_get_bills_search_tier1_subject_match(monkeypatch, pg_conn):
+    term = f"test-subject-{uuid.uuid4().hex[:8]}"
     bill_number = random_number(20000, 29000)
-
-    _insert_member(pg_conn, bioguide_id, "Ian", "Irwin")
-    # Deliberately far from the query embedding below (cosine distance
-    # ~1.0, well above VOCAB_MATCH_THRESHOLD) -- forces tier 1 to find
-    # no confident match, so tier 2 similarity search is what surfaces
-    # the bill.
-    _insert_vocab_term(pg_conn, "POLICY_AREA", unrelated_term, _vector(0.0, 1.0))
-    bill_id = _insert_bill(pg_conn, bill_number, embedding=_vector(1.0, 0.0))
+    _insert_vocab_term(pg_conn, "SUBJECT", term, _vector(1.0, 0.0))
+    bill_id = _insert_bill(pg_conn, bill_number)
+    _insert_subject(pg_conn, bill_id, term)
     pg_conn.commit()
-
-    monkeypatch.setattr(
-        bedrock, "embed", lambda client, text: _vector(1.0, 0.0)
-    )
+    monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
 
     try:
         client = TestClient(app)
-        response = client.get(
-            "/bills/search", params={"q": "some free text", "bioguide_id": bioguide_id}
-        )
+        response = client.get("/bills", params={"filter[query]": "x"})
 
         assert response.status_code == 200
-        body = response.json()
-        assert bill_number in {b["bill_number"] for b in body["bills"]}
+        matched = next(
+            r for r in response.json()["data"] if r["id"] == f"119-hr-{bill_number}"
+        )
+        assert matched["meta"]["match"] == "subject"
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM bill_subjects WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM vocab_term_embeddings WHERE term = %s", (term,))
+        pg_conn.commit()
+
+
+def test_get_bills_search_falls_back_to_similarity_with_match_similarity(monkeypatch, pg_conn):
+    unrelated_term = f"test-unrelated-{uuid.uuid4().hex[:8]}"
+    bill_number = random_number(20000, 29000)
+    # Vocab term far from the query embedding -> tier 1 finds nothing
+    # confident, so tier-2 similarity search surfaces the bill.
+    _insert_vocab_term(pg_conn, "POLICY_AREA", unrelated_term, _vector(0.0, 1.0))
+    bill_id = _insert_bill(pg_conn, bill_number, embedding=_vector(1.0, 0.0))
+    pg_conn.commit()
+    monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
+
+    try:
+        client = TestClient(app)
+        response = client.get("/bills", params={"filter[query]": "x"})
+
+        assert response.status_code == 200
+        matched = next(
+            r for r in response.json()["data"] if r["id"] == f"119-hr-{bill_number}"
+        )
+        assert matched["meta"]["match"] == "similarity"
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
             cur.execute(
                 "DELETE FROM vocab_term_embeddings WHERE term = %s", (unrelated_term,)
             )
-            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
         pg_conn.commit()
 
 
 def test_get_bills_search_omits_bills_beyond_the_relevance_floor(monkeypatch, pg_conn):
-    # Regression test for the "always pads out to `limit`" issue found
-    # while manually testing locally: a query with no genuinely related
-    # bill in the corpus should return fewer (here, zero) results, not
-    # backfill with the least-far bill regardless of how unrelated it
-    # actually is.
-    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    # A query with no genuinely related bill returns fewer (here zero)
+    # results rather than backfilling with the least-far bill.
     unrelated_term = f"test-unrelated-{uuid.uuid4().hex[:8]}"
     bill_number = random_number(20000, 29000)
-
-    _insert_member(pg_conn, bioguide_id, "Jill", "Jensen")
     _insert_vocab_term(pg_conn, "POLICY_AREA", unrelated_term, _vector(0.0, 1.0))
-    # cosine distance from the query embedding below is 1.0 -- well past
-    # the bills route's BILL_SIMILARITY_THRESHOLD (0.80).
+    # cosine distance 1.0 from the query embedding -- past BILL_SIMILARITY_THRESHOLD (0.80).
     bill_id = _insert_bill(pg_conn, bill_number, embedding=_vector(0.0, 1.0))
     pg_conn.commit()
-
-    monkeypatch.setattr(
-        bedrock, "embed", lambda client, text: _vector(1.0, 0.0)
-    )
+    monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
 
     try:
         client = TestClient(app)
-        response = client.get(
-            "/bills/search", params={"q": "some free text", "bioguide_id": bioguide_id}
-        )
+        response = client.get("/bills", params={"filter[query]": "x"})
 
         assert response.status_code == 200
-        body = response.json()
-        assert bill_number not in {b["bill_number"] for b in body["bills"]}
+        assert f"119-hr-{bill_number}" not in {r["id"] for r in response.json()["data"]}
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
             cur.execute(
                 "DELETE FROM vocab_term_embeddings WHERE term = %s", (unrelated_term,)
             )
-            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
         pg_conn.commit()

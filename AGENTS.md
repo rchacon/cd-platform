@@ -104,7 +104,7 @@ since `cd-server` never touches them -- `cd-lib` is for code that's
 actually shared, not a dumping ground for every model cd-api happens to
 have; see `cd-lib/README.md`), `bedrock.py`'s `build_bedrock_client()`/
 `embed()` (Titan Text Embeddings V2 -- shared by `cd-api`'s
-`GET /bills/search` and `cd-etl`'s `bills_common.sync_bill`; the move is
+`GET /bills` and `cd-etl`'s `bills_common.sync_bill`; the move is
 what first made `cd-etl` depend on `cd-lib`), and `apportionment.py`'s
 `SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` -- only the data lives in
 `cd-lib` now; cd-api's `max_valid_district`/`is_valid_district`

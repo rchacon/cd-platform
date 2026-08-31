@@ -10,13 +10,13 @@ from cd.api.db import (
     fetch_bills_by_similarity,
     fetch_bills_by_subject,
     fetch_closest_vocab_term,
-    fetch_votes_for_bills,
-    member_exists,
 )
-from cd.api.openapi import error_response
-from cd.api.transform import shape_bill_search_response
+from cd.api.jsonapi import JsonApiResponse, JsonApiRoute
+from cd.api.openapi import jsonapi_error_response
+from cd.api.transform import bill_search_document
 from cd.lib import bedrock
-from cd.lib.models import BillSearchResponse
+from cd.lib.jsonapi import CollectionDocument
+from cd.lib.models import Bill
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # inside the Lambda's 25s function timeout. botocore's own defaults (60s
 # connect, 60s read) outlast it, so when the network path to Bedrock is
 # broken -- e.g. the Lambda's SG missing a 443 egress rule, exactly how
-# GET /bills/search first shipped -- invoke_model() would hang past the
+# GET /bills first shipped -- invoke_model() would hang past the
 # timeout and the sandbox is killed mid-call, surfacing as an uncatchable
 # 500 rather than reaching the except -> 503 below. total_max_attempts is
 # max_attempts + 1 == 2, a single attempt's worst case is
@@ -65,72 +65,119 @@ VOCAB_MATCH_THRESHOLD = 0.25
 # exist.
 BILL_SIMILARITY_THRESHOLD = 0.80
 
-router = APIRouter(tags=["bills"])
+DEFAULT_PAGE_SIZE = 10
+MAX_PAGE_SIZE = 50
+
+# One router -- the only bills route speaks JSON:API, so unlike
+# routes/members.py there's no bespoke sibling to keep separate.
+router = APIRouter(route_class=JsonApiRoute, tags=["bills"])
 
 
 @router.get(
-    "/bills/search",
-    response_model=BillSearchResponse,
+    "/bills",
+    response_model=CollectionDocument[Bill],
+    response_class=JsonApiResponse,
+    # `bill` resources carry no relationships; exclude_none drops the
+    # wrapper's default `None` so the response omits the member rather
+    # than emitting `"relationships": null` (invalid per JSON:API). It
+    # also omits a null `title`/`policy_area`/`crs_summary` -- absent,
+    # not null, which JSON:API treats the same. Same call as
+    # GET /members/{bioguide_id}.
+    response_model_exclude_none=True,
     responses={
-        404: error_response("Unknown bioguide_id.", "ProblemDetail"),
-        405: error_response("HTTP method not allowed for this path.", "ProblemDetail"),
-        422: error_response(
-            "Request parameters failed validation.", "ValidationProblemDetail"
+        400: jsonapi_error_response("An unsupported query parameter was sent."),
+        405: jsonapi_error_response("HTTP method not allowed for this path."),
+        406: jsonapi_error_response(
+            "`Accept` offers the JSON:API media type only with a media-type "
+            "parameter other than `profile`/`ext`."
         ),
-        500: error_response("An unexpected error occurred.", "ProblemDetail"),
-        503: error_response(
-            "Search is temporarily unavailable (embedding generation failed).",
-            "ProblemDetail",
+        415: jsonapi_error_response(
+            "`Content-Type` is the JSON:API media type with a media-type "
+            "parameter other than `profile`/`ext`."
+        ),
+        422: jsonapi_error_response(
+            "Request parameters failed validation (e.g. `filter[query]` "
+            f"missing/empty/over 500 chars, or `page[size]` outside 1..{MAX_PAGE_SIZE})."
+        ),
+        500: jsonapi_error_response("An unexpected error occurred."),
+        503: jsonapi_error_response(
+            "Search is temporarily unavailable (embedding generation failed)."
         ),
     },
 )
-def get_bills_search(
-    q: str = Query(..., min_length=1, max_length=500, description="Free-text search query."),
-    bioguide_id: str = Query(
-        ..., description="Scopes results to how this specific representative voted."
+def get_bills(
+    query: str = Query(
+        ...,
+        alias="filter[query]",
+        min_length=1,
+        max_length=500,
+        description=(
+            "Free-text topic to search for -- a JSON:API filter narrowing "
+            "the bill collection to what's about this topic."
+        ),
     ),
-    limit: int = Query(10, ge=1, le=50),
+    page_size: int = Query(
+        DEFAULT_PAGE_SIZE,
+        alias="page[size]",
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description=(
+            f"Maximum bills to return, 1..{MAX_PAGE_SIZE} (default "
+            f"{DEFAULT_PAGE_SIZE}). No offset/cursor pagination yet -- a "
+            "single page, capped."
+        ),
+    ),
 ) -> dict:
-    """Semantic search over bills, scoped to one representative's votes.
+    """Semantic search over bills.
 
-    Matches `q` against a bill's policy area or legislative subjects
-    first (tier 1, exact controlled-vocabulary match against the
-    closest embedding in `vocab_term_embeddings`); any remaining slots
-    up to `limit` are then considered for tier-2 cosine-similarity
-    search directly against each bill's own summary embedding, subject
-    to `BILL_SIMILARITY_THRESHOLD` -- a bill farther than that from `q`
-    is excluded rather than backfilled in, so this can return fewer
-    than `limit` (even zero) bills when nothing in the corpus is
-    genuinely close enough. Each returned bill includes every roll call
-    `bioguide_id` cast in their own chamber for it (empty if the bill
-    matched but they never voted on it).
+    Matches `filter[query]` against a bill's policy area or legislative
+    subjects first (tier 1, exact controlled-vocabulary match against
+    the closest embedding in `vocab_term_embeddings`); any remaining
+    slots up to `page[size]` are then considered for tier-2
+    cosine-similarity search directly against each bill's own summary
+    embedding, subject to `BILL_SIMILARITY_THRESHOLD` -- a bill farther
+    than that is excluded rather than backfilled in, so this can return
+    fewer than `page[size]` (even zero) bills when nothing in the corpus
+    is genuinely close enough.
+
+    Returns a JSON:API collection of `bill` resources -- `{"data":
+    [{"type": "bill", "id": "119-hr-2616", "attributes": {"congress",
+    "bill_type", "bill_number", "title", "policy_area", "crs_summary"},
+    "meta": {"match": "policy_area"}}, ...], "meta": {"query": "..."}}`
+    -- in retrieval-tier order. Each resource's `meta.match`
+    (`policy_area` / `subject` / `similarity`) says which tier surfaced
+    that bill -- per-resource `meta`, not an attribute, since it's about
+    this search, not the bill. The resource `id` is the canonical
+    `bills.bill_key`, which a caller passes to
+    `GET /members/{bioguide_id}/votes`'s `filter[bill]` to get a
+    member's votes on these bills. Side-effect-free and cacheable on the
+    query alone.
     """
-    if not member_exists(bioguide_id):
-        raise HTTPException(status_code=404, detail=f"Unknown bioguide_id {bioguide_id}")
-
     try:
-        query_embedding = bedrock.embed(_BEDROCK_CLIENT, q)
+        query_embedding = bedrock.embed(_BEDROCK_CLIENT, query)
     except Exception as exc:
         # Unlike cd-etl's degrade-gracefully precedent for a stale
         # embedding, there's nothing to fall back to here -- the
         # embedding IS the query. 503 signals retryability more usefully
         # than the generic 500 catch-all below.
-        logger.exception("Bedrock embed failed for query %r", q)
+        logger.exception("Bedrock embed failed for query %r", query)
         raise HTTPException(
             status_code=503, detail="Search is temporarily unavailable."
         ) from exc
 
     vocab_match = fetch_closest_vocab_term(query_embedding)
-    tier1_bills = []
+    tier1_bills: list[dict] = []
     if vocab_match is not None and vocab_match["distance"] <= VOCAB_MATCH_THRESHOLD:
-        fetch = (
-            fetch_bills_by_policy_area
-            if vocab_match["kind"] == "POLICY_AREA"
-            else fetch_bills_by_subject
-        )
-        tier1_bills = fetch(vocab_match["term"], limit)
+        if vocab_match["kind"] == "POLICY_AREA":
+            tier1_bills = fetch_bills_by_policy_area(vocab_match["term"], page_size)
+            tier1_match = "policy_area"
+        else:
+            tier1_bills = fetch_bills_by_subject(vocab_match["term"], page_size)
+            tier1_match = "subject"
+        for bill in tier1_bills:
+            bill["match"] = tier1_match
 
-    remaining = limit - len(tier1_bills)
+    remaining = page_size - len(tier1_bills)
     tier2_bills = (
         fetch_bills_by_similarity(
             query_embedding, [b["bill_id"] for b in tier1_bills], remaining,
@@ -139,7 +186,7 @@ def get_bills_search(
         if remaining > 0
         else []
     )
+    for bill in tier2_bills:
+        bill["match"] = "similarity"
 
-    all_bills = tier1_bills + tier2_bills
-    votes = fetch_votes_for_bills([b["bill_id"] for b in all_bills], bioguide_id)
-    return shape_bill_search_response(q, bioguide_id, all_bills, votes)
+    return bill_search_document(query, tier1_bills + tier2_bills)

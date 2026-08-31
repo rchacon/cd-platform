@@ -192,6 +192,10 @@ def get_member(bioguide_id: str) -> dict:
     "/members/{bioguide_id}/votes",
     response_model=CollectionDocument[RollCallVote],
     response_class=JsonApiResponse,
+    # roll_call_vote resources carry no `meta`; exclude_none drops the
+    # wrapper's default `None` so the response omits it rather than
+    # emitting `"meta": null` (invalid per JSON:API, like `relationships`).
+    response_model_exclude_none=True,
     responses={
         400: jsonapi_error_response(
             "A `filter[bill]` id is malformed (not "
@@ -224,7 +228,7 @@ def get_member_votes(
         min_length=1,
         description=(
             "Comma-separated canonical bill ids -- the bill resource "
-            "`id`s from a `GET /bills/search` response, passed back "
+            "`id`s from a `GET /bills` response, passed back "
             "verbatim, e.g. `119-hr-2616,119-s-5`. Required; 1 to "
             f"{MAX_VOTE_BILLS} ids. A JSON:API relationship filter on the "
             "`roll_call_vote` resource's `bill` relationship: it narrows "
@@ -234,7 +238,7 @@ def get_member_votes(
 ) -> dict:
     """How one member voted on a specific set of bills.
 
-    The companion to `GET /bills/search`: that endpoint finds bills for a
+    The companion to `GET /bills`: that endpoint finds bills for a
     topic, this one returns this member's roll-call votes on them as
     `roll_call_vote` resources, each with `relationships` linkage to its
     `member`, `roll_call`, and `bill` -- so a caller (e.g. cd-server) can

@@ -37,9 +37,9 @@ responses below.
 follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem \
 Details for HTTP APIs") -- `Content-Type: application/problem+json`, \
 body shaped `{"type", "title", "status", "detail", ...}`. The JSON:API \
-resource endpoints (`GET /members/{bioguide_id}`, \
-`GET /members/{bioguide_id}/votes`) instead return a \
-[JSON:API](https://jsonapi.org/format/#errors) error document -- \
+endpoints (`GET /members/{bioguide_id}`, \
+`GET /members/{bioguide_id}/votes`, `GET /bills`) instead \
+return a [JSON:API](https://jsonapi.org/format/#errors) error document -- \
 `Content-Type: application/vnd.api+json`, body \
 `{"errors": [{"status", "title", "detail", "source"?}]}`. Neither is \
 ever a bespoke `{"error": "..."}` shape.\
@@ -66,16 +66,16 @@ def _openapi() -> dict:
 app.openapi = _openapi
 
 
-# The JSON:API resource routes (see routes/members.py's jsonapi_router).
+# The JSON:API routes (routes/members.py's jsonapi_router + routes/bills.py).
 # A JsonApiRoute handles errors from *within* its own handler, so what
 # reaches the app-level handlers below on these paths is only the
 # routing-layer 404 (unmatched) / 405 (bad method) -- which must still
 # come back as JSON:API, not problem+json. Matches the whole
-# `/members/<id>...` namespace, not just the exact route shapes, so a
-# near-miss like `/members/K000401/votez` still gets a JSON:API 404
-# rather than problem+json. `/members` (the bespoke list) has no
-# trailing segment, so it is not matched.
-_JSONAPI_PATH_RE = re.compile(r"^/members/[^/]+")
+# `/members/<id>...` and `/bills...` namespace, not just the exact
+# route shapes, so a near-miss like `/members/K000401/votez` still gets a
+# JSON:API 404 rather than problem+json. `/members` (the bespoke list)
+# has no trailing segment, so it is not matched.
+_JSONAPI_PATH_RE = re.compile(r"^/(?:members/[^/]+|bills(?:/|$))")
 
 
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
