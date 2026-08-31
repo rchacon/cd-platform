@@ -73,6 +73,17 @@ against `cd-lib`'s shared `Member`/`MembersResponse` models and hands
 `schema.py`'s resolvers real `Member` objects, not a dict the resolver
 would otherwise have to parse itself.
 
+`CdApiService`'s `/members` handling is currently a **forward-compat
+shim** (cd-platform#104): it sends both the legacy `state`/`district`
+query params and the new `filter[state]`/`filter[district]`, and its
+`_members()` helper accepts either the old bespoke
+`{senators, representatives}` body or a new JSON:API
+`{"data": [<member resource>]}` collection -- splitting the flat `data`
+list back into chambers by `district` (NULL only for a Senator). This
+ships *before* cd-api's `/members` flips to JSON:API so cd-server stays
+up across the switch; the old branch (and `MembersResponse`) is removed
+in a follow-up once cd-api has shipped.
+
 Both the transport `get()`s and the two GraphQL resolvers above are
 `async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
 pool (closed via `CdApiService.aclose()`, called from `app.py`'s FastAPI

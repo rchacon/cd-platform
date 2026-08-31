@@ -250,17 +250,68 @@ _MEMBER = {
 _SENATOR = {**_MEMBER, "role": "Senator", "district": None}
 
 
-def test_cd_api_service_get_representatives_validates_and_returns_members():
+def _resource(member: dict) -> dict:
+    # A member as the new JSON:API `/members` shape sends it: bioguide_id
+    # becomes the resource id, and `state`/`in_office` ride in attributes.
+    attrs = {k: v for k, v in member.items() if k != "bioguide_id"}
+    return {
+        "type": "member",
+        "id": member["bioguide_id"],
+        "attributes": {**attrs, "state": "CA", "in_office": True},
+    }
+
+
+def test_cd_api_service_get_representatives_sends_legacy_and_filter_params():
     transport = _FakeTransport({"representatives": [_MEMBER], "senators": []})
     service = CdApiService(transport)
 
     members = asyncio.run(service.get_representatives("CA", 12))
 
-    assert transport.calls == [("/members", {"state": "CA", "district": "12"})]
-    assert len(members) == 1
-    assert members[0].last_name == "Doe"
-    assert members[0].bioguide_id == "D000001"
+    assert transport.calls == [(
+        "/members",
+        {"state": "CA", "district": "12",
+         "filter[state]": "CA", "filter[district]": "12"},
+    )]
+    assert [m.bioguide_id for m in members] == ["D000001"]
     assert members[0].district == 12
+
+
+def test_cd_api_service_get_senators_sends_legacy_and_filter_params():
+    transport = _FakeTransport({"representatives": [], "senators": [_SENATOR]})
+    service = CdApiService(transport)
+
+    members = asyncio.run(service.get_senators("CA"))
+
+    assert transport.calls == [("/members", {"state": "CA", "filter[state]": "CA"})]
+    assert [m.bioguide_id for m in members] == ["D000001"]
+    assert members[0].district is None
+
+
+def test_cd_api_service_parses_the_jsonapi_collection_shape():
+    # Forward-compat: once cd-api's /members returns a JSON:API document,
+    # cd-server must split the flat `data` list back into chambers.
+    payload = {"data": [_resource(_SENATOR), _resource(_SENATOR | {"bioguide_id": "S000002"}),
+                        _resource(_MEMBER)]}
+
+    reps = asyncio.run(CdApiService(_FakeTransport(payload)).get_representatives("CA", 12))
+    sens = asyncio.run(CdApiService(_FakeTransport(payload)).get_senators("CA"))
+
+    assert [m.bioguide_id for m in reps] == ["D000001"]
+    assert reps[0].district == 12
+    assert {m.bioguide_id for m in sens} == {"D000001", "S000002"}
+    assert all(m.district is None for m in sens)
+
+
+def test_cd_api_service_drops_jsonapi_only_attributes():
+    # `state`/`in_office` live in the resource attributes of the new
+    # shape but aren't Member fields -- lenient Member drops them.
+    payload = {"data": [_resource(_MEMBER)]}
+
+    members = asyncio.run(CdApiService(_FakeTransport(payload)).get_representatives("CA", 12))
+
+    assert members[0].bioguide_id == "D000001"
+    assert not hasattr(members[0], "state")
+    assert not hasattr(members[0], "in_office")
 
 
 def test_cd_api_service_ignores_unknown_fields_from_cd_api():
@@ -275,19 +326,6 @@ def test_cd_api_service_ignores_unknown_fields_from_cd_api():
     assert len(members) == 1
     assert members[0].bioguide_id == "D000001"
     assert not hasattr(members[0], "some_future_field")
-
-
-def test_cd_api_service_get_senators_validates_and_returns_members():
-    transport = _FakeTransport({"representatives": [], "senators": [_SENATOR]})
-    service = CdApiService(transport)
-
-    members = asyncio.run(service.get_senators("CA"))
-
-    assert transport.calls == [("/members", {"state": "CA"})]
-    assert len(members) == 1
-    assert members[0].last_name == "Doe"
-    assert members[0].bioguide_id == "D000001"
-    assert members[0].district is None
 
 
 def test_cd_api_service_aclose_delegates_to_transport():

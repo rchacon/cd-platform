@@ -153,6 +153,34 @@ def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
     }
 
 
+def _members(payload: dict, chamber: str) -> list[Member]:
+    """Normalise a `/members` response -- old bespoke
+    `{senators, representatives}` OR new JSON:API `{data: [<resource>]}`
+    -- into a `list[Member]` for one chamber ("senators" | "representatives").
+
+    Forward-compat shim (cd-platform#104): cd-server ships this *before*
+    cd-api's `/members` flips to JSON:API, so it keeps working across the
+    switch. The old branch (and this whole function's second half) goes
+    away once cd-api has shipped and been confirmed. cd-lib's `Member` is
+    lenient (extra="ignore"), so the resource `attributes` carrying
+    `state`/`in_office` the JSON:API shape adds are simply dropped.
+    """
+    if "data" in payload:
+        members = [
+            Member(bioguide_id=resource["id"], **resource["attributes"])
+            for resource in payload["data"]
+        ]
+        # The JSON:API collection is a flat list; split by chamber the
+        # way cd-api's own view does -- district is NULL only for a
+        # Senator (0/1+ for every House seat, Delegates included).
+        if chamber == "senators":
+            return [m for m in members if m.district is None]
+        return [m for m in members if m.district is not None]
+
+    parsed = MembersResponse(**payload)
+    return parsed.senators if chamber == "senators" else parsed.representatives
+
+
 class CdApiService:
     """The service layer schema.py depends on for cd-api data. Unlike the
     ApiClient it wraps (which just makes the call and hands back a raw
@@ -165,14 +193,27 @@ class CdApiService:
         self._transport = transport
 
     async def get_representatives(self, state: str, district: int) -> list[Member]:
+        # Sends BOTH the legacy `state`/`district` params and the new
+        # JSON:API `filter[state]`/`filter[district]` (cd-platform#104):
+        # today's cd-api reads the former and ignores the extras; the
+        # post-flip cd-api reads `filter[*]` (and still tolerates the
+        # legacy names as deprecated aliases for exactly this window).
         result = await self._transport.get(
-            "/members", {"state": state, "district": str(district)}
+            "/members",
+            {
+                "state": state,
+                "district": str(district),
+                "filter[state]": state,
+                "filter[district]": str(district),
+            },
         )
-        return MembersResponse(**result).representatives
+        return _members(result, "representatives")
 
     async def get_senators(self, state: str) -> list[Member]:
-        result = await self._transport.get("/members", {"state": state})
-        return MembersResponse(**result).senators
+        result = await self._transport.get(
+            "/members", {"state": state, "filter[state]": state}
+        )
+        return _members(result, "senators")
 
     async def aclose(self) -> None:
         await self._transport.aclose()
