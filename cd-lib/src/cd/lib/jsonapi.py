@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 # JSON:API document/resource models for cd-api's resource endpoints
 # (GET /members/{bioguide_id}, GET /members/{bioguide_id}/votes, and
-# eventually /bills/search): the document envelope (`data` holding a
+# eventually /bills): the document envelope (`data` holding a
 # resource or list of them), typed `attributes`, and `relationships`
 # carrying resource *linkage* -- `{"type", "id"}` pointers, nothing more.
 #
@@ -51,26 +51,30 @@ class Relationship(BaseModel):
 
 class Resource(BaseModel, Generic[A]):
     """A JSON:API resource object: a `type`, a string `id`, typed
-    `attributes`, and optional `relationships` (linkage to other
-    resources by `{type, id}`).
+    `attributes`, optional `relationships` (linkage to other resources by
+    `{type, id}`), and optional `meta`.
 
     Identity lives here, not in `attributes` -- an attributes model never
     repeats its own id field (a `member` resource's `attributes` has no
     `bioguide_id`). Foreign keys live in `relationships`, not
     `attributes` -- a `roll_call_vote`'s bill is
-    `relationships.bill.data.id`, not an attribute.
+    `relationships.bill.data.id`, not an attribute. Information that isn't
+    a property of the resource itself but of *this response* -- e.g. why
+    a `bill` matched a particular search -- goes in `meta`, not
+    `attributes`, so the attributes model stays reusable across
+    endpoints.
+
+    `relationships` and `meta`, when present, MUST be objects (JSON:API
+    -- never `null`). A route whose resources omit one sets
+    `response_model_exclude_none=True` so FastAPI drops the default
+    `None` rather than serialising it.
     """
 
     type: str
     id: str
     attributes: A
-    # Optional: a resource with no relationships omits the member
-    # entirely (JSON:API: `relationships`, when present, MUST be an
-    # object -- never `null`). Routes whose resources never carry
-    # relationships (e.g. GET /members/{bioguide_id}) set
-    # `response_model_exclude_none=True` so FastAPI drops the default
-    # `None` rather than serialising `"relationships": null`.
     relationships: dict[str, Relationship] | None = None
+    meta: dict[str, Any] | None = None
 
 
 class Document(BaseModel, Generic[A]):
@@ -84,7 +88,7 @@ class CollectionDocument(BaseModel, Generic[A]):
     ``{"data": [<resource>, ...], "meta"?: {...}}``.
 
     `meta` is an optional free-form object for information that isn't a
-    resource -- e.g. /bills/search echoing its query, or
+    resource -- e.g. /bills echoing its query, or
     /members/{id}/votes listing requested bills the member never voted
     on. Kept untyped here since what belongs in it is per-endpoint.
     """
