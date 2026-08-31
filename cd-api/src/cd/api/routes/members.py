@@ -286,11 +286,13 @@ def get_member_votes(
             detail=f"Malformed bill id(s): {', '.join(malformed)}.",
         )
 
-    if fetch_member(bioguide_id) is None:
+    # fetch_member_votes returns None (rather than []) when the id has no
+    # current-Congress term -- the 404, checked in the same DB connection
+    # as the votes query rather than a separate fetch_member() round trip.
+    rows = fetch_member_votes(bioguide_id, keys)
+    if rows is None:
         raise HTTPException(
             status_code=404,
             detail=f"No current-Congress member with bioguide_id {bioguide_id}",
         )
-
-    rows = fetch_member_votes(bioguide_id, keys)
     return shape_member_votes(rows, bioguide_id, keys)

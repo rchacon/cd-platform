@@ -447,6 +447,7 @@ def test_fetch_member_votes_returns_the_members_votes_keyed_by_bill_key(pg_conn)
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number)
     _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)  # fetch_member_votes 404s a non-current-Congress id
     pg_conn.commit()
     _insert_vote(pg_conn, bill_id, _vote_number(), voter, vote_cast="YEA")
     pg_conn.commit()
@@ -479,6 +480,7 @@ def test_fetch_member_votes_keeps_a_synced_bill_with_no_member_vote(pg_conn):
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number)
     _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
     _insert_member(pg_conn, other)
     pg_conn.commit()
     _insert_vote(pg_conn, bill_id, _vote_number(), other, vote_cast="NAY")
@@ -503,6 +505,7 @@ def test_fetch_member_votes_keeps_a_synced_bill_with_no_roll_calls_at_all(pg_con
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number)
     _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
     pg_conn.commit()
 
     try:
@@ -521,6 +524,7 @@ def test_fetch_member_votes_keeps_a_synced_bill_with_no_roll_calls_at_all(pg_con
 def test_fetch_member_votes_omits_a_bill_key_that_matches_no_bill(pg_conn):
     voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
     pg_conn.commit()
 
     try:
@@ -532,11 +536,31 @@ def test_fetch_member_votes_omits_a_bill_key_that_matches_no_bill(pg_conn):
         pg_conn.commit()
 
 
+def test_fetch_member_votes_returns_none_for_a_non_current_congress_member(pg_conn):
+    # No current-Congress term -> None (the route's 404), same rule as
+    # fetch_member. A bare members row with no member_terms row stands in.
+    voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, voter)
+    pg_conn.commit()
+
+    try:
+        assert db.fetch_member_votes(voter, ["119-hr-1"]) is None
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
+        pg_conn.commit()
+
+
+def test_fetch_member_votes_returns_none_for_an_unknown_bioguide_id():
+    assert db.fetch_member_votes("NOTAREALID99", ["119-hr-1"]) is None
+
+
 def test_fetch_member_votes_returns_votes_oldest_first(pg_conn):
     voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number)
     _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
     pg_conn.commit()
     with pg_conn.cursor() as cur:
         for vote_date, question in (
