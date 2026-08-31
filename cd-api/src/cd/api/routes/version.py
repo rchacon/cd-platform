@@ -12,7 +12,7 @@ from cd.api.openapi import error_response
 # and tests, where read_version() falls back to "dev".
 VERSION_FILE = Path(__file__).parent.parent / "VERSION"
 
-router = APIRouter(tags=["meta"])
+router = APIRouter(tags=["system"])
 
 
 def read_version() -> str:
