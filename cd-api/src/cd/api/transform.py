@@ -6,10 +6,10 @@ from typing import Any
 # current_members rows for GET /members (bespoke {senators,
 # representatives} shape); `member_document` shapes one current_members
 # row into the JSON:API single-resource document GET /members/{bioguide_id}
-# now returns; `shape_member_votes` shapes fetch_member_votes rows into
-# the JSON:API `roll_call_vote` collection GET /members/{bioguide_id}/votes
-# returns; `shape_bill_search_response` shapes bills + votes rows for
-# GET /bills/search (still bespoke -- reshaped in a later PR).
+# returns; `shape_member_votes` shapes fetch_member_votes rows into the
+# JSON:API `roll_call_vote` collection GET /members/{bioguide_id}/votes
+# returns; `bill_search_document` shapes the tiered bill rows into the
+# JSON:API `bill` collection GET /bills returns.
 
 
 def _roll_call_id(row: dict[str, Any]) -> str:
@@ -135,35 +135,31 @@ def shape_member_votes(
     return {"data": data, "meta": {"bills_without_votes": bills_without_votes}}
 
 
-def shape_bill_search_response(
-    query: str,
-    bioguide_id: str,
-    bill_rows: list[dict[str, Any]],
-    vote_rows: list[dict[str, Any]],
+def bill_search_document(
+    query: str, bill_rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    votes_by_bill_id: dict[int, list[dict[str, Any]]] = {}
-    for row in vote_rows:
-        votes_by_bill_id.setdefault(row["bill_id"], []).append({
-            "vote_cast": row["vote_cast"],
-            "vote_question": row["vote_question"],
-            "result": row["result"],
-            "vote_date": row["vote_date"],
-        })
-
+    # GET /bills' JSON:API collection of `bill` resources, in
+    # retrieval-tier order (tier-1 exact matches first). The canonical id
+    # (bill_key) is the resource id. `match` -- which tier surfaced this
+    # bill, set on the row by the route -- is per-resource `meta`, not an
+    # attribute: it describes this bill's place in *this* search, not the
+    # bill. The echoed query goes in the document-level `meta`.
     return {
-        "query": query,
-        "bioguide_id": bioguide_id,
-        "bills": [
+        "data": [
             {
+                "type": "bill",
                 "id": row["bill_key"],
-                "congress": row["congress"],
-                "bill_type": row["bill_type"],
-                "bill_number": row["bill_number"],
-                "title": row.get("title"),
-                "policy_area": row.get("policy_area"),
-                "crs_summary": row.get("crs_summary"),
-                "votes": votes_by_bill_id.get(row["bill_id"], []),
+                "attributes": {
+                    "congress": row["congress"],
+                    "bill_type": row["bill_type"],
+                    "bill_number": row["bill_number"],
+                    "title": row.get("title"),
+                    "policy_area": row.get("policy_area"),
+                    "crs_summary": row.get("crs_summary"),
+                },
+                "meta": {"match": row["match"]},
             }
             for row in bill_rows
         ],
+        "meta": {"query": query},
     }

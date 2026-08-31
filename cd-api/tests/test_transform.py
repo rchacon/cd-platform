@@ -1,10 +1,10 @@
 import datetime
 
 from cd.api.transform import (
+    bill_search_document,
     group_representatives,
     member_document,
     person,
-    shape_bill_search_response,
     shape_member_votes,
 )
 
@@ -269,6 +269,7 @@ def test_shape_member_votes_mixes_voted_and_no_vote_bills():
 
 
 def _bill_row(**overrides) -> dict:
+    # A fetch_bills_by_* row after the route tags it with `match`.
     row = {
         "bill_id": 1,
         "bill_key": "119-hr-144",
@@ -278,105 +279,69 @@ def _bill_row(**overrides) -> dict:
         "title": "Dream Act",
         "policy_area": "Immigration",
         "crs_summary": "A bill about dreamers.",
+        "match": "policy_area",
     }
     row.update(overrides)
     return row
 
 
-def _vote_row(**overrides) -> dict:
-    row = {
-        "bill_id": 1,
-        "vote_cast": "YEA",
-        "vote_question": "On Passage",
-        "result": "Passed",
-        "vote_date": datetime.date(2025, 3, 1),
-    }
-    row.update(overrides)
-    return row
+def test_bill_search_document_is_a_jsonapi_collection_with_query_meta():
+    result = bill_search_document("dreamers", [])
+
+    assert result == {"data": [], "meta": {"query": "dreamers"}}
 
 
-def test_shape_bill_search_response_top_level_fields():
-    result = shape_bill_search_response("dreamers", "C000127", [], [])
+def test_bill_search_document_builds_one_bill_resource_per_row():
+    result = bill_search_document("dreamers", [_bill_row()])
 
-    assert result["query"] == "dreamers"
-    assert result["bioguide_id"] == "C000127"
-    assert result["bills"] == []
-
-
-def test_shape_bill_search_response_bill_fields_pass_through():
-    result = shape_bill_search_response("dreamers", "C000127", [_bill_row()], [])
-
-    bill = result["bills"][0]
-    assert bill["id"] == "119-hr-144"
-    assert bill["congress"] == 119
-    assert bill["bill_type"] == "HR"
-    assert bill["bill_number"] == 144
-    assert bill["title"] == "Dream Act"
-    assert bill["policy_area"] == "Immigration"
-    assert bill["crs_summary"] == "A bill about dreamers."
-    # cd-lib's Bill is lenient, so an accidental extra key would be
-    # dropped from the response rather than rejected -- assert the exact
-    # set so a shaper change can't silently drift from the model.
-    assert set(bill) == {
-        "id", "congress", "bill_type", "bill_number", "title",
-        "policy_area", "crs_summary", "votes",
+    assert result["data"][0] == {
+        "type": "bill",
+        "id": "119-hr-144",
+        "attributes": {
+            "congress": 119,
+            "bill_type": "HR",
+            "bill_number": 144,
+            "title": "Dream Act",
+            "policy_area": "Immigration",
+            "crs_summary": "A bill about dreamers.",
+        },
+        "meta": {"match": "policy_area"},
     }
 
 
-def test_shape_bill_search_response_bill_with_no_votes_gets_empty_list():
-    result = shape_bill_search_response("dreamers", "C000127", [_bill_row()], [])
+def test_bill_search_document_identity_is_the_resource_not_an_attribute():
+    resource = bill_search_document("dreamers", [_bill_row()])["data"][0]
+    attributes = resource["attributes"]
 
-    assert result["bills"][0]["votes"] == []
-
-
-def test_shape_bill_search_response_attaches_matching_votes_to_their_bill():
-    result = shape_bill_search_response(
-        "dreamers", "C000127", [_bill_row(bill_id=1)], [_vote_row(bill_id=1)],
-    )
-
-    votes = result["bills"][0]["votes"]
-    assert len(votes) == 1
-    assert votes[0] == {
-        "vote_cast": "YEA", "vote_question": "On Passage",
-        "result": "Passed", "vote_date": datetime.date(2025, 3, 1),
+    assert "id" not in attributes
+    assert "bill_id" not in attributes
+    # `match` is per-resource meta, not an attribute of the bill.
+    assert "match" not in attributes
+    # Exact set so a shaper change can't drift from cd-lib's Bill / the
+    # OpenAPI spec (the model is lenient and would just drop extras).
+    assert set(attributes) == {
+        "congress", "bill_type", "bill_number", "title",
+        "policy_area", "crs_summary",
     }
+    assert set(resource["meta"]) == {"match"}
 
 
-def test_shape_bill_search_response_a_bill_can_have_multiple_votes():
-    # A bill can have more than one roll call in a member's own chamber
-    # (e.g. a procedural vote plus final passage) -- Bill.votes is a
-    # list, not a single nullable vote, specifically for this case.
-    result = shape_bill_search_response(
-        "dreamers", "C000127", [_bill_row(bill_id=1)],
-        [
-            _vote_row(bill_id=1, vote_question="Procedural Motion"),
-            _vote_row(bill_id=1, vote_question="On Passage"),
-        ],
+def test_bill_search_document_passes_through_the_match_tier_in_meta():
+    result = bill_search_document(
+        "dreamers",
+        [_bill_row(match="subject"), _bill_row(bill_key="119-s-9", match="similarity")],
     )
 
-    votes = result["bills"][0]["votes"]
-    assert [v["vote_question"] for v in votes] == ["Procedural Motion", "On Passage"]
+    assert [r["meta"]["match"] for r in result["data"]] == ["subject", "similarity"]
 
 
-def test_shape_bill_search_response_votes_only_attach_to_their_own_bill():
-    result = shape_bill_search_response(
-        "dreamers", "C000127",
-        [_bill_row(bill_id=1), _bill_row(bill_id=2, bill_number=200)],
-        [_vote_row(bill_id=1)],
+def test_bill_search_document_preserves_row_order():
+    # tier-1 (vocab) rows precede tier-2 (similarity) rows -- callers
+    # group on `match` but order is still the natural fallback.
+    result = bill_search_document(
+        "dreamers",
+        [_bill_row(bill_key="119-hr-200", bill_number=200),
+         _bill_row(bill_key="119-hr-144", bill_number=144)],
     )
 
-    bills_by_number = {b["bill_number"]: b for b in result["bills"]}
-    assert len(bills_by_number[144]["votes"]) == 1
-    assert bills_by_number[200]["votes"] == []
-
-
-def test_shape_bill_search_response_preserves_bill_row_order():
-    # Order matters -- it's tier1 (vocab match) results followed by
-    # tier2 (similarity) results, callers rely on this ordering surviving.
-    result = shape_bill_search_response(
-        "dreamers", "C000127",
-        [_bill_row(bill_id=2, bill_number=200), _bill_row(bill_id=1, bill_number=144)],
-        [],
-    )
-
-    assert [b["bill_number"] for b in result["bills"]] == [200, 144]
+    assert [r["id"] for r in result["data"]] == ["119-hr-200", "119-hr-144"]

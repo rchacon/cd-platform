@@ -88,16 +88,6 @@ def _to_pgvector_literal(embedding: list[float]) -> str:
     return "[" + ",".join(f"{x:.8f}" for x in embedding) + "]"
 
 
-def member_exists(bioguide_id: str) -> bool:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM members WHERE bioguide_id = %s", (bioguide_id,))
-            return cur.fetchone() is not None
-    finally:
-        conn.close()
-
-
 def fetch_closest_vocab_term(embedding: list[float]) -> dict | None:
     # No index on vocab_term_embeddings (see migration 0005) -- a brute
     # force scan is exact and fast enough at this table's expected scale
@@ -193,24 +183,6 @@ def fetch_bills_by_similarity(
                     "limit": limit,
                     "max_distance": max_distance,
                 },
-            )
-            return list(cur.fetchall())
-    finally:
-        conn.close()
-
-
-def fetch_votes_for_bills(bill_ids: list[int], bioguide_id: str) -> list[dict]:
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT r.bill_id, v.vote_cast, r.vote_question, r.result, r.vote_date
-                FROM roll_calls r
-                JOIN roll_call_member_votes v ON v.roll_call_id = r.roll_call_id
-                WHERE r.bill_id = ANY(%(bill_ids)s) AND v.bioguide_id = %(bioguide_id)s
-                """,
-                {"bill_ids": bill_ids, "bioguide_id": bioguide_id},
             )
             return list(cur.fetchall())
     finally:

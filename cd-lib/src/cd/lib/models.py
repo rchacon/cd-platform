@@ -93,13 +93,6 @@ class MemberDetail(BaseModel):
     )
 
 
-class BillVote(BaseModel):
-    vote_cast: str = Field(description="YEA, NAY, PRESENT, or NOT_VOTING.")
-    vote_question: str
-    result: str
-    vote_date: date
-
-
 class RollCallVote(BaseModel):
     # The `attributes` payload of each resource in
     # GET /members/{bioguide_id}/votes' collection document --
@@ -126,33 +119,22 @@ class RollCallVote(BaseModel):
 
 
 class Bill(BaseModel):
-    id: str = Field(
-        description=(
-            'Canonical bill id -- "<congress>-<bill_type lowercased>-'
-            '<bill_number>", e.g. "119-hr-2616". A stable handle a caller '
-            "reads here and passes back verbatim to a later request "
-            "(e.g. GET /members/{bioguide_id}/votes); sourced from the "
-            "bills.bill_key generated column, not the internal bill_id."
-        )
-    )
+    # The `attributes` payload of each `bill` resource in GET /bills'
+    # collection document -- CollectionDocument[Bill], {"data": [{"type":
+    # "bill", "id": "119-hr-2616", "attributes": {...this model...},
+    # "meta": {"match": "policy_area"}}, ...], "meta": {"query": "..."}}.
+    #
+    # Only intrinsic bill data. The canonical bill id ("<congress>-<type
+    # lowercased>-<number>", the bills.bill_key generated column) is the
+    # resource `id`, not a field here -- a caller reads it off the
+    # resource and passes it back as GET /members/{bioguide_id}/votes'
+    # filter[bill]. `match` (why this bill matched *this* search) is
+    # per-resource `meta`, not an attribute -- it has no meaning outside
+    # the one response, so it must not ride on the reusable model
+    # cd-server validates and merges by id.
     congress: int
     bill_type: str
     bill_number: int
     title: str | None = None
     policy_area: str | None = None
     crs_summary: str | None = None
-    votes: list[BillVote] = Field(
-        default_factory=list,
-        description=(
-            "A list, not a single nullable vote -- one bill can have more "
-            "than one roll call in a member's own chamber (e.g. a "
-            "procedural vote plus final passage). Empty if the bill "
-            "matched the search but this representative never voted on it."
-        ),
-    )
-
-
-class BillSearchResponse(BaseModel):
-    query: str
-    bioguide_id: str
-    bills: list[Bill]

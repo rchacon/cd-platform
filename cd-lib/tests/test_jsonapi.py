@@ -27,12 +27,13 @@ def test_document_wraps_a_single_resource():
             "id": "CA",
             "attributes": {"name": "California", "seats": 52},
             "relationships": None,
+            "meta": None,
         }
     }
-    # A route serving a resource with no relationships uses
-    # response_model_exclude_none so `"relationships": null` never
-    # reaches the wire (JSON:API: the member MUST be an object when
-    # present).
+    # A route serving a resource with no relationships/meta uses
+    # response_model_exclude_none so `"relationships": null` / `"meta":
+    # null` never reach the wire (JSON:API: those members MUST be objects
+    # when present).
     assert doc.model_dump(exclude_none=True) == {
         "data": {
             "type": "state",
@@ -40,6 +41,19 @@ def test_document_wraps_a_single_resource():
             "attributes": {"name": "California", "seats": 52},
         }
     }
+
+
+def test_resource_carries_optional_meta():
+    resource = Resource[_Attrs](
+        type="bill",
+        id="119-hr-2616",
+        attributes=_Attrs(name="x", seats=1),
+        meta={"match": "policy_area"},
+    )
+
+    dumped = resource.model_dump(exclude_none=True)
+    assert dumped["meta"] == {"match": "policy_area"}
+    assert "relationships" not in dumped
 
 
 def test_resource_carries_relationship_linkage():

@@ -146,23 +146,6 @@ def _insert_vocab_term(pg_conn, kind: str, term: str, embedding: list[float]) ->
         )
 
 
-def test_member_exists_true_for_a_real_bioguide_id(pg_conn):
-    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
-    _insert_member(pg_conn, bioguide_id)
-    pg_conn.commit()
-
-    try:
-        assert db.member_exists(bioguide_id) is True
-    finally:
-        with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
-        pg_conn.commit()
-
-
-def test_member_exists_false_for_an_unknown_bioguide_id():
-    assert db.member_exists("NOTAREALID99") is False
-
-
 def test_fetch_member_returns_a_sitting_member_with_in_office_true(pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id)
@@ -388,57 +371,6 @@ def test_fetch_bills_by_similarity_excludes_bills_beyond_max_distance(pg_conn):
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM bills WHERE bill_id = ANY(%s)", ([near, far],))
-        pg_conn.commit()
-
-
-def test_fetch_votes_for_bills_returns_only_the_given_members_votes(pg_conn):
-    voter, other = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
-    bill_id = _insert_bill(pg_conn, _bill_number())
-    _insert_member(pg_conn, voter)
-    _insert_member(pg_conn, other)
-    pg_conn.commit()
-    _insert_vote(pg_conn, bill_id, _vote_number(), voter, vote_cast="YEA")
-    _insert_vote(pg_conn, bill_id, _vote_number(), other, vote_cast="NAY")
-    pg_conn.commit()
-
-    try:
-        results = db.fetch_votes_for_bills([bill_id], voter)
-
-        assert len(results) == 1
-        assert results[0]["vote_cast"] == "YEA"
-        assert results[0]["bill_id"] == bill_id
-    finally:
-        with pg_conn.cursor() as cur:
-            # roll_calls has no ON DELETE CASCADE back to bills (unlike
-            # roll_call_member_votes' own cascade back to roll_calls) --
-            # must delete it first or bills' delete below hits
-            # roll_calls_bill_congress_fk.
-            cur.execute("DELETE FROM roll_calls WHERE bill_id = %s", (bill_id,))
-            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
-            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([voter, other],))
-        pg_conn.commit()
-
-
-def test_fetch_votes_for_bills_returns_multiple_votes_for_one_bill(pg_conn):
-    # A bill can have more than one roll call in a member's own chamber
-    # (e.g. a procedural vote plus final passage).
-    voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
-    bill_id = _insert_bill(pg_conn, _bill_number())
-    _insert_member(pg_conn, voter)
-    pg_conn.commit()
-    _insert_vote(pg_conn, bill_id, _vote_number(), voter)
-    _insert_vote(pg_conn, bill_id, _vote_number(), voter)
-    pg_conn.commit()
-
-    try:
-        results = db.fetch_votes_for_bills([bill_id], voter)
-
-        assert len(results) == 2
-    finally:
-        with pg_conn.cursor() as cur:
-            cur.execute("DELETE FROM roll_calls WHERE bill_id = %s", (bill_id,))
-            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
-            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
         pg_conn.commit()
 
 

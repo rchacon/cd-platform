@@ -38,16 +38,19 @@ its tests (`test_openapi_*_documents_*_fields` plus the `transform.py`/
 `search.py` shaper unit tests, which assert the exact field set), not in
 the shared model.
 
-`src/cd/lib/models.py` also has `BillVote`, `Bill`, and
-`BillSearchResponse`, for `cd-platform#9`'s semantic search over bills
-(`cd-api`'s `GET /bills/search`). Placed here rather than in
-`cd-api`-local models for the same reason as `Member`/
-`MembersResponse`: a future `cd-server` GraphQL resolver will validate
-against the exact same response shape `cd-api` builds, once that
-resolver is built. `Bill.votes` is a list, not a single nullable vote --
-one bill can have more than one roll call in a member's own chamber
-(e.g. a procedural vote plus final passage), and is empty when a bill
-matched the search but the given representative never voted on it.
+`src/cd/lib/models.py` also has `Bill`, the `attributes` payload of each
+`bill` resource in `cd-api`'s `GET /bills`
+(`CollectionDocument[Bill]`, document `meta: {query}`) -- `cd-platform#9`'s
+semantic search over bills. Placed here rather than in `cd-api`-local
+models for the same reason as `Member`/`MembersResponse`: the future
+`cd-server` resolver validates against the exact shape `cd-api` builds.
+Only intrinsic bill data: the canonical bill id (`bills.bill_key`) is
+the resource `id`, not a field; the retrieval tier
+(`policy_area`/`subject`/`similarity`) is the resource's `meta.match`,
+**not** an attribute -- it's meaningless outside one search response, so
+it must not ride on the model cd-server merges by id. No `votes` -- that's
+`GET /members/{bioguide_id}/votes`' `RollCallVote`; cd-server merges the
+two by resource id.
 
 `MemberDetail` and `RollCallVote` are the `attributes` payloads for
 `cd-api`'s two member-resource endpoints (`GET /members/{bioguide_id}`
@@ -68,8 +71,10 @@ are in the resource's `relationships`, not here.
 `CollectionDocument[A]` (plus `ResourceIdentifier` and `Relationship`
 for linkage), generic Pydantic wrappers for cd-api's JSON:API document
 and resource shapes: the document envelope (`data` holding a resource or
-list), typed `attributes`, and `relationships` carrying resource
-*linkage* (`{type, id}` pointers). These are the wire *models* only --
+list), typed `attributes`, `relationships` carrying resource *linkage*
+(`{type, id}` pointers), and per-resource `meta` for anything about
+*this response* rather than the resource itself (a `bill`'s search-tier
+`match`). These are the wire *models* only --
 the HTTP layer (the `application/vnd.api+json` media type, JSON:API
 error documents, request-side strictness) lives in `cd-api`'s own
 `cd.api.jsonapi`. What's deliberately not built anywhere is the optional
@@ -96,7 +101,7 @@ seat counts and voting status cd-api was already using to validate
 
 `src/cd/lib/bedrock.py` -- `build_bedrock_client(config=None)` and
 `embed(client, text)` for Amazon Titan Text Embeddings V2. Shared by
-`cd-api`'s `GET /bills/search` (embeds a query at request time) and
+`cd-api`'s `GET /bills` (embeds a query at request time) and
 `cd-etl`'s `bills_common.sync_bill` (embeds a bill's title + CRS
 summary). This move is what first made `cd-etl` a `cd-lib` consumer.
 IAM/task-role auth via boto3's default credential chain -- no API key.

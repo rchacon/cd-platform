@@ -125,7 +125,7 @@ GET /members/{bioguide_id}/votes?filter[bill]=119-hr-2616,119-s-5
 ```
 
 This member's roll-call votes across a caller-supplied set of bills -- the
-companion to `GET /bills/search`. Each `roll_call_vote` resource is one
+companion to `GET /bills`. Each `roll_call_vote` resource is one
 cast position in one roll call; `id` is
 `<congress>-<chamber>-<session>-<vote_number>:<bioguide_id>`. Its `bill`
 relationship is a **denormalised** edge (a vote reaches a bill *through*
@@ -148,6 +148,45 @@ id for a bill cd-api **hasn't synced** appears in neither `data` nor
 `meta`. A malformed id (not `<congress>-<type>-<number>`) is a `400`; an
 unknown member is a `404`, on the same rule as the parent
 route.
+
+### `GET /bills` (JSON:API)
+
+```
+GET /bills?filter[query]=schools+telling+parents&page[size]=10
+-> { "data": [
+     { "type": "bill", "id": "119-hr-2616",
+       "attributes": { "congress": 119, "bill_type": "HR", "bill_number": 2616,
+                       "title": "...", "policy_area": "Education",
+                       "crs_summary": "<p>...</p>" },
+       "meta": { "match": "policy_area" } },
+     ... ],
+     "meta": { "query": "schools telling parents" } }
+```
+
+Semantic search over synced bills (cd-platform#9): embeds `filter[query]`
+via Bedrock, matches a bill's `policy_area` / legislative subjects first
+(tier 1, exact controlled-vocabulary match), then fills remaining slots
+with tier-2 cosine similarity against each bill's summary embedding above
+a relevance floor -- so it can return fewer than `page[size]` (even
+zero). Side-effect-free and cacheable on the query alone.
+
+Each `bill` resource's `id` is the canonical `bills.bill_key`
+(cd-etl migration 0006) -- pass it to `GET /members/{bioguide_id}/votes`'s
+`filter[bill]`. Each resource's `meta.match` (`policy_area` / `subject` /
+`similarity`) says which tier surfaced that bill -- **per-resource
+`meta`, not an attribute**, since it describes the bill's place in *this*
+search, not the bill (the `Bill` attributes model is reused as-is by any
+future `bill` endpoint, and by cd-server's merge). A client groups exact
+matches above related ones on `meta.match` rather than list order. No
+`relationships` (a search bill points at nothing modelled), no votes
+(that's the `/votes` endpoint's job -- cd-server merges the two by
+resource id).
+
+`filter[query]` (required, 1-500 chars) is a JSON:API filter on the bill
+collection; `page[size]` (optional, 1-50, default 10) caps the result --
+no offset/cursor pagination yet. The old `q` / `bioguide_id` / `limit`
+params are gone; `JsonApiRoute` `400`s any undeclared query parameter. A
+Bedrock failure is `503` (JSON:API error document, retryable).
 
 ## Prerequisites
 

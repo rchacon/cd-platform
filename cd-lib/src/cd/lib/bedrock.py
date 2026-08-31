@@ -1,6 +1,6 @@
 """Embedding generation via AWS Bedrock (Amazon Titan Text Embeddings V2).
 
-Shared by cd-api (`GET /bills/search` -- embeds a query at request time)
+Shared by cd-api (`GET /bills` -- embeds a query at request time)
 and cd-etl (`bills_common.sync_bill` -- embeds a bill's title + CRS
 summary). Titan V2 was picked over OpenAI/Cohere specifically to avoid a
 new external secret: cost is a wash at this project's scale, and IAM /
