@@ -109,13 +109,38 @@ def validation_error_response(exc: RequestValidationError) -> JSONResponse:
 _EXEMPT_MEDIA_TYPE_PARAMS = frozenset({"profile"})
 
 
+def _split_unquoted(value: str, sep: str) -> list[str]:
+    """Split `value` on `sep`, ignoring occurrences inside a
+    double-quoted run -- RFC 9110 lets a parameter value be a quoted
+    string, so `profile="https://x/a;b"` is one parameter, and an Accept
+    value like `...; profile="a,b"` is one media-type instance."""
+    parts: list[str] = []
+    buf: list[str] = []
+    quoted = False
+    for ch in value:
+        if ch == '"':
+            quoted = not quoted
+            buf.append(ch)
+        elif ch == sep and not quoted:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def _media_type(instance: str) -> str:
+    return _split_unquoted(instance, ";")[0].strip().lower()
+
+
 def _offending_media_type_params(instance: str) -> list[str]:
     """The media-type parameter names on `instance` that disqualify it --
     i.e. not `q` (a weight) and not `profile` (1.1-exempt). `ext` is
     included: we support no extensions."""
     return [
         name
-        for part in instance.split(";")[1:]
+        for part in _split_unquoted(instance, ";")[1:]
         if (name := part.split("=", 1)[0].strip().lower())
         and name != "q"
         and name not in _EXEMPT_MEDIA_TYPE_PARAMS
@@ -128,8 +153,8 @@ def _reject_parametrized_media_type(request: Request) -> JSONResponse | None:
     # than `ext`/`profile`, and MUST 406 when every JSON:API instance in
     # Accept is so modified.
     content_type = request.headers.get("content-type", "")
-    if content_type.split(";", 1)[0].strip().lower() == MEDIA_TYPE and (
-        _offending_media_type_params(content_type)
+    if _media_type(content_type) == MEDIA_TYPE and _offending_media_type_params(
+        content_type
     ):
         return error_response(
             415,
@@ -139,8 +164,8 @@ def _reject_parametrized_media_type(request: Request) -> JSONResponse | None:
     accept = request.headers.get("accept", "")
     jsonapi_instances = [
         part.strip()
-        for part in accept.split(",")
-        if part.split(";", 1)[0].strip().lower() == MEDIA_TYPE
+        for part in _split_unquoted(accept, ",")
+        if _media_type(part) == MEDIA_TYPE
     ]
     if jsonapi_instances and all(
         _offending_media_type_params(part) for part in jsonapi_instances
@@ -156,12 +181,15 @@ class JsonApiRoute(APIRoute):
 
     On top of the normal handler it: rejects a parametrized JSON:API
     media type (`415`/`406`); rejects any query parameter the route
-    doesn't declare (`400`) -- which covers unsupported spec parameters
-    like `include`, `sort`, `fields[...]`, `page[...]`; and renders
-    `HTTPException`, request-validation, and unhandled failures as
-    JSON:API error documents rather than letting them reach the app's
-    problem+json handlers. (Routing-layer `404`/`405` on a JSON:API path
-    never reach here -- `app.py` formats those.)
+    doesn't declare, or declares but that appears more than once (`400`)
+    -- the former covers unsupported spec parameters like `include`,
+    `sort`, `fields[...]`, `page[...]`; the latter stops a repeated
+    `?filter[bill]=a&filter[bill]=b` from binding only one occurrence and
+    silently dropping the rest. It also renders `HTTPException`,
+    request-validation, and unhandled failures as JSON:API error
+    documents rather than letting them reach the app's problem+json
+    handlers. (Routing-layer `404`/`405` on a JSON:API path never reach
+    here -- `app.py` formats those.)
     """
 
     def get_route_handler(
@@ -179,11 +207,22 @@ class JsonApiRoute(APIRoute):
             if media_type_error is not None:
                 return media_type_error
 
-            unsupported = sorted(k for k in request.query_params if k not in allowed)
+            seen: dict[str, int] = {}
+            for key, _ in request.query_params.multi_items():
+                seen[key] = seen.get(key, 0) + 1
+            unsupported = sorted(k for k in seen if k not in allowed)
             if unsupported:
                 return error_response(
                     400,
                     "Unsupported query parameter(s): " + ", ".join(unsupported) + ".",
+                )
+            repeated = sorted(k for k, n in seen.items() if n > 1)
+            if repeated:
+                return error_response(
+                    400,
+                    "Query parameter(s) given more than once: "
+                    + ", ".join(repeated)
+                    + " (use a comma-separated value).",
                 )
 
             try:

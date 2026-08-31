@@ -346,6 +346,18 @@ def test_handler_jsonapi_path_405_is_a_jsonapi_error_document(monkeypatch, tmp_p
     assert body["errors"][0]["status"] == "405"
 
 
+def test_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document():
+    # A typo'd path under /members/<id>/... has no route -> Starlette 404.
+    # app.py's _JSONAPI_PATH_RE covers the whole namespace, so it comes
+    # back as a JSON:API error document, not problem+json.
+    client = TestClient(app)
+    response = client.get("/members/K000001/votez")
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert response.json()["errors"][0]["status"] == "404"
+
+
 def test_get_members_returns_senators_and_representative(seeded_state):
     client = TestClient(app)
     response = client.get("/members", params={"state": STATE, "district": DISTRICT})
@@ -982,6 +994,32 @@ def test_jsonapi_route_does_not_415_on_a_profile_content_type(seeded_state):
     )
 
     assert response.status_code == 200
+
+
+def test_jsonapi_route_tolerates_a_semicolon_inside_a_quoted_profile_value(seeded_state):
+    # `profile` is 1.1-exempt; a naive `;` split would see `b"` as a
+    # bogus second parameter and 415. Quoted-string-aware parsing must not.
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}",
+        headers={"Content-Type": 'application/vnd.api+json; profile="https://example.com/a;b"'},
+    )
+
+    assert response.status_code == 200
+
+
+def test_get_member_votes_rejects_a_repeated_filter_param(seeded_state):
+    # A repeated ?filter[bill]=a&filter[bill]=b would bind only one
+    # occurrence and silently drop the rest -> JsonApiRoute 400s it.
+    client = TestClient(app)
+    response = client.get(
+        f"/members/{seeded_state['rep']}/votes",
+        params=[("filter[bill]", "119-hr-1"), ("filter[bill]", "119-hr-2")],
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
+    assert "filter[bill]" in response.json()["errors"][0]["detail"]
 
 
 def _vector(*first_values: float, dimensions: int = 1024) -> list[float]:

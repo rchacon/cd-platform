@@ -70,8 +70,12 @@ app.openapi = _openapi
 # A JsonApiRoute handles errors from *within* its own handler, so what
 # reaches the app-level handlers below on these paths is only the
 # routing-layer 404 (unmatched) / 405 (bad method) -- which must still
-# come back as JSON:API, not problem+json.
-_JSONAPI_PATH_RE = re.compile(r"^/members/[^/]+(?:/votes)?/?$")
+# come back as JSON:API, not problem+json. Matches the whole
+# `/members/<id>...` namespace, not just the exact route shapes, so a
+# near-miss like `/members/K000401/votez` still gets a JSON:API 404
+# rather than problem+json. `/members` (the bespoke list) has no
+# trailing segment, so it is not matched.
+_JSONAPI_PATH_RE = re.compile(r"^/members/[^/]+")
 
 
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
