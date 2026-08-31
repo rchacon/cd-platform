@@ -42,13 +42,16 @@ apportionment by `max_valid_district`/`is_valid_district` in
 currently has no representative (a genuine vacancy) still returns `200` with
 an empty `representatives` list, distinct from the `404` above.
 
-Errors follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem
-Details for HTTP APIs") -- `Content-Type: application/problem+json`, body
-shaped `{"type", "title", "status", "detail", ...}`. Handled uniformly for
+Errors from the bespoke endpoints (`GET /members`, `GET /version`) follow
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem Details for
+HTTP APIs") -- `Content-Type: application/problem+json`, body shaped
+`{"type", "title", "status", "detail", ...}`. Handled uniformly for
 unknown states (`404`), request validation failures like a malformed `state`
 (`422`, with a JSON-serialized `errors` list), and any unhandled server error
 (`500`), via `src/cd/api/problem.py`'s `problem_response` and the exception
-handlers registered in `src/cd/api/app.py`.
+handlers registered in `src/cd/api/app.py`. The JSON:API resource endpoints
+(below) return a JSON:API error document instead --
+`src/cd/api/jsonapi.py`.
 
 `src/cd/api/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
@@ -69,6 +72,82 @@ deploy zip); it's untouched for local development.
 to `app.py` -- only present in a deployed Lambda zip (written by
 `cd-api-deploy.yml`, see Releasing below), so it always reads `"dev"`
 locally.
+
+### Member-resource endpoints (JSON:API)
+
+`GET /members/{bioguide_id}` and `GET /members/{bioguide_id}/votes` are
+[JSON:API](https://jsonapi.org/): `Content-Type: application/vnd.api+json`,
+a `data` document holding resource object(s) with `type` + string `id`,
+typed `attributes`, and `relationships` carrying resource *linkage*
+(`{type, id}` pointers). Errors are JSON:API error documents
+(`{"errors": [{"status", "title", "detail", "source"?}]}`, same media
+type). Compliant with the spec's MUSTs -- including `400` on an
+unsupported query parameter (`include`, `sort`, `fields[...]`, `page[...]`,
+anything undeclared) and `415`/`406` on a parametrized JSON:API media
+type -- but **not** the optional features: no `included`/`?include=`, no
+sparse fieldsets, no relationship `links` or their endpoints (`roll_call`
+and `bill` linkage point at resource types with no URL of their own yet),
+no pagination/`sort`, no top-level `jsonapi` object. The one real caller
+(`cd-server`) runs a fixed two-call merge and needs none of that. Wire
+models (`Resource`/`Document`/`CollectionDocument`/`Relationship`/
+`ResourceIdentifier`) live in `../cd-lib/src/cd/lib/jsonapi.py`; the HTTP
+layer (media type, error documents, `JsonApiRoute` strictness) is
+`src/cd/api/jsonapi.py`. The bespoke `GET /members` list above keeps its
+`{senators, representatives}` shape (live consumers) and problem+json
+errors, and `GET /version` keeps its bespoke shape too.
+
+```
+GET /members/{bioguide_id}
+-> { "data": { "type": "member", "id": "K000401",
+               "attributes": { ...GET /members' person fields minus
+                               bioguide_id..., "state": "CA",
+                               "in_office": true } } }
+```
+
+Serves any member of the current Congress, sitting *or* departed mid-term
+(`in_office: false`, so a bookmarked page keeps resolving after a
+resignation). `404` only when the id has no current-Congress term at all
+(e.g. a member of a past Congress). `state`/`in_office` are carried on top
+of `GET /members`' field set; identity is the resource `id`, not an
+attribute.
+
+```
+GET /members/{bioguide_id}/votes?filter[bill]=119-hr-2616,119-s-5
+-> { "data": [
+     { "type": "roll_call_vote", "id": "119-house-1-327:K000401",
+       "attributes": { "vote_cast": "YEA", "vote_question": "On Passage",
+                       "result": "Passed", "vote_date": "2026-05-20" },
+       "relationships": {
+         "member":    { "data": { "type": "member",    "id": "K000401" } },
+         "roll_call": { "data": { "type": "roll_call", "id": "119-house-1-327" } },
+         "bill":      { "data": { "type": "bill",      "id": "119-hr-2616" } } } } ],
+     "meta": { "bills_without_votes": ["119-s-5"] } }
+```
+
+This member's roll-call votes across a caller-supplied set of bills -- the
+companion to `GET /bills/search`. Each `roll_call_vote` resource is one
+cast position in one roll call; `id` is
+`<congress>-<chamber>-<session>-<vote_number>:<bioguide_id>`. Its `bill`
+relationship is a **denormalised** edge (a vote reaches a bill *through*
+its `roll_call`) carried directly so a caller can group votes by
+`relationships.bill.data.id` -- the canonical bill id (`bills.bill_key`,
+cd-etl migration 0006) -- to merge with search results, without
+fetching the `roll_call`. `vote_question`/`result`/`vote_date` are
+likewise denormalised from the roll call: there's no `included`, so what
+a client needs to render a vote rides along on the vote.
+
+`filter[bill]` is a required, comma-separated list of 1-50 bill ids -- a
+JSON:API relationship filter on the resource's `bill` relationship --
+passed back verbatim from a search response. (JSON:API is agnostic about
+filter strategy, so `filter[roll_call.bill]`, the traversal path, would
+be equally compliant.) Votes are ordered by requested bill, then
+oldest-first within a bill. A requested id that names a **synced bill
+the member never voted on** is
+listed in `meta.bills_without_votes` (not as a resource); a well-formed
+id for a bill cd-api **hasn't synced** appears in neither `data` nor
+`meta`. A malformed id (not `<congress>-<type>-<number>`) is a `400`; an
+unknown member is a `404`, on the same rule as the parent
+route.
 
 ## Prerequisites
 

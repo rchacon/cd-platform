@@ -440,3 +440,161 @@ def test_fetch_votes_for_bills_returns_multiple_votes_for_one_bill(pg_conn):
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
         pg_conn.commit()
+
+
+def test_fetch_member_votes_returns_the_members_votes_keyed_by_bill_key(pg_conn):
+    voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    bill_number = _bill_number()
+    bill_id = _insert_bill(pg_conn, bill_number)
+    _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)  # fetch_member_votes 404s a non-current-Congress id
+    pg_conn.commit()
+    _insert_vote(pg_conn, bill_id, _vote_number(), voter, vote_cast="YEA")
+    pg_conn.commit()
+
+    try:
+        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+
+        assert len(rows) == 1
+        assert rows[0]["bill_key"] == f"119-hr-{bill_number}"
+        # The roll call's natural-key parts, for building the roll_call id.
+        assert rows[0]["chamber"] == "HOUSE"
+        assert rows[0]["congress"] == 119
+        assert rows[0]["session"] == 1
+        assert rows[0]["vote_number"] is not None
+        assert rows[0]["vote_cast"] == "YEA"
+        assert rows[0]["vote_question"] == "On Passage"
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM roll_calls WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
+        pg_conn.commit()
+
+
+def test_fetch_member_votes_keeps_a_synced_bill_with_no_member_vote(pg_conn):
+    # A bill that exists and has a roll call, but not one this member
+    # voted on -> one row, NULL vote_cast (the LEFT JOIN miss). The
+    # shaper routes this to meta.bills_without_votes, not a resource.
+    voter, other = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
+    bill_number = _bill_number()
+    bill_id = _insert_bill(pg_conn, bill_number)
+    _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
+    _insert_member(pg_conn, other)
+    pg_conn.commit()
+    _insert_vote(pg_conn, bill_id, _vote_number(), other, vote_cast="NAY")
+    pg_conn.commit()
+
+    try:
+        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+
+        assert len(rows) == 1
+        assert rows[0]["bill_key"] == f"119-hr-{bill_number}"
+        assert rows[0]["vote_cast"] is None
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM roll_calls WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([voter, other],))
+        pg_conn.commit()
+
+
+def test_fetch_member_votes_keeps_a_synced_bill_with_no_roll_calls_at_all(pg_conn):
+    voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    bill_number = _bill_number()
+    bill_id = _insert_bill(pg_conn, bill_number)
+    _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
+    pg_conn.commit()
+
+    try:
+        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+
+        assert len(rows) == 1
+        assert rows[0]["vote_cast"] is None
+        assert rows[0]["vote_question"] is None
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
+        pg_conn.commit()
+
+
+def test_fetch_member_votes_omits_a_bill_key_that_matches_no_bill(pg_conn):
+    voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
+    pg_conn.commit()
+
+    try:
+        rows = db.fetch_member_votes(voter, ["119-hr-99999999"])
+        assert rows == []
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
+        pg_conn.commit()
+
+
+def test_fetch_member_votes_returns_none_for_a_non_current_congress_member(pg_conn):
+    # No current-Congress term -> None (the route's 404), same rule as
+    # fetch_member. A bare members row with no member_terms row stands in.
+    voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, voter)
+    pg_conn.commit()
+
+    try:
+        assert db.fetch_member_votes(voter, ["119-hr-1"]) is None
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
+        pg_conn.commit()
+
+
+def test_fetch_member_votes_returns_none_for_an_unknown_bioguide_id():
+    assert db.fetch_member_votes("NOTAREALID99", ["119-hr-1"]) is None
+
+
+def test_fetch_member_votes_returns_votes_oldest_first(pg_conn):
+    voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    bill_number = _bill_number()
+    bill_id = _insert_bill(pg_conn, bill_number)
+    _insert_member(pg_conn, voter)
+    _insert_term(pg_conn, voter)
+    pg_conn.commit()
+    with pg_conn.cursor() as cur:
+        for vote_date, question in (
+            ("2026-05-20", "On Passage"),
+            ("2026-05-18", "On Motion to Recommit"),
+        ):
+            cur.execute(
+                """
+                INSERT INTO roll_calls (
+                    chamber, congress, session, vote_number, bill_id,
+                    vote_question, result, vote_date, source_hash
+                ) VALUES ('HOUSE', %s, 1, %s, %s, %s, 'Passed', %s, %s)
+                RETURNING roll_call_id
+                """,
+                (CONGRESS, _vote_number(), bill_id, question, vote_date,
+                 f"hash-{question}-{bill_number}"),
+            )
+            rc = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO roll_call_member_votes (roll_call_id, bioguide_id, vote_cast) "
+                "VALUES (%s, %s, 'YEA')",
+                (rc, voter),
+            )
+    pg_conn.commit()
+
+    try:
+        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+
+        assert [r["vote_question"] for r in rows] == [
+            "On Motion to Recommit", "On Passage"
+        ]
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM roll_calls WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
+        pg_conn.commit()

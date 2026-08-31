@@ -49,6 +49,40 @@ one bill can have more than one roll call in a member's own chamber
 (e.g. a procedural vote plus final passage), and is empty when a bill
 matched the search but the given representative never voted on it.
 
+`MemberDetail` and `RollCallVote` are the `attributes` payloads for
+`cd-api`'s two member-resource endpoints (`GET /members/{bioguide_id}`
+and `GET /members/{bioguide_id}/votes`), which return a JSON:API
+document (see `jsonapi.py` below). `MemberDetail` is `GET /members`'
+person fields *minus* `bioguide_id` (the id moves to the resource
+level), plus required `state` and `in_office`; it deliberately does
+**not** extend `Member`, since `Member` still carries `bioguide_id`
+in-body for `GET /members`' bespoke list and its OpenAPI `required`
+order is asserted -- the two share their field *descriptions* via
+module constants instead. `RollCallVote` is the attributes of a
+`roll_call_vote` resource (one member's cast position in one roll
+call): `vote_cast` plus `vote_question`/`result`/`vote_date`
+denormalised from the roll call -- the bill and member it relates to
+are in the resource's `relationships`, not here.
+
+`src/cd/lib/jsonapi.py` -- `Resource[A]` / `Document[A]` /
+`CollectionDocument[A]` (plus `ResourceIdentifier` and `Relationship`
+for linkage), generic Pydantic wrappers for cd-api's JSON:API document
+and resource shapes: the document envelope (`data` holding a resource or
+list), typed `attributes`, and `relationships` carrying resource
+*linkage* (`{type, id}` pointers). These are the wire *models* only --
+the HTTP layer (the `application/vnd.api+json` media type, JSON:API
+error documents, request-side strictness) lives in `cd-api`'s own
+`cd.api.jsonapi`. What's deliberately not built anywhere is the optional
+machinery: no `included`/`?include=`, no sparse fieldsets, no
+relationship `links` or their endpoints, no pagination/`sort`, no
+top-level `jsonapi` object -- the one caller (`cd-server`) runs a fixed
+two-call merge and needs none of it. Each endpoint parameterises the
+wrappers with its own attributes model (`Document[MemberDetail]`,
+`CollectionDocument[RollCallVote]`), which FastAPI renders into the
+OpenAPI schema. Only `cd-api`'s resource endpoints use it so far;
+`GET /members` (list) and `GET /version` keep
+their bespoke shapes.
+
 `src/cd/lib/apportionment.py` -- `SEATS_PER_STATE` (2020 census
 apportionment, 50 states plus DC/PR/VI/GU/AS/MP each with one at-large
 seat) and `NON_VOTING_TERRITORIES` (which of those keys are a non-voting

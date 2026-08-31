@@ -215,3 +215,60 @@ def fetch_votes_for_bills(bill_ids: list[int], bioguide_id: str) -> list[dict]:
             return list(cur.fetchall())
     finally:
         conn.close()
+
+
+def fetch_member_votes(bioguide_id: str, bill_keys: list[str]) -> list[dict] | None:
+    # Backs GET /members/{bioguide_id}/votes: every roll call this member
+    # cast, across a caller-supplied set of bills keyed by canonical
+    # bill_key ("119-hr-2616"). Returns one row per (bill, roll call,
+    # member vote), plus the roll call's natural-key parts (chamber /
+    # congress / session / vote_number) so the shaper can build the
+    # "119-house-1-327" roll_call id.
+    #
+    # Returns None when the bioguide id has no current-Congress term at
+    # all -- the route's 404, the same rule as GET /members/{bioguide_id}.
+    # Checked in this same connection rather than via a separate
+    # fetch_member() round trip (this path already opens an unpooled
+    # connection per call -- see get_connection's TODO).
+    #
+    # Both joins are LEFT so a requested bill that exists but has no roll
+    # call this member voted on still comes back -- one row with NULL
+    # vote columns. The shaper turns that into a `meta.bills_without_votes`
+    # entry rather than a resource, so the caller can tell "no recorded
+    # vote" from "bill not synced" (the latter matches no row at all and
+    # is simply absent). The bioguide filter sits in the join's ON
+    # clause, not WHERE, so it doesn't collapse the outer join back to an
+    # inner one for members who never voted.
+    #
+    # ORDER BY gives a stable oldest-first order within each bill (a bill
+    # can have both a procedural motion and final passage on different
+    # dates); cross-bill ordering is irrelevant -- the route regroups by
+    # the caller's requested order.
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM current_members WHERE bioguide_id = %(bioguide_id)s LIMIT 1",
+                {"bioguide_id": bioguide_id},
+            )
+            if cur.fetchone() is None:
+                return None
+            cur.execute(
+                """
+                SELECT b.bill_key,
+                       r.chamber, r.congress, r.session, r.vote_number,
+                       r.vote_question, r.result, r.vote_date,
+                       v.vote_cast
+                FROM bills b
+                LEFT JOIN roll_calls r ON r.bill_id = b.bill_id
+                LEFT JOIN roll_call_member_votes v
+                       ON v.roll_call_id = r.roll_call_id
+                      AND v.bioguide_id = %(bioguide_id)s
+                WHERE b.bill_key = ANY(%(bill_keys)s)
+                ORDER BY r.vote_date, r.roll_call_id
+                """,
+                {"bioguide_id": bioguide_id, "bill_keys": bill_keys},
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
