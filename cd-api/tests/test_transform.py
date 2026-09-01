@@ -269,7 +269,7 @@ def test_shape_member_votes_mixes_voted_and_no_vote_bills():
 
 
 def _bill_row(**overrides) -> dict:
-    # A fetch_bills_by_* row after the route tags it with `match`.
+    # A fetch_bills_by_* row after the route tags it with `matches`.
     row = {
         "bill_id": 1,
         "bill_key": "119-hr-144",
@@ -279,7 +279,7 @@ def _bill_row(**overrides) -> dict:
         "title": "Dream Act",
         "policy_area": "Immigration",
         "crs_summary": "A bill about dreamers.",
-        "match": "policy_area",
+        "matches": [{"via": "policy_area"}],
     }
     row.update(overrides)
     return row
@@ -305,7 +305,7 @@ def test_bill_search_document_builds_one_bill_resource_per_row():
             "policy_area": "Immigration",
             "crs_summary": "A bill about dreamers.",
         },
-        "meta": {"match": "policy_area"},
+        "meta": {"matches": [{"via": "policy_area"}]},
     }
 
 
@@ -315,29 +315,32 @@ def test_bill_search_document_identity_is_the_resource_not_an_attribute():
 
     assert "id" not in attributes
     assert "bill_id" not in attributes
-    # `match` is per-resource meta, not an attribute of the bill.
-    assert "match" not in attributes
+    # match info is per-resource meta, not an attribute of the bill.
+    assert "matches" not in attributes
     # Exact set so a shaper change can't drift from cd-lib's Bill / the
     # OpenAPI spec (the model is lenient and would just drop extras).
     assert set(attributes) == {
         "congress", "bill_type", "bill_number", "title",
         "policy_area", "crs_summary",
     }
-    assert set(resource["meta"]) == {"match"}
+    assert set(resource["meta"]) == {"matches"}
 
 
-def test_bill_search_document_passes_through_the_match_tier_in_meta():
+def test_bill_search_document_passes_through_the_match_reason_in_meta():
     result = bill_search_document(
         "dreamers",
-        [_bill_row(match="subject"), _bill_row(bill_key="119-s-9", match="similarity")],
+        [_bill_row(matches=[{"via": "subject"}]),
+         _bill_row(bill_key="119-s-9", matches=[{"via": "summary"}])],
     )
 
-    assert [r["meta"]["match"] for r in result["data"]] == ["subject", "similarity"]
+    assert [r["meta"]["matches"] for r in result["data"]] == [
+        [{"via": "subject"}], [{"via": "summary"}],
+    ]
 
 
 def test_bill_search_document_preserves_row_order():
-    # tier-1 (vocab) rows precede tier-2 (similarity) rows -- callers
-    # group on `match` but order is still the natural fallback.
+    # tier-1 (vocab) rows precede tier-2 (summary) rows -- callers
+    # group on `meta.matches` but order is still the natural fallback.
     result = bill_search_document(
         "dreamers",
         [_bill_row(bill_key="119-hr-200", bill_number=200),

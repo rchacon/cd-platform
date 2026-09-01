@@ -143,15 +143,20 @@ def get_bills(
     Returns a JSON:API collection of `bill` resources -- `{"data":
     [{"type": "bill", "id": "119-hr-2616", "attributes": {"congress",
     "bill_type", "bill_number", "title", "policy_area", "crs_summary"},
-    "meta": {"match": "policy_area"}}, ...], "meta": {"query": "..."}}`
-    -- in retrieval-tier order. Each resource's `meta.match`
-    (`policy_area` / `subject` / `similarity`) says which tier surfaced
-    that bill -- per-resource `meta`, not an attribute, since it's about
-    this search, not the bill. The resource `id` is the canonical
-    `bills.bill_key`, which a caller passes to
-    `GET /members/{bioguide_id}/votes`'s `filter[bill]` to get a
-    member's votes on these bills. Side-effect-free and cacheable on the
-    query alone.
+    "meta": {"matches": [{"via": "policy_area"}]}}, ...],
+    "meta": {"query": "..."}}` -- in retrieval-tier order. Each
+    resource's `meta.matches` says why that bill surfaced for *this*
+    search (per-resource `meta`, not an attribute -- it's about the
+    search, not the bill): a list of `{"via": ...}`, where `via` is
+    `policy_area` / `subject` (exact controlled-vocabulary match) or
+    `summary` (CRS-summary embedding). It's a list -- and each entry an
+    object -- so passage-level full-text search (cd-platform#131) can add
+    `{"via": "text", "section", "excerpt", "distance"}` entries and a
+    bill can carry more than one reason, without reshaping the response.
+    The resource `id` is the canonical `bills.bill_key`, which a caller
+    passes to `GET /members/{bioguide_id}/votes`'s `filter[bill]` to get
+    a member's votes on these bills. Side-effect-free and cacheable on
+    the query alone.
     """
     try:
         query_embedding = bedrock.embed(_BEDROCK_CLIENT, query)
@@ -170,12 +175,12 @@ def get_bills(
     if vocab_match is not None and vocab_match["distance"] <= VOCAB_MATCH_THRESHOLD:
         if vocab_match["kind"] == "POLICY_AREA":
             tier1_bills = fetch_bills_by_policy_area(vocab_match["term"], page_size)
-            tier1_match = "policy_area"
+            tier1_via = "policy_area"
         else:
             tier1_bills = fetch_bills_by_subject(vocab_match["term"], page_size)
-            tier1_match = "subject"
+            tier1_via = "subject"
         for bill in tier1_bills:
-            bill["match"] = tier1_match
+            bill["matches"] = [{"via": tier1_via}]
 
     remaining = page_size - len(tier1_bills)
     tier2_bills = (
@@ -187,6 +192,11 @@ def get_bills(
         else []
     )
     for bill in tier2_bills:
-        bill["match"] = "similarity"
+        # "summary" (not "similarity"): a cosine match against the bill's
+        # CRS-summary embedding. Passage-level full-text search
+        # (cd-platform#131) adds `{"via": "text", "section", "excerpt",
+        # "distance"}` entries here -- hence a `matches` list, not a
+        # scalar, from the start.
+        bill["matches"] = [{"via": "summary"}]
 
     return bill_search_document(query, tier1_bills + tier2_bills)

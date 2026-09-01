@@ -122,16 +122,18 @@ class Bill(BaseModel):
     # The `attributes` payload of each `bill` resource in GET /bills'
     # collection document -- CollectionDocument[Bill], {"data": [{"type":
     # "bill", "id": "119-hr-2616", "attributes": {...this model...},
-    # "meta": {"match": "policy_area"}}, ...], "meta": {"query": "..."}}.
+    # "meta": {"matches": [{"via": "policy_area"}]}}, ...],
+    # "meta": {"query": "..."}}.
     #
     # Only intrinsic bill data. The canonical bill id ("<congress>-<type
     # lowercased>-<number>", the bills.bill_key generated column) is the
     # resource `id`, not a field here -- a caller reads it off the
     # resource and passes it back as GET /members/{bioguide_id}/votes'
-    # filter[bill]. `match` (why this bill matched *this* search) is
-    # per-resource `meta`, not an attribute -- it has no meaning outside
-    # the one response, so it must not ride on the reusable model
-    # cd-server validates and merges by id.
+    # filter[bill]. Why the bill matched *this* search
+    # (`meta.matches` -- a list of `{"via": "policy_area"|"subject"|
+    # "summary"|...}`) is per-resource `meta`, not an attribute -- it has
+    # no meaning outside the one response, so it must not ride on the
+    # reusable model cd-server validates and merges by id.
     congress: int
     bill_type: str
     bill_number: int

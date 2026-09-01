@@ -45,12 +45,12 @@ semantic search over bills. Placed here rather than in `cd-api`-local
 models for the same reason as `Member`/`MembersResponse`: the future
 `cd-server` resolver validates against the exact shape `cd-api` builds.
 Only intrinsic bill data: the canonical bill id (`bills.bill_key`) is
-the resource `id`, not a field; the retrieval tier
-(`policy_area`/`subject`/`similarity`) is the resource's `meta.match`,
-**not** an attribute -- it's meaningless outside one search response, so
-it must not ride on the model cd-server merges by id. No `votes` -- that's
-`GET /members/{bioguide_id}/votes`' `RollCallVote`; cd-server merges the
-two by resource id.
+the resource `id`, not a field; why the bill matched *this* search is
+the resource's `meta.matches` (a list of `{"via": "policy_area" |
+"subject" | "summary" | ...}`), **not** an attribute -- it's meaningless
+outside one search response, so it must not ride on the model cd-server
+merges by id. No `votes` -- that's `GET /members/{bioguide_id}/votes`'
+`RollCallVote`; cd-server merges the two by resource id.
 
 `MemberDetail` and `RollCallVote` are the `attributes` payloads for
 `cd-api`'s two member-resource endpoints (`GET /members/{bioguide_id}`

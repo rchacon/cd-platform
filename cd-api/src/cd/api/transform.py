@@ -140,10 +140,16 @@ def bill_search_document(
 ) -> dict[str, Any]:
     # GET /bills' JSON:API collection of `bill` resources, in
     # retrieval-tier order (tier-1 exact matches first). The canonical id
-    # (bill_key) is the resource id. `match` -- which tier surfaced this
-    # bill, set on the row by the route -- is per-resource `meta`, not an
-    # attribute: it describes this bill's place in *this* search, not the
-    # bill. The echoed query goes in the document-level `meta`.
+    # (bill_key) is the resource id. `meta.matches` -- why this bill
+    # surfaced for *this* search, set on the row by the route -- is
+    # per-resource `meta`, not an attribute (it's about the search, not
+    # the bill). A list of `{via, ...}`: `via` is `policy_area` /
+    # `subject` (exact controlled-vocab) or `summary` (CRS-summary
+    # embedding). Passage-level full-text search (cd-platform#131) will
+    # add `{via: "text", section, excerpt, distance}` entries and let a
+    # bill carry more than one -- the list shape is here from the start
+    # so that's additive, not a reshape. The echoed query goes in the
+    # document-level `meta`.
     return {
         "data": [
             {
@@ -157,7 +163,7 @@ def bill_search_document(
                     "policy_area": row.get("policy_area"),
                     "crs_summary": row.get("crs_summary"),
                 },
-                "meta": {"match": row["match"]},
+                "meta": {"matches": row["matches"]},
             }
             for row in bill_rows
         ],

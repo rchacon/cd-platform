@@ -158,7 +158,7 @@ GET /bills?filter[query]=schools+telling+parents&page[size]=10
        "attributes": { "congress": 119, "bill_type": "HR", "bill_number": 2616,
                        "title": "...", "policy_area": "Education",
                        "crs_summary": "<p>...</p>" },
-       "meta": { "match": "policy_area" } },
+       "meta": { "matches": [ { "via": "policy_area" } ] } },
      ... ],
      "meta": { "query": "schools telling parents" } }
 ```
@@ -172,14 +172,19 @@ zero). Side-effect-free and cacheable on the query alone.
 
 Each `bill` resource's `id` is the canonical `bills.bill_key`
 (cd-etl migration 0006) -- pass it to `GET /members/{bioguide_id}/votes`'s
-`filter[bill]`. Each resource's `meta.match` (`policy_area` / `subject` /
-`similarity`) says which tier surfaced that bill -- **per-resource
-`meta`, not an attribute**, since it describes the bill's place in *this*
-search, not the bill (the `Bill` attributes model is reused as-is by any
-future `bill` endpoint, and by cd-server's merge). A client groups exact
-matches above related ones on `meta.match` rather than list order. No
-`relationships` (a search bill points at nothing modelled), no votes
-(that's the `/votes` endpoint's job -- cd-server merges the two by
+`filter[bill]`. Each resource's **`meta.matches`** says why that bill
+surfaced for *this* search -- a list of `{"via": ...}` where `via` is
+`policy_area` / `subject` (exact controlled-vocabulary match) or
+`summary` (CRS-summary embedding). It's per-resource `meta`, **not an
+attribute** (the bill's place in this search, not the bill -- the `Bill`
+attributes model is reused as-is by any future `bill` endpoint and by
+cd-server's merge). A list of objects rather than a scalar so
+passage-level full-text search (cd-platform#131) can add `{"via":
+"text", "section", "excerpt", "distance"}` entries and a bill can carry
+more than one reason, without reshaping the response. A client groups
+exact matches above related ones on `meta.matches` rather than list
+order. No `relationships` (a search bill points at nothing modelled), no
+votes (that's the `/votes` endpoint's job -- cd-server merges the two by
 resource id).
 
 `filter[query]` (required, 1-500 chars) is a JSON:API filter on the bill

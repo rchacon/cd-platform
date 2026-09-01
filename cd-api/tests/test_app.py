@@ -1180,9 +1180,9 @@ def test_get_bills_search_tier1_policy_area_match(monkeypatch, pg_conn):
         assert matched["type"] == "bill"
         assert "relationships" not in matched
         assert matched["attributes"]["policy_area"] == term
-        assert matched["meta"] == {"match": "policy_area"}
+        assert matched["meta"] == {"matches": [{"via": "policy_area"}]}
         assert "id" not in matched["attributes"]
-        assert "match" not in matched["attributes"]
+        assert "matches" not in matched["attributes"]
         assert "votes" not in matched["attributes"]
     finally:
         with pg_conn.cursor() as cur:
@@ -1208,7 +1208,7 @@ def test_get_bills_search_tier1_subject_match(monkeypatch, pg_conn):
         matched = next(
             r for r in response.json()["data"] if r["id"] == f"119-hr-{bill_number}"
         )
-        assert matched["meta"]["match"] == "subject"
+        assert matched["meta"]["matches"] == [{"via": "subject"}]
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM bill_subjects WHERE bill_id = %s", (bill_id,))
@@ -1217,7 +1217,7 @@ def test_get_bills_search_tier1_subject_match(monkeypatch, pg_conn):
         pg_conn.commit()
 
 
-def test_get_bills_search_falls_back_to_similarity_with_match_similarity(monkeypatch, pg_conn):
+def test_get_bills_search_falls_back_to_similarity_with_via_summary(monkeypatch, pg_conn):
     unrelated_term = f"test-unrelated-{uuid.uuid4().hex[:8]}"
     bill_number = random_number(20000, 29000)
     # Vocab term far from the query embedding -> tier 1 finds nothing
@@ -1235,7 +1235,7 @@ def test_get_bills_search_falls_back_to_similarity_with_match_similarity(monkeyp
         matched = next(
             r for r in response.json()["data"] if r["id"] == f"119-hr-{bill_number}"
         )
-        assert matched["meta"]["match"] == "similarity"
+        assert matched["meta"]["matches"] == [{"via": "summary"}]
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
