@@ -35,11 +35,14 @@ The schema (`src/cd/server/schema.py`) currently exposes:
 `{"version": "..."}`, same shape as `cd-api`'s own `GET /version` --
 for a quick `curl` check without a GraphQL client. Both read from the
 same `VERSION`-file-driven source of truth (`"dev"` when no `VERSION`
-file is present, true for every local/test run since it's only ever
-written into the image at release time) via `../cd-lib`'s shared
-`read_version()` -- see `cd-lib/README.md` for why that's the first
-piece of code shared across `cd-platform`'s Python services, and the
-`cd`-namespace-package detail that makes it work.
+file is present, true for every local/test run) via `../cd-lib`'s
+shared `read_version()` -- see `cd-lib/README.md` for why that's the
+first piece of code shared across `cd-platform`'s Python services, and
+the `cd`-namespace-package detail that makes it work. The file itself is
+written into `cd/server/VERSION` only in the Dockerfile's `production`
+target, from the `CD_SERVER_VERSION` build-arg `cd-server-deploy.yml`
+passes as the git-tag version (the `development` target deliberately has
+none).
 
 `schema.py`'s resolvers are thin -- each one delegates to a service in
 `src/cd/server/services/`, a small layer between the GraphQL resolvers

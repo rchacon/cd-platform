@@ -48,6 +48,18 @@ CMD ["uv", "run", "uvicorn", "cd.server.app:app", "--host", "0.0.0.0", "--port",
 # `base`'s own `uv sync --locked --no-dev` never installed pytest.
 FROM base AS production
 
+# cd.lib.version.read_version() reads this file next to cd/server/ (it's
+# `Path(__file__).parent / "VERSION"` from schema.py) and falls back to
+# "dev" when it's absent -- which is what every deployed cd-server has
+# reported until now, since nothing wrote it. Written ONLY in this
+# shipped target: the `development` target (local dev + CI) has no
+# VERSION file on purpose, so tests keep seeing "dev". cd-server-deploy.yml
+# passes the git-tag version as the build-arg; a plain `docker build`
+# with no --build-arg still gets a sane "dev". PYTHONPATH=/app/src makes
+# /app/src/cd/server the import location, so that's where the file goes.
+ARG CD_SERVER_VERSION=dev
+RUN echo "${CD_SERVER_VERSION}" > /app/src/cd/server/VERSION
+
 # What local dev and CI run the test suite through. A second, full
 # `uv sync --locked` (no --no-dev) actually installs pytest on top of
 # base's venv before tests/ is copied in.
