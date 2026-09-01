@@ -133,10 +133,13 @@ jobs:
 
           # `entrypoint.sh migrate`: applies migrations, then exits 0 --
           # must NOT stay up as a server. --network container:X so
-          # alembic can reach Postgres on settings.py's defaults.
-          docker run --rm --network container:$POSTGRES_CID \
+          # alembic can reach Postgres on settings.py's defaults. `set
+          # -e` (the runner default) fails the step on a non-zero exit;
+          # `timeout` turns a regression where `migrate` never returns
+          # (falls through to `exec "$@"`) into a fast failure instead
+          # of a job-timeout hang.
+          timeout 120 docker run --rm --network container:$POSTGRES_CID \
             cd-server:production migrate
-          echo "migrate subcommand exited $?"
 
           # CD_SERVER_MIGRATE_TASK=1: the no-arg path skips the on-boot
           # `alembic upgrade head` (one-shot task owns it) but still
