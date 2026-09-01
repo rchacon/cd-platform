@@ -1,7 +1,7 @@
 import os
 from logging.config import fileConfig
 
-from sqlalchemy import create_engine, pool
+from sqlalchemy import create_engine, pool, text
 
 from alembic import context
 
@@ -35,4 +35,15 @@ with connectable.connect() as connection:
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
+        # Serialize concurrent `alembic upgrade` runs against cd_customers:
+        # a second runner blocks here until the first commits, then finds
+        # itself already at head and no-ops. Belt-and-suspenders with the
+        # dedicated one-shot migrate ECS task (see entrypoint.sh) -- it
+        # also covers two containers booting together (`docker compose
+        # up`, a stray `ecs run-task`, a crash-and-replace overlap).
+        # Transaction-scoped, so it auto-releases on commit/rollback with
+        # no explicit unlock; the constant key just has to be stable.
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('cd_customers_alembic'))")
+        )
         context.run_migrations()

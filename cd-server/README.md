@@ -154,9 +154,22 @@ structured/typed error result.
 
 `cd-server` now has its own Postgres database, `cd_customers`, that no
 other component touches -- schema managed by Alembic migrations under
-`migrations/` (same raw-SQL `op.execute()` idiom as `cd-etl`'s own),
-applied unconditionally on every container start by `entrypoint.sh`
-(mirroring `cd-etl`'s own entrypoint) before `uvicorn` starts. Its only
+`migrations/` (same raw-SQL `op.execute()` idiom as `cd-etl`'s own).
+`entrypoint.sh` runs `alembic upgrade head` unconditionally on every
+container start for local dev / CI (`docker compose up cd-server`,
+`make test-server`), so there's no separate step and no "forgot to
+migrate" failure mode. In **production** it's split, mirroring `cd-etl`:
+the long-running ECS service task overrides `entryPoint` to skip that,
+and a dedicated one-shot `entrypoint.sh migrate` ECS task
+(`cd-server-deploy.yml` runs it and waits for exit 0 before redeploying
+the service) applies migrations exactly once -- so the service can move
+to a rolling/surge deployment without two briefly-overlapping app tasks
+racing `alembic upgrade` against `cd_customers`. `migrations/env.py`
+also takes a transaction-scoped `pg_advisory_xact_lock` as a backstop,
+serializing any two runners that do overlap. Because a rolling deploy
+means old code briefly runs against the new schema, migrations here must
+be **backward-compatible within one deploy** (expand/contract -- add
+before you require, stop reading before you drop). Its only
 table today, `users` (`id`, `email`, `created_at`, `last_seen`), is
 upserted by `services/users_service.py`'s `UsersService` -- following the
 same client/service split as `CdApiService` above: `UsersClient` is the
