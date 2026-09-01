@@ -1,6 +1,6 @@
 [project]
 name = "cd-server"
-version = "0.2.0"
+version = "0.3.0"
 description = "GraphQL backend for cd-webapp"
 requires-python = ">=3.12"
 dependencies = [
