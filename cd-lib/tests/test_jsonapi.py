@@ -48,11 +48,11 @@ def test_resource_carries_optional_meta():
         type="bill",
         id="119-hr-2616",
         attributes=_Attrs(name="x", seats=1),
-        meta={"match": "policy_area"},
+        meta={"matches": [{"via": "policy_area"}]},
     )
 
     dumped = resource.model_dump(exclude_none=True)
-    assert dumped["meta"] == {"match": "policy_area"}
+    assert dumped["meta"] == {"matches": [{"via": "policy_area"}]}
     assert "relationships" not in dumped
 
 
