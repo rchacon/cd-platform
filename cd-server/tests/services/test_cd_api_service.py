@@ -302,6 +302,33 @@ def test_cd_api_service_parses_the_jsonapi_collection_shape():
     assert all(m.district is None for m in sens)
 
 
+def test_cd_api_service_narrows_representatives_to_the_requested_district():
+    # Client-side backstop: if cd-api's filter[district] were ignored and
+    # it returned the whole state's House delegation, get_representatives
+    # must still hand back only the one district.
+    payload = {"data": [
+        _resource(_MEMBER | {"bioguide_id": "R000005", "district": 5}),
+        _resource(_MEMBER | {"bioguide_id": "R000012", "district": 12}),
+        _resource(_SENATOR),
+    ]}
+
+    reps = asyncio.run(CdApiService(_FakeTransport(payload)).get_representatives("CA", 12))
+
+    assert [m.bioguide_id for m in reps] == ["R000012"]
+
+
+def test_cd_api_service_malformed_jsonapi_document_raises_validation_error():
+    # The trust boundary holds for the new shape too: a resource missing
+    # `attributes` is a ValidationError from CollectionDocument, not a
+    # bare KeyError leaking out of the service.
+    from pydantic import ValidationError
+
+    payload = {"data": [{"type": "member", "id": "X000001"}]}
+
+    with pytest.raises(ValidationError):
+        asyncio.run(CdApiService(_FakeTransport(payload)).get_senators("CA"))
+
+
 def test_cd_api_service_drops_jsonapi_only_attributes():
     # `state`/`in_office` live in the resource attributes of the new
     # shape but aren't Member fields -- lenient Member drops them.
