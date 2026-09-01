@@ -4,25 +4,27 @@ import re
 
 from fastapi import APIRouter, HTTPException, Query
 
-from cd.api.db import fetch_current_members, fetch_member, fetch_member_votes
+from cd.api.db import fetch_member, fetch_member_votes, fetch_members
 from cd.api.jsonapi import JsonApiResponse, JsonApiRoute
-from cd.api.openapi import error_response, jsonapi_error_response
-from cd.api.transform import group_representatives, member_document, shape_member_votes
+from cd.api.openapi import jsonapi_error_response
+from cd.api.transform import (
+    member_document,
+    members_collection_document,
+    shape_member_votes,
+)
 # SEATS_PER_STATE lives in cd-lib -- cd-server's getStates also needs the
 # seat counts. Only the validation built on top of it is cd-api's, and
 # with GET /members its only caller it lives here. Pull it into a
 # validation/ package if more request-validation helpers accrue.
 from cd.lib.apportionment import SEATS_PER_STATE
 from cd.lib.jsonapi import CollectionDocument, Document
-from cd.lib.models import MemberDetail, MembersResponse, RollCallVote
+from cd.lib.models import MemberDetail, RollCallVote
 
-# GET /members (the bespoke {senators, representatives} list) stays on
-# this plain router. The two resource endpoints below speak JSON:API and
-# live on their own router: JsonApiRoute adds the spec's request-side
-# strictness (400 on unsupported params, 415/406 on a parametrized media
-# type) and renders errors as JSON:API documents, and JsonApiResponse
-# serves `application/vnd.api+json`.
-router = APIRouter(tags=["members"])
+# All three member endpoints speak JSON:API now, so they share one
+# router: JsonApiRoute adds the spec's request-side strictness (400 on
+# unsupported params like `include`/`sort`/`fields[]`, 415/406 on a
+# parametrized media type) and renders errors as JSON:API documents, and
+# JsonApiResponse serves `application/vnd.api+json`.
 jsonapi_router = APIRouter(route_class=JsonApiRoute, tags=["members"])
 
 # Upper bound on how many bills GET /members/{bioguide_id}/votes'
@@ -71,68 +73,149 @@ def is_valid_district(state: str, district: int, seats: int | None = None) -> bo
     return district == 0 if seats == 1 else 1 <= district <= seats
 
 
-@router.get(
+_CHAMBER_FILTER = {"senate": "SENATE", "house": "HOUSE"}
+
+_STATE_QUERY = dict(min_length=2, max_length=2, pattern="^[A-Za-z]{2}$")
+
+
+@jsonapi_router.get(
     "/members",
-    response_model=MembersResponse,
+    response_model=CollectionDocument[MemberDetail],
+    response_class=JsonApiResponse,
+    # `member` resources here carry no relationships/meta; exclude_none
+    # drops the wrapper's `None` defaults so the response omits them
+    # rather than emitting `"relationships": null` (invalid per JSON:API).
+    # Same call as GET /members/{bioguide_id}.
+    response_model_exclude_none=True,
     responses={
-        404: error_response(
-            "Unknown state, or a district that doesn't exist for the given state.",
-            "ProblemDetail",
+        400: jsonapi_error_response(
+            "An unsupported query parameter was sent (e.g. `include`, `sort`)."
         ),
-        405: error_response("HTTP method not allowed for this path.", "ProblemDetail"),
-        422: error_response(
-            "Request parameters failed validation.", "ValidationProblemDetail"
+        404: jsonapi_error_response(
+            "`filter[state]` is a state with no seats in the apportionment "
+            "table, or `filter[district]` doesn't exist for that state. A "
+            "real but currently-vacant district is `200` with empty `data`."
         ),
-        500: error_response("An unexpected error occurred.", "ProblemDetail"),
+        405: jsonapi_error_response("HTTP method not allowed for this path."),
+        406: jsonapi_error_response(
+            "`Accept` offers the JSON:API media type only with a media-type "
+            "parameter other than `profile`/`ext`."
+        ),
+        415: jsonapi_error_response(
+            "`Content-Type` is the JSON:API media type with a media-type "
+            "parameter other than `profile`/`ext`."
+        ),
+        422: jsonapi_error_response(
+            "Request parameters failed validation (e.g. `filter[state]` "
+            "missing or not two letters, `filter[chamber]` not "
+            "`senate`/`house`)."
+        ),
+        500: jsonapi_error_response("An unexpected error occurred."),
     },
 )
 def get_members(
-    state: str = Query(..., min_length=2, max_length=2, pattern="^[A-Za-z]{2}$"),
-    district: int | None = Query(
+    state_filter: str | None = Query(
         None,
-        ge=0,
+        alias="filter[state]",
+        description="2-letter USPS state/territory code. Required.",
+        **_STATE_QUERY,
+    ),
+    chamber_filter: str | None = Query(
+        None,
+        alias="filter[chamber]",
         description=(
-            "Omit entirely to get senators only. `0` selects the state's "
-            "single at-large House seat (only valid for 1-seat states/"
-            "territories, e.g. WY, DC). `1` and above selects a specific "
-            "numbered House district. There is no explicit \"null\" form -- "
-            "HTTP query strings can't express it, so `district=` or "
-            "`district=null` both fail validation; omission is the only "
-            "way to get the senators-only behavior."
+            "`senate` or `house` (case-insensitive). `house` includes "
+            "non-voting Delegates and the Resident Commissioner. Omit for "
+            "both chambers."
         ),
     ),
+    district_filter: int | None = Query(
+        None,
+        alias="filter[district]",
+        ge=0,
+        description=(
+            "House district number -- `0` for a 1-seat state's at-large "
+            "seat, `1`+ for a numbered district. Selects House members in "
+            "that district only (Senators have no district and never "
+            "match). Omit for all districts."
+        ),
+    ),
+    state_deprecated: str | None = Query(
+        None,
+        alias="state",
+        deprecated=True,
+        description="Deprecated alias for `filter[state]`.",
+        **_STATE_QUERY,
+    ),
+    district_deprecated: int | None = Query(
+        None,
+        alias="district",
+        ge=0,
+        deprecated=True,
+        description="Deprecated alias for `filter[district]`.",
+    ),
 ) -> dict:
-    """Look up current senators and representative(s) for a state.
+    """List current members, filtered.
 
-    Optionally scoped to one House district via `district` -- see that
-    parameter's own description for its omitted/0/1+ semantics.
+    An honest collection: each `filter[...]` narrows the set, and they
+    compose. `filter[state]=GA` alone returns every current GA member
+    (both Senators and Representatives); add `filter[chamber]=house` or
+    `filter[district]=5` to narrow further. `filter[state]` (or its
+    deprecated bare `state` alias, which cd-server still sends during the
+    migration) is required.
 
-    `district` draws a distinction between two different kinds of "no
-    representative": a district number that doesn't exist for the given
-    state (validated against real House apportionment) returns `404`,
-    while a district that does exist but is currently vacant (a real
-    seat between office-holders) still returns `200` with an empty
-    `representatives` list. `senators` is populated either way.
+    Returns a JSON:API collection of `member` resources -- the same
+    resource shape as `GET /members/{bioguide_id}`, `in_office` always
+    `true` (this list is sitting-only; the by-id endpoint is the one
+    that also serves departed members).
+
+    `filter[district]` distinguishes two kinds of "no representative": a
+    number that doesn't exist for the state (checked against real House
+    apportionment) is `404`; a real district that's currently vacant is
+    `200` with `data` empty. An unknown `filter[state]` is `404`.
     """
-    # Distinguishes "this district doesn't exist" from "this district
-    # exists but is currently vacant" (see cd-platform#12) -- without this,
-    # both cases fall through to the same 200 + empty representatives list
-    # below, since current_members' query includes the state's senators
-    # regardless of whether any representative matches the district.
+    state = state_filter if state_filter is not None else state_deprecated
+    if state is None:
+        raise HTTPException(
+            status_code=422, detail="`filter[state]` is required."
+        )
+    state = state.upper()
+
+    district = (
+        district_filter if district_filter is not None else district_deprecated
+    )
+
+    chamber = None
+    if chamber_filter is not None:
+        chamber = _CHAMBER_FILTER.get(chamber_filter.lower())
+        if chamber is None:
+            raise HTTPException(
+                status_code=422,
+                detail="`filter[chamber]` must be `senate` or `house`.",
+            )
+
+    # "district doesn't exist" (404) vs "district exists but is vacant"
+    # (200, empty data) -- see cd-platform#12. `seats is None` means the
+    # state isn't in the apportionment table at all.
     seats = max_valid_district(state)
     if district is not None and not is_valid_district(state, district, seats=seats):
         raise HTTPException(
             status_code=404,
             detail=(
-                f"District {district} does not exist for state {state.upper()} "
+                f"District {district} does not exist for state {state} "
                 f"({seats} district{'s' if seats != 1 else ''})."
             ),
         )
 
-    rows = fetch_current_members(state.upper(), district)
-    if not rows:
-        raise HTTPException(status_code=404, detail=f"No data found for state {state.upper()}")
-    return group_representatives(rows)
+    rows = fetch_members(state, chamber=chamber, district=district)
+    # Empty is a real answer (vacant district, a chamber with no seated
+    # member) -- 200 with `data: []` -- UNLESS the state isn't a known
+    # one at all and nothing matched, which stays a 404 as before.
+    if not rows and seats is None:
+        raise HTTPException(
+            status_code=404, detail=f"No data found for state {state}"
+        )
+    return members_collection_document(rows)
 
 
 @jsonapi_router.get(

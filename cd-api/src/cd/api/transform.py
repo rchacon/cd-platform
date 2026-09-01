@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-# DB row(s) -> API response dict. `person`/`group_representatives` shape
-# current_members rows for GET /members (bespoke {senators,
-# representatives} shape); `member_document` shapes one current_members
-# row into the JSON:API single-resource document GET /members/{bioguide_id}
-# returns; `shape_member_votes` shapes fetch_member_votes rows into the
-# JSON:API `roll_call_vote` collection GET /members/{bioguide_id}/votes
-# returns; `bill_search_document` shapes the tiered bill rows into the
-# JSON:API `bill` collection GET /bills returns.
+# DB row(s) -> API response dict. `person` shapes a current_members row
+# into the shared Member attribute set; `_member_resource` wraps that as
+# a JSON:API `member` resource (identity on the resource `id`, plus
+# `state`/`in_office`), which `member_document` returns as a
+# single-resource document for GET /members/{bioguide_id} and
+# `members_collection_document` returns as a collection for GET /members;
+# `shape_member_votes` shapes fetch_member_votes rows into the JSON:API
+# `roll_call_vote` collection GET /members/{bioguide_id}/votes returns;
+# `bill_search_document` shapes the tiered bill rows into the JSON:API
+# `bill` collection GET /bills returns.
 
 
 def _roll_call_id(row: dict[str, Any]) -> str:
@@ -25,8 +27,9 @@ def _roll_call_id(row: dict[str, Any]) -> str:
 
 
 def person(row: dict[str, Any]) -> dict[str, Any]:
-    # The Member shape shared by GET /members (grouped by chamber, below)
-    # and GET /members/{bioguide_id} (which adds `state` on top).
+    # The shared Member attribute set -- `_member_resource` strips
+    # bioguide_id (it's the resource id) and layers on state/in_office
+    # for both GET /members and GET /members/{bioguide_id}.
     return {
         "bioguide_id": row["bioguide_id"],
         "first_name": row.get("given_name"),
@@ -47,29 +50,33 @@ def person(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def group_representatives(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    return {
-        "senators": [person(row) for row in rows if row["chamber"] == "SENATE"],
-        "representatives": [person(row) for row in rows if row["chamber"] == "HOUSE"],
-    }
+def _member_resource(row: dict[str, Any]) -> dict[str, Any]:
+    # One JSON:API `member` resource. Identity is the resource `id`, so
+    # `attributes` is `person(row)` minus bioguide_id, plus the two
+    # fields the JSON:API member shape carries (state, in_office).
+    # in_office is always true for a GET /members list row
+    # (fetch_members filters on it) -- kept in the shape anyway so the
+    # list and GET /members/{bioguide_id} share one MemberDetail model.
+    attributes = {k: v for k, v in person(row).items() if k != "bioguide_id"}
+    attributes["state"] = row["state"]
+    attributes["in_office"] = row["in_office"]
+    return {"type": "member", "id": row["bioguide_id"], "attributes": attributes}
 
 
 def member_document(row: dict[str, Any]) -> dict[str, Any]:
     # GET /members/{bioguide_id}'s JSON:API single-resource document:
     # {"data": {"type": "member", "id": "<bioguide_id>", "attributes":
-    # {...}}}. Identity moves to the resource `id`, so `attributes` is
-    # `person(row)` minus bioguide_id, plus the two fields this endpoint
-    # carries over GET /members' shape (state, in_office).
-    attributes = {k: v for k, v in person(row).items() if k != "bioguide_id"}
-    attributes["state"] = row["state"]
-    attributes["in_office"] = row["in_office"]
-    return {
-        "data": {
-            "type": "member",
-            "id": row["bioguide_id"],
-            "attributes": attributes,
-        }
-    }
+    # {...}}}.
+    return {"data": _member_resource(row)}
+
+
+def members_collection_document(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    # GET /members' JSON:API collection document: {"data": [{"type":
+    # "member", "id": "<bioguide_id>", "attributes": {...}}, ...]}. Same
+    # `member` resources as member_document, one flat list (senators then
+    # House, by fetch_members' ORDER BY) rather than the old
+    # {senators, representatives} split.
+    return {"data": [_member_resource(row) for row in rows]}
 
 
 def shape_member_votes(

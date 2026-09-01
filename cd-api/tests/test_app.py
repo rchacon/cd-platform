@@ -20,6 +20,16 @@ CONGRESS = 119
 # don't silently pin a wall-clock year.
 LAST_YEAR = datetime.date.today().year - 1
 
+JSONAPI_MEDIA_TYPE = "application/vnd.api+json"
+
+
+def _follow_ref(schema: dict, ref: str) -> dict:
+    # "#/components/schemas/Foo" -> schema["components"]["schemas"]["Foo"]
+    node = schema
+    for part in ref.lstrip("#/").split("/"):
+        node = node[part]
+    return node
+
 
 def _insert_member(pg_conn, bioguide_id: str, given_name: str, family_name: str) -> None:
     with pg_conn.cursor() as cur:
@@ -152,91 +162,87 @@ def test_openapi_members_route_documents_404_vs_vacancy_distinction():
     assert "vacant" in description.lower()
 
 
-def test_openapi_members_response_documents_member_fields():
-    # cd-platform#40: /members' 200 response used to be an undocumented
-    # {"type": "object", "additionalProperties": true} placeholder --
-    # response_model=MembersResponse should make the real shape show up.
+def test_openapi_members_list_route_is_a_jsonapi_collection():
+    # cd-platform#104 PR B: GET /members went from a bespoke
+    # {senators, representatives} body to a JSON:API
+    # CollectionDocument[MemberDetail] -- the same `member` resource
+    # shape the by-id route serves.
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
-    schemas = schema["components"]["schemas"]
-    assert "MembersResponse" in schemas
-    assert "Member" in schemas
-    assert schemas["Member"]["required"] == ["bioguide_id", "role"]
-    assert set(schemas["Member"]["properties"]) == {
-        "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
-        "suffix", "role", "party", "phone", "website", "photo_url", "district",
+    get = schema["paths"]["/members"]["get"]
+    responses = get["responses"]
+    for status in ("400", "404", "405", "406", "415", "422", "500"):
+        assert list(responses[status]["content"]) == [JSONAPI_MEDIA_TYPE]
+        ref = responses[status]["content"][JSONAPI_MEDIA_TYPE]["schema"]["$ref"]
+        assert ref.endswith("/JsonApiErrorDocument")
+
+    document = _follow_ref(
+        schema, responses["200"]["content"][JSONAPI_MEDIA_TYPE]["schema"]["$ref"]
+    )
+    assert set(document["properties"]) == {"data", "meta"}
+    resource = _follow_ref(schema, document["properties"]["data"]["items"]["$ref"])
+    assert set(resource["properties"]) == {
+        "type", "id", "attributes", "relationships", "meta"
     }
+    detail = _follow_ref(schema, resource["properties"]["attributes"]["$ref"])
+    assert {"state", "in_office"} <= set(detail["required"])
+    assert "bioguide_id" not in detail["properties"]
+    assert "Puerto Rico" in detail["properties"]["role"]["description"]
 
-    # Regression test: role's description used to claim "Resident
-    # Commissioner" applies to any DC/territory seat, but member_type only
-    # ever uses it for Puerto Rico -- DC and other territories use
-    # "Delegate" (see test_transform.py's role tests).
-    role_description = schemas["Member"]["properties"]["role"]["description"]
-    assert "Puerto Rico" in role_description
-
-
-def test_openapi_error_responses_use_problem_json_content_type():
-    # cd-platform#40: the app always returns application/problem+json for
-    # errors (see problem.py), but FastAPI's default-generated 422 used to
-    # document application/json + its own HTTPValidationError shape instead.
-    client = TestClient(app)
-    schema = client.get("/openapi.json").json()
-
-    responses = schema["paths"]["/members"]["get"]["responses"]
-    for status in ("404", "422", "500"):
-        content = responses[status]["content"]
-        assert list(content) == ["application/problem+json"]
-
+    # No leftover FastAPI-default validation schema.
     schemas = schema["components"]["schemas"]
     assert "HTTPValidationError" not in schemas
     assert "ValidationError" not in schemas
 
 
-def test_openapi_error_schemas_are_shared_ref_components():
-    # Regression test: ProblemDetail/ValidationProblemDetail used to be
-    # inlined in full at every use (404/422/500 on /members, 500 on
-    # /version) instead of being registered once under components.schemas
-    # and referenced by $ref, unlike MembersResponse/Member/VersionResponse.
+def test_openapi_members_list_documents_filter_parameters():
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+
+    parameters = {
+        p["name"]: p for p in schema["paths"]["/members"]["get"]["parameters"]
+    }
+    assert set(parameters) == {
+        "filter[state]", "filter[chamber]", "filter[district]", "state", "district"
+    }
+    # The bare aliases cd-server still sends during the migration are
+    # marked deprecated.
+    assert parameters["state"]["deprecated"] is True
+    assert parameters["district"]["deprecated"] is True
+    assert parameters["filter[state]"].get("deprecated") is not True
+
+    district_desc = parameters["filter[district]"]["description"].lower()
+    assert "at-large" in district_desc
+    assert "senator" in district_desc
+
+
+def test_openapi_version_errors_use_problem_json_shared_refs():
+    # /version is the one remaining bespoke (RFC 9457 problem+json)
+    # endpoint -- its error responses still $ref the shared ProblemDetail
+    # component rather than inlining it.
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
     schemas = schema["components"]["schemas"]
     assert "ProblemDetail" in schemas
-    assert "ValidationProblemDetail" in schemas
 
-    responses = schema["paths"]["/members"]["get"]["responses"]
-    assert responses["404"]["content"]["application/problem+json"]["schema"] == {
-        "$ref": "#/components/schemas/ProblemDetail"
-    }
-    assert responses["422"]["content"]["application/problem+json"]["schema"] == {
-        "$ref": "#/components/schemas/ValidationProblemDetail"
-    }
+    responses = schema["paths"]["/version"]["get"]["responses"]
+    for status in ("405", "500"):
+        assert list(responses[status]["content"]) == ["application/problem+json"]
+        assert responses[status]["content"]["application/problem+json"]["schema"] == {
+            "$ref": "#/components/schemas/ProblemDetail"
+        }
 
 
 def test_openapi_documents_405_for_disallowed_method():
-    # Regression test: http_exception_handler genuinely returns a
-    # problem+json 405 for a disallowed method (see
-    # test_disallowed_method_returns_problem_detail), but it wasn't
-    # documented in responses= for either route.
+    # Regression test: the 405 for a disallowed method wasn't documented
+    # in responses= for either route.
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
 
     assert "405" in schema["paths"]["/members"]["get"]["responses"]
     assert "405" in schema["paths"]["/version"]["get"]["responses"]
-
-
-def test_openapi_district_parameter_documents_semantics():
-    # cd-platform#40: district's omitted/0/1+ meaning isn't derivable from
-    # its bare `int | None, ge=0` schema alone.
-    client = TestClient(app)
-    schema = client.get("/openapi.json").json()
-
-    parameters = schema["paths"]["/members"]["get"]["parameters"]
-    district_param = next(p for p in parameters if p["name"] == "district")
-
-    assert "omit" in district_param["description"].lower()
-    assert "at-large" in district_param["description"].lower()
 
 
 def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path):
@@ -307,15 +313,19 @@ def test_handler_returns_decoded_problem_json_not_base64(monkeypatch, tmp_path):
     # doesn't include application/problem+json, so every error response
     # was base64-encoded with isBase64Encoded=true, and API Gateway (no
     # matching binaryMediaTypes entry) forwarded the raw base64 string to
-    # clients untouched instead of decoding it.
+    # clients untouched instead of decoding it. Exercised via /version,
+    # the one endpoint still on problem+json (GET /members moved to
+    # JSON:API in cd-platform#104 PR B -- see the vnd.api+json test below).
     monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
-    response = handler(_api_gateway_event("/v1/members"), None)  # no `state` -> 422
+    event = _api_gateway_event("/v1/version")
+    event["httpMethod"] = "POST"  # 405 -> problem+json
+    response = handler(event, None)
 
-    assert response["statusCode"] == 422
+    assert response["statusCode"] == 405
     assert response["isBase64Encoded"] is False
     body = json.loads(response["body"])
     assert body["type"] == "about:blank"
-    assert body["status"] == 422
+    assert body["status"] == 405
 
 
 def test_handler_returns_decoded_vnd_api_json_not_base64(monkeypatch, tmp_path):
@@ -369,38 +379,98 @@ def test_bills_405_is_a_jsonapi_error_document():
     assert response.json()["errors"][0]["status"] == "405"
 
 
-def test_get_members_returns_senators_and_representative(seeded_state):
+def _members_by_id(body: dict) -> dict:
+    return {r["id"]: r for r in body["data"]}
+
+
+def test_get_members_returns_a_jsonapi_collection_of_members(seeded_state):
     client = TestClient(app)
-    response = client.get("/members", params={"state": STATE, "district": DISTRICT})
+    response = client.get("/members", params={"filter[state]": STATE})
 
     assert response.status_code == 200
+    assert response.headers["content-type"] == "application/vnd.api+json"
     body = response.json()
-    assert {(p["first_name"], p["last_name"]) for p in body["senators"]} == {
-        ("Alice", "Anderson"),
-        ("Bob", "Baker"),
+    assert set(body) == {"data"}
+
+    by_id = _members_by_id(body)
+    assert set(by_id) == {
+        seeded_state["senator_a"], seeded_state["senator_b"], seeded_state["rep"]
     }
-    assert [(p["first_name"], p["last_name"]) for p in body["representatives"]] == [
-        ("Carol", "Clark")
+    for resource in body["data"]:
+        assert resource["type"] == "member"
+        assert "bioguide_id" not in resource["attributes"]
+        assert resource["attributes"]["state"] == STATE
+        assert resource["attributes"]["in_office"] is True
+        assert "relationships" not in resource
+
+    # Senators first, then House by district (fetch_members ORDER BY).
+    assert [r["attributes"]["role"] for r in body["data"]] == [
+        "Senator", "Senator", "Representative"
     ]
-    assert body["senators"][0]["role"] == "Senator"
-    assert body["representatives"][0]["role"] == "Representative"
-    assert {p["bioguide_id"] for p in body["senators"]} == {
-        seeded_state["senator_a"],
-        seeded_state["senator_b"],
+    rep = by_id[seeded_state["rep"]]
+    assert rep["attributes"]["last_name"] == "Clark"
+    assert rep["attributes"]["district"] == DISTRICT
+
+
+def test_get_members_filter_by_chamber(seeded_state):
+    client = TestClient(app)
+
+    senate = client.get(
+        "/members", params={"filter[state]": STATE, "filter[chamber]": "senate"}
+    ).json()
+    assert {r["id"] for r in senate["data"]} == {
+        seeded_state["senator_a"], seeded_state["senator_b"]
     }
-    assert body["representatives"][0]["bioguide_id"] == seeded_state["rep"]
-    assert body["senators"][0]["district"] is None
-    assert body["representatives"][0]["district"] == DISTRICT
-    # GET /members' shape is unchanged by the by-id endpoint's MemberDetail.
-    assert "state" not in body["representatives"][0]
+
+    house = client.get(
+        "/members", params={"filter[state]": STATE, "filter[chamber]": "HOUSE"}
+    ).json()
+    assert [r["id"] for r in house["data"]] == [seeded_state["rep"]]
 
 
-def test_get_members_returns_member_type_as_role_for_delegate(pg_conn):
-    # Regression test: the seeded_state fixture always sets member_type to
-    # exactly what the old chamber-only role derivation would have produced
-    # anyway ("Representative" for HOUSE), so it can't distinguish that bug
-    # from the fix. This seeds a HOUSE row with a member_type that actually
-    # differs from "Representative" to prove role comes from member_type.
+def test_get_members_filter_by_district_does_not_bundle_senators(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        "/members", params={"filter[state]": STATE, "filter[district]": DISTRICT}
+    )
+
+    assert response.status_code == 200
+    assert [r["id"] for r in response.json()["data"]] == [seeded_state["rep"]]
+
+
+def test_get_members_accepts_deprecated_bare_state_and_district_aliases(seeded_state):
+    # cd-server's #127 dual-send keeps sending bare `state`/`district`
+    # until PR C -- they must still bind, not 400 as unsupported params.
+    client = TestClient(app)
+    response = client.get(
+        "/members", params={"state": STATE, "district": DISTRICT}
+    )
+
+    assert response.status_code == 200
+    assert [r["id"] for r in response.json()["data"]] == [seeded_state["rep"]]
+
+
+def test_get_members_dual_sent_filter_and_bare_params_do_not_conflict(seeded_state):
+    # cd-server sends BOTH `state` and `filter[state]` (same for district)
+    # during the migration window -- distinct keys, so JsonApiRoute's
+    # repeated-param check doesn't fire, and the canonical one wins.
+    client = TestClient(app)
+    response = client.get(
+        "/members",
+        params={
+            "state": STATE, "filter[state]": STATE,
+            "district": DISTRICT, "filter[district]": DISTRICT,
+        },
+    )
+
+    assert response.status_code == 200
+    assert [r["id"] for r in response.json()["data"]] == [seeded_state["rep"]]
+
+
+def test_get_members_role_comes_from_member_type_for_a_delegate(pg_conn):
+    # A HOUSE row whose member_type differs from "Representative" -- proves
+    # role passes member_type through, and that filter[chamber]=house
+    # folds Delegates in.
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id, "Eleanor", "Norton")
     _insert_term(pg_conn, bioguide_id, "HOUSE", 0, member_type="Delegate")
@@ -408,28 +478,71 @@ def test_get_members_returns_member_type_as_role_for_delegate(pg_conn):
 
     try:
         client = TestClient(app)
-        response = client.get("/members", params={"state": STATE, "district": 0})
+        response = client.get(
+            "/members", params={"filter[state]": STATE, "filter[chamber]": "house"}
+        )
 
         assert response.status_code == 200
-        body = response.json()
-        assert body["representatives"][0]["role"] == "Delegate"
+        by_id = _members_by_id(response.json())
+        assert by_id[bioguide_id]["attributes"]["role"] == "Delegate"
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
         pg_conn.commit()
 
 
-def test_get_members_unknown_state_returns_404(pg_conn):
+def test_get_members_unknown_state_returns_jsonapi_404(pg_conn):
     client = TestClient(app)
-    response = client.get("/members", params={"state": "QQ", "district": 1})
+    response = client.get("/members", params={"filter[state]": "QQ"})
 
     assert response.status_code == 404
-    assert response.headers["content-type"] == "application/problem+json"
-    body = response.json()
-    assert body["type"] == "about:blank"
-    assert body["title"] == "Not Found"
-    assert body["status"] == 404
-    assert body["detail"] == "No data found for state QQ"
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    error = response.json()["errors"][0]
+    assert error["status"] == "404"
+    assert error["detail"] == "No data found for state QQ"
+
+
+def test_get_members_missing_state_returns_jsonapi_422():
+    client = TestClient(app)
+    response = client.get("/members")
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert "filter[state]" in response.json()["errors"][0]["detail"]
+
+
+def test_get_members_bad_chamber_returns_jsonapi_422(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        "/members", params={"filter[state]": STATE, "filter[chamber]": "upper"}
+    )
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert "filter[chamber]" in response.json()["errors"][0]["detail"]
+
+
+def test_get_members_rejects_an_unsupported_query_param(seeded_state):
+    client = TestClient(app)
+    response = client.get(
+        "/members", params={"filter[state]": STATE, "include": "terms"}
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert "include" in response.json()["errors"][0]["detail"]
+
+
+def test_disallowed_method_on_members_is_a_jsonapi_error():
+    # POST /members -- a routing-layer 405, never reaches JsonApiRoute;
+    # _JSONAPI_PATH_RE covers the whole /members namespace now, so app.py
+    # formats it as JSON:API, not problem+json.
+    client = TestClient(app)
+    response = client.post("/members")
+
+    assert response.status_code == 405
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert response.json()["errors"][0]["status"] == "405"
 
 
 def test_unmatched_route_returns_problem_detail():
@@ -448,131 +561,102 @@ def test_unmatched_route_returns_problem_detail():
     assert body["status"] == 404
 
 
-def test_disallowed_method_returns_problem_detail():
+def test_get_members_invalid_state_returns_jsonapi_422():
     client = TestClient(app)
-    response = client.post("/members")
-
-    assert response.status_code == 405
-    assert response.headers["content-type"] == "application/problem+json"
-    body = response.json()
-    assert body["type"] == "about:blank"
-    assert body["status"] == 405
-
-
-def test_get_members_invalid_state_returns_422_problem_detail():
-    client = TestClient(app)
-    response = client.get("/members", params={"state": "California", "district": 1})
+    response = client.get("/members", params={"filter[state]": "California"})
 
     assert response.status_code == 422
-    assert response.headers["content-type"] == "application/problem+json"
-    body = response.json()
-    assert body["type"] == "about:blank"
-    assert body["status"] == 422
-    assert "errors" in body
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert response.json()["errors"][0]["status"] == "422"
 
 
-def test_get_members_unhandled_exception_returns_500_problem_detail(monkeypatch, caplog):
-    def _boom(state, district):
+def test_get_members_unhandled_exception_returns_jsonapi_500(monkeypatch, caplog):
+    def _boom(*args, **kwargs):
         raise RuntimeError("db exploded")
 
-    monkeypatch.setattr("cd.api.routes.members.fetch_current_members", _boom)
+    monkeypatch.setattr("cd.api.routes.members.fetch_members", _boom)
     client = TestClient(app, raise_server_exceptions=False)
     with caplog.at_level("ERROR"):
-        response = client.get("/members", params={"state": "ZZ", "district": 1})
+        response = client.get("/members", params={"filter[state]": "ZZ"})
 
     assert response.status_code == 500
-    assert response.headers["content-type"] == "application/problem+json"
-    body = response.json()
-    assert body["type"] == "about:blank"
-    assert body["title"] == "Internal Server Error"
-    assert body["status"] == 500
+    # JsonApiRoute catches it -> JSON:API document, not problem+json.
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    assert response.json()["errors"][0]["status"] == "500"
 
     # The client only ever sees the generic message above -- confirm the
-    # real exception is still captured server-side (logs are the only
-    # trace of what actually failed, since nothing else logs it).
+    # real exception is still captured server-side.
     assert "Unhandled exception" in caplog.text
     assert "db exploded" in caplog.text
 
 
-@pytest.mark.parametrize(
-    "params",
-    [
-        pytest.param({"state": STATE, "district": 99}, id="non-matching-district"),
-        pytest.param({"state": STATE}, id="omitted-district"),
-    ],
-)
-def test_get_members_returns_senators_only_without_a_matching_district(seeded_state, params):
+def test_get_members_omitted_district_returns_the_whole_state(seeded_state):
     client = TestClient(app)
-    response = client.get("/members", params=params)
+    response = client.get("/members", params={"filter[state]": STATE})
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["representatives"] == []
-    assert len(body["senators"]) == 2
+    assert len(response.json()["data"]) == 3  # 2 senators + 1 rep
 
 
-def test_get_members_out_of_range_district_returns_404():
+def test_get_members_out_of_range_district_returns_jsonapi_404():
     # cd-platform#12: GA has 14 districts (see apportionment.SEATS_PER_STATE)
-    # -- 99 is out of range regardless of what's seeded, so this needs no
-    # fixture at all; the check happens before any DB query.
+    # -- 99 is out of range regardless of what's seeded; the check happens
+    # before any DB query.
     client = TestClient(app)
-    response = client.get("/members", params={"state": "GA", "district": 99})
+    response = client.get(
+        "/members", params={"filter[state]": "GA", "filter[district]": 99}
+    )
 
     assert response.status_code == 404
-    assert response.headers["content-type"] == "application/problem+json"
-    body = response.json()
-    assert body["status"] == 404
-    assert "District 99 does not exist for state GA" in body["detail"]
-    assert "14 districts" in body["detail"]
+    assert response.headers["content-type"] == "application/vnd.api+json"
+    detail = response.json()["errors"][0]["detail"]
+    assert "District 99 does not exist for state GA" in detail
+    assert "14 districts" in detail
 
 
 def test_get_members_district_one_invalid_for_at_large_state_returns_404():
-    # cd-platform#12: WY has exactly 1 seat, which uses district=0 (at-large)
-    # per this project's own NULL/0/1+ convention -- district=1 sounds like
-    # a reasonable request but is actually invalid for a 1-seat state, not
-    # "the first of 1 districts."
+    # cd-platform#12: WY has exactly 1 seat, which uses district=0
+    # (at-large) -- district=1 is invalid for a 1-seat state.
     client = TestClient(app)
-    response = client.get("/members", params={"state": "WY", "district": 1})
+    response = client.get(
+        "/members", params={"filter[state]": "WY", "filter[district]": 1}
+    )
 
     assert response.status_code == 404
-    body = response.json()
-    assert "District 1 does not exist for state WY" in body["detail"]
-    assert "1 district)" in body["detail"]
+    detail = response.json()["errors"][0]["detail"]
+    assert "District 1 does not exist for state WY" in detail
+    assert "1 district)" in detail
 
 
-def test_get_members_valid_but_vacant_district_still_returns_200(pg_conn):
-    # cd-platform#12's actual regression concern: a real, in-range district
-    # with no current representative (a genuine vacancy) must NOT be
-    # confused with an out-of-range one -- still 200 + empty
-    # representatives, only senators returned. Uses GA (14 districts);
-    # district 5 is in-range but nothing is seeded for it below.
-    senator_a, senator_b = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
-    _insert_member(pg_conn, senator_a, "Dana", "Diaz")
-    _insert_member(pg_conn, senator_b, "Eli", "Evans")
-    _insert_term(pg_conn, senator_a, "SENATE", None, state="GA")
-    _insert_term(pg_conn, senator_b, "SENATE", None, state="GA")
+def test_get_members_valid_but_vacant_district_returns_200_empty_data(pg_conn):
+    # cd-platform#12: a real, in-range district with no current
+    # representative (a genuine vacancy) must NOT be confused with an
+    # out-of-range one -- 200 with `data: []`. Unlike the old shape, no
+    # senators are bundled in (honest collection -- filter[district]
+    # selects House members only). GA has 14 districts; nothing is seeded
+    # for district 5.
+    senator = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, senator, "Dana", "Diaz")
+    _insert_term(pg_conn, senator, "SENATE", None, state="GA")
     pg_conn.commit()
 
     try:
         client = TestClient(app)
-        response = client.get("/members", params={"state": "GA", "district": 5})
+        response = client.get(
+            "/members", params={"filter[state]": "GA", "filter[district]": 5}
+        )
 
         assert response.status_code == 200
-        body = response.json()
-        assert body["representatives"] == []
-        assert len(body["senators"]) == 2
+        assert response.json()["data"] == []
     finally:
         with pg_conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM members WHERE bioguide_id = ANY(%s)",
-                ([senator_a, senator_b],),
-            )
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (senator,))
         pg_conn.commit()
 
 
 def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
-    # current_members (cd-etl 0007) now keeps departed members, flagged
-    # in_office=false -- this roster endpoint must still exclude them.
+    # current_members (cd-etl 0007) keeps departed members, flagged
+    # in_office=false -- this list must still exclude them.
     sen, rep = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
     _insert_member(pg_conn, sen, "Sam", "Stone")
     _insert_member(pg_conn, rep, "Rita", "Reyes")
@@ -582,12 +666,14 @@ def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
 
     try:
         client = TestClient(app)
-        response = client.get("/members", params={"state": "GA", "district": 5})
+        by_state = client.get("/members", params={"filter[state]": "GA"}).json()
+        assert sen in {r["id"] for r in by_state["data"]}
+        assert rep not in {r["id"] for r in by_state["data"]}
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["representatives"] == []
-        assert [p["bioguide_id"] for p in body["senators"]] == [sen]
+        by_district = client.get(
+            "/members", params={"filter[state]": "GA", "filter[district]": 5}
+        ).json()
+        assert by_district["data"] == []
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sen, rep],))
@@ -664,17 +750,6 @@ def test_get_member_by_id_success_is_vnd_api_json(seeded_state):
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/vnd.api+json"
-
-
-def _follow_ref(schema: dict, ref: str) -> dict:
-    # "#/components/schemas/Foo" -> schema["components"]["schemas"]["Foo"]
-    node = schema
-    for part in ref.lstrip("#/").split("/"):
-        node = node[part]
-    return node
-
-
-JSONAPI_MEDIA_TYPE = "application/vnd.api+json"
 
 
 def test_openapi_member_by_id_route_is_documented():

@@ -2,8 +2,8 @@ import datetime
 
 from cd.api.transform import (
     bill_search_document,
-    group_representatives,
     member_document,
+    members_collection_document,
     person,
     shape_member_votes,
 )
@@ -29,58 +29,51 @@ def _row(**overrides) -> dict:
     return row
 
 
+def _detail_row(**overrides) -> dict:
+    return _row(**{"state": "GA", "in_office": True, **overrides})
+
+
 def test_person_bioguide_id_passes_through():
-    result = group_representatives([_row(bioguide_id="X000001")])
-    assert result["senators"][0]["bioguide_id"] == "X000001"
+    assert person(_row(bioguide_id="X000001"))["bioguide_id"] == "X000001"
 
 
 def test_person_district_is_null_for_senator():
-    result = group_representatives([_row(chamber="SENATE", district=None)])
-    assert result["senators"][0]["district"] is None
+    assert person(_row(chamber="SENATE", district=None))["district"] is None
 
 
 def test_person_district_passes_through_for_representative():
-    result = group_representatives(
-        [_row(chamber="HOUSE", member_type="Representative", district=5)]
-    )
-    assert result["representatives"][0]["district"] == 5
+    row = _row(chamber="HOUSE", member_type="Representative", district=5)
+    assert person(row)["district"] == 5
 
 
 def test_person_district_zero_for_at_large_representative():
-    result = group_representatives(
-        [_row(chamber="HOUSE", member_type="Representative", district=0)]
-    )
-    assert result["representatives"][0]["district"] == 0
+    row = _row(chamber="HOUSE", member_type="Representative", district=0)
+    assert person(row)["district"] == 0
 
 
 def test_person_name_fields_pass_through():
-    result = group_representatives([_row()])
-    person = result["senators"][0]
-    assert person["first_name"] == "Maria"
-    assert person["middle_name"] is None
-    assert person["last_name"] == "Cantwell"
-    assert person["nickname"] is None
-    assert person["suffix"] is None
+    p = person(_row())
+    assert p["first_name"] == "Maria"
+    assert p["middle_name"] is None
+    assert p["last_name"] == "Cantwell"
+    assert p["nickname"] is None
+    assert p["suffix"] is None
 
 
 def test_person_name_fields_include_middle_name_nickname_and_suffix_when_present():
-    result = group_representatives(
-        [_row(middle_name="E.", nickname="Cindy", suffix="III")]
-    )
-    person = result["senators"][0]
-    assert person["middle_name"] == "E."
-    assert person["nickname"] == "Cindy"
-    assert person["suffix"] == "III"
+    p = person(_row(middle_name="E.", nickname="Cindy", suffix="III"))
+    assert p["middle_name"] == "E."
+    assert p["nickname"] == "Cindy"
+    assert p["suffix"] == "III"
 
 
 def test_person_role_senate():
-    result = group_representatives([_row(chamber="SENATE", member_type="Senator")])
-    assert result["senators"][0]["role"] == "Senator"
+    assert person(_row(chamber="SENATE", member_type="Senator"))["role"] == "Senator"
 
 
 def test_person_role_house():
-    result = group_representatives([_row(chamber="HOUSE", member_type="Representative")])
-    assert result["representatives"][0]["role"] == "Representative"
+    row = _row(chamber="HOUSE", member_type="Representative")
+    assert person(row)["role"] == "Representative"
 
 
 def test_person_role_uses_member_type_for_delegate():
@@ -88,35 +81,51 @@ def test_person_role_uses_member_type_for_delegate():
     # mislabeled DC's Delegate / Puerto Rico's Resident Commissioner as
     # a plain "Representative". member_type already carries the correct
     # distinction, so role should just pass it through.
-    result = group_representatives([_row(chamber="HOUSE", member_type="Delegate")])
-    assert result["representatives"][0]["role"] == "Delegate"
+    assert person(_row(chamber="HOUSE", member_type="Delegate"))["role"] == "Delegate"
 
 
 def test_person_role_uses_member_type_for_resident_commissioner():
-    result = group_representatives([_row(chamber="HOUSE", member_type="Resident Commissioner")])
-    assert result["representatives"][0]["role"] == "Resident Commissioner"
+    row = _row(chamber="HOUSE", member_type="Resident Commissioner")
+    assert person(row)["role"] == "Resident Commissioner"
 
 
-def test_group_representatives_splits_by_chamber():
+def test_members_collection_document_is_a_jsonapi_collection():
     rows = [
-        _row(chamber="SENATE", family_name="Cantwell"),
-        _row(chamber="SENATE", family_name="Murray"),
-        _row(chamber="HOUSE", family_name="Smith"),
+        _detail_row(bioguide_id="S000001", chamber="SENATE", family_name="Cantwell"),
+        _detail_row(bioguide_id="S000002", chamber="SENATE", family_name="Murray"),
+        _detail_row(
+            bioguide_id="H000001", chamber="HOUSE", member_type="Representative",
+            family_name="Smith", district=7,
+        ),
     ]
-    result = group_representatives(rows)
-    assert [p["last_name"] for p in result["senators"]] == ["Cantwell", "Murray"]
-    assert [p["last_name"] for p in result["representatives"]] == ["Smith"]
+    doc = members_collection_document(rows)
+
+    assert set(doc) == {"data"}
+    assert [r["type"] for r in doc["data"]] == ["member"] * 3
+    assert [r["id"] for r in doc["data"]] == ["S000001", "S000002", "H000001"]
+    # Row order is preserved as given (fetch_members does the sorting).
+    assert [r["attributes"]["last_name"] for r in doc["data"]] == [
+        "Cantwell", "Murray", "Smith",
+    ]
 
 
-def test_group_representatives_empty_house_rows():
-    result = group_representatives([_row(chamber="SENATE")])
-    assert result["representatives"] == []
+def test_members_collection_document_empty():
+    assert members_collection_document([]) == {"data": []}
+
+
+def test_members_collection_document_resource_matches_member_document():
+    # The list and GET /members/{bioguide_id} must emit the identical
+    # `member` resource shape (same MemberDetail model).
+    row = _detail_row(bioguide_id="X000009")
+    assert members_collection_document([row])["data"][0] == member_document(row)["data"]
 
 
 def test_person_does_not_carry_state():
-    # `state` is a GET /members/{bioguide_id} (MemberDetail) addition,
-    # layered on in the route -- the shared shape stays as GET /members has it.
-    assert "state" not in group_representatives([_row()])["senators"][0]
+    # `state`/`in_office` are layered on by `_member_resource` for the
+    # JSON:API `member` shape -- the raw `person()` dict doesn't have them.
+    p = person(_row())
+    assert "state" not in p
+    assert "in_office" not in p
 
 
 def test_person_returns_exactly_the_documented_field_set():
@@ -128,10 +137,6 @@ def test_person_returns_exactly_the_documented_field_set():
         "bioguide_id", "first_name", "middle_name", "last_name", "nickname",
         "suffix", "role", "party", "phone", "website", "photo_url", "district",
     }
-
-
-def _detail_row(**overrides) -> dict:
-    return _row(**{"state": "GA", "in_office": True, **overrides})
 
 
 def test_member_document_is_a_jsonapi_single_resource():

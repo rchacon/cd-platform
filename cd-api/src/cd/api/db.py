@@ -21,28 +21,42 @@ def get_connection() -> psycopg2.extensions.connection:
     return psycopg2.connect(cursor_factory=psycopg2.extras.RealDictCursor, **PG_DSN)
 
 
-def fetch_current_members(state: str, district: int | None) -> list[dict]:
-    # district=None omits any district match: `district = NULL` is never
-    # true in SQL (three-valued logic), so a NULL parameter here naturally
-    # yields senators only, with no special-casing needed. The HOUSE check
-    # is redundant given chamber_type is a strict two-value enum -- once
-    # chamber != 'SENATE' it's necessarily 'HOUSE'.
+def fetch_members(
+    state: str, chamber: str | None = None, district: int | None = None
+) -> list[dict]:
+    # Backs GET /members -- an "honest collection": every filter given is
+    # AND'd, and a filter that's omitted simply doesn't constrain. No
+    # `chamber = 'SENATE' OR district = %s` union trick: `filter[district]=5`
+    # returns *only* House members in district 5, not "district 5 plus the
+    # state's senators" (senators have district NULL, so `district = 5` is
+    # never true for them -- SQL three-valued logic, no special-casing).
+    # `filter[chamber]=house` folds in Delegates / the Resident
+    # Commissioner (chamber HOUSE, member_type differs).
     #
     # `AND in_office`: current_members (cd-etl migration 0007) no longer
     # filters departed members out -- it exposes `in_office` instead, so
     # GET /members/{bioguide_id} can still serve them. This roster
-    # endpoint wants sitting-only, so it re-applies the filter here.
+    # endpoint is sitting-only, so it re-applies the filter here.
+    #
+    # ORDER BY: senators first, then House by district, bioguide_id as a
+    # final deterministic tiebreak (two same-state senators, an at-large
+    # 0 vs NULL) -- so the flat `data` list has a stable order the old
+    # {senators, representatives} split gave for free.
+    clauses = ["state = %(state)s", "in_office"]
+    if chamber is not None:
+        clauses.append("chamber = %(chamber)s")
+    if district is not None:
+        clauses.append("district = %(district)s")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT * FROM current_members
-                WHERE state = %(state)s
-                  AND in_office
-                  AND (chamber = 'SENATE' OR district = %(district)s)
+                WHERE {" AND ".join(clauses)}
+                ORDER BY (chamber <> 'SENATE'), district NULLS FIRST, bioguide_id
                 """,
-                {"state": state, "district": district},
+                {"state": state, "chamber": chamber, "district": district},
             )
             return list(cur.fetchall())
     finally:

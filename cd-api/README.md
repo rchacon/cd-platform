@@ -7,51 +7,67 @@ lookups, replacing its current GovTrack HTML scrape. Exposes the
 
 ## What it does
 
-`src/cd/api/app.py` defines a FastAPI app with one route:
+`src/cd/api/app.py` defines a FastAPI app. Every member endpoint --
+the list and the two by-id resources -- now speaks
+[JSON:API](https://jsonapi.org/); only `GET /version` keeps a bespoke
+shape.
 
 ```
-GET /members?state=GA&district=5
--> { "senators": [...], "representatives": [...] }
+GET /members?filter[state]=GA
+-> { "data": [ { "type": "member", "id": "<bioguide_id>",
+                 "attributes": { ...see below... } }, ... ] }
 
-GET /members?state=GA
--> { "senators": [...], "representatives": [] }
+GET /members?filter[state]=GA&filter[chamber]=house
+GET /members?filter[state]=GA&filter[district]=5
 ```
 
-`district` is optional -- senators represent the whole state (every district
-in it), so omitting `district` returns senators only; a representative is
-only included when `district` is given and matches.
+An **honest collection**: `filter[state]` is required (it's the only
+required filter), and `filter[chamber]` (`senate`/`house`, case-insensitive
+-- `house` folds in non-voting Delegates and the Resident Commissioner)
+and `filter[district]` (`0` at-large, `1+` numbered) each narrow the set
+further, composably. `filter[district]=5` returns *only* House members in
+district 5 -- Senators have no district and are never bundled in (unlike
+the old shape). "Who represents this address" is now two calls (one per
+chamber), which `cd-server` already makes concurrently.
 
-Each person has `bioguide_id` (Congress.gov's stable identifier for that
-member -- the primary key `members.bioguide_id` is keyed on), `first_name`,
-`middle_name`, `last_name`, `nickname`, `suffix` (the individual name
-parts, passed through as-is -- the API does not derive a combined display
-name; that's left to the client), `role` (whatever Congress.gov's
-`member_type` records for that seat -- `"Senator"`, `"Representative"`,
-`"Delegate"` for a non-voting territory seat (DC, American Samoa, Guam,
-Northern Mariana Islands, or the US Virgin Islands), or `"Resident
-Commissioner"` specifically for Puerto Rico's non-voting seat), `party`,
-`phone`, `website`, `photo_url`, `district` (`member_terms.district`'s own
-`null`/`0`/`1+` convention passed straight through -- `null` for a
-Senator, `0` for an at-large House seat, `1+` for a numbered one). An
-unknown state returns `404`. A `district`
-that doesn't exist for that state (validated against real House
-apportionment by `max_valid_district`/`is_valid_district` in
+`cd-server` still sends the pre-JSON:API bare `state`/`district` params
+during the migration window (cd-platform#104 PR A, #127); both are
+accepted as **deprecated aliases** for `filter[state]`/`filter[district]`
+and dropped in a later PR.
+
+Each `member` resource's `attributes` is the shared `MemberDetail` shape
+-- `first_name`, `middle_name`, `last_name`, `nickname`, `suffix` (the
+individual name parts, passed through as-is -- the API does not derive a
+combined display name; that's left to the client), `role` (whatever
+Congress.gov's `member_type` records for that seat -- `"Senator"`,
+`"Representative"`, `"Delegate"` for a non-voting territory seat (DC,
+American Samoa, Guam, Northern Mariana Islands, or the US Virgin
+Islands), or `"Resident Commissioner"` specifically for Puerto Rico's
+non-voting seat), `party`, `phone`, `website`, `photo_url`, `district`
+(`member_terms.district`'s own `null`/`0`/`1+` convention -- `null` for a
+Senator, `0` for an at-large House seat, `1+` for a numbered one),
+`state`, and `in_office` (always `true` for this list -- it's
+sitting-only; `GET /members/{bioguide_id}` is the one that also serves
+departed members). The bioguide id is the resource `id`, not an
+attribute.
+
+`filter[state]` for a state with no seats in the apportionment table
+returns `404`. A `filter[district]` that doesn't exist for that state
+(validated against real House apportionment by
+`max_valid_district`/`is_valid_district` in
 `src/cd/api/routes/members.py`, built on `../cd-lib`'s shared
-`SEATS_PER_STATE` table -- see `cd-lib/README.md`) also returns `404` -- e.g.
-`district=99` for a 14-district state. A `district` that *does* exist but
-currently has no representative (a genuine vacancy) still returns `200` with
-an empty `representatives` list, distinct from the `404` above.
+`SEATS_PER_STATE` table -- see `cd-lib/README.md`) also returns `404` --
+e.g. `filter[district]=99` for a 14-district state. A `filter[district]`
+that *does* exist but is currently vacant returns `200` with `data`
+empty, distinct from the `404` above.
 
-Errors from the bespoke endpoints (`GET /members`, `GET /version`) follow
-[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem Details for
-HTTP APIs") -- `Content-Type: application/problem+json`, body shaped
-`{"type", "title", "status", "detail", ...}`. Handled uniformly for
-unknown states (`404`), request validation failures like a malformed `state`
-(`422`, with a JSON-serialized `errors` list), and any unhandled server error
-(`500`), via `src/cd/api/problem.py`'s `problem_response` and the exception
-handlers registered in `src/cd/api/app.py`. The JSON:API resource endpoints
-(below) return a JSON:API error document instead --
-`src/cd/api/jsonapi.py`.
+Errors from every member endpoint are JSON:API error documents
+(`Content-Type: application/vnd.api+json`, body
+`{"errors": [{"status", "title", "detail", "source"?}]}`) --
+`src/cd/api/jsonapi.py`, via `JsonApiRoute`. `GET /version` alone still
+follows [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem
+Details for HTTP APIs", `application/problem+json`), handled by
+`src/cd/api/problem.py`'s `problem_response`.
 
 `src/cd/api/db.py` queries `current_members` directly with `psycopg2` -- no
 connection pooling yet, that's an open question for AWS deployment (see
@@ -73,9 +89,10 @@ to `app.py` -- only present in a deployed Lambda zip (written by
 `cd-api-deploy.yml`, see Releasing below), so it always reads `"dev"`
 locally.
 
-### Member-resource endpoints (JSON:API)
+### JSON:API endpoints
 
-`GET /members/{bioguide_id}` and `GET /members/{bioguide_id}/votes` are
+`GET /members`, `GET /members/{bioguide_id}`,
+`GET /members/{bioguide_id}/votes` and `GET /bills` are
 [JSON:API](https://jsonapi.org/): `Content-Type: application/vnd.api+json`,
 a `data` document holding resource object(s) with `type` + string `id`,
 typed `attributes`, and `relationships` carrying resource *linkage*
@@ -92,24 +109,23 @@ no pagination/`sort`, no top-level `jsonapi` object. The one real caller
 models (`Resource`/`Document`/`CollectionDocument`/`Relationship`/
 `ResourceIdentifier`) live in `../cd-lib/src/cd/lib/jsonapi.py`; the HTTP
 layer (media type, error documents, `JsonApiRoute` strictness) is
-`src/cd/api/jsonapi.py`. The bespoke `GET /members` list above keeps its
-`{senators, representatives}` shape (live consumers) and problem+json
-errors, and `GET /version` keeps its bespoke shape too.
+`src/cd/api/jsonapi.py`. `GET /version` is the only endpoint that keeps a
+bespoke (non-JSON:API) shape.
 
 ```
 GET /members/{bioguide_id}
 -> { "data": { "type": "member", "id": "K000401",
-               "attributes": { ...GET /members' person fields minus
-                               bioguide_id..., "state": "CA",
+               "attributes": { ...the same MemberDetail attributes the
+                               list returns... "state": "CA",
                                "in_office": true } } }
 ```
 
 Serves any member of the current Congress, sitting *or* departed mid-term
 (`in_office: false`, so a bookmarked page keeps resolving after a
-resignation). `404` only when the id has no current-Congress term at all
-(e.g. a member of a past Congress). `state`/`in_office` are carried on top
-of `GET /members`' field set; identity is the resource `id`, not an
-attribute.
+resignation) -- the one difference from the `GET /members` list, which is
+sitting-only. `404` only when the id has no current-Congress term at all
+(e.g. a member of a past Congress). Same `member` resource shape as the
+list; identity is the resource `id`, not an attribute.
 
 ```
 GET /members/{bioguide_id}/votes?filter[bill]=119-hr-2616,119-s-5
@@ -223,7 +239,7 @@ Bedrock failure is `503` (JSON:API error document, retryable).
    Then, e.g.:
 
    ```bash
-   curl 'http://localhost:8000/members?state=GA&district=5'
+   curl 'http://localhost:8000/members?filter[state]=GA&filter[district]=5'
    ```
 
 ## Testing
