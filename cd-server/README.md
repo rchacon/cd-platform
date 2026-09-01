@@ -155,25 +155,33 @@ structured/typed error result.
 `cd-server` now has its own Postgres database, `cd_customers`, that no
 other component touches -- schema managed by Alembic migrations under
 `migrations/` (same raw-SQL `op.execute()` idiom as `cd-etl`'s own).
-For local dev / CI (`docker compose up cd-server`, `make test-server`)
-`entrypoint.sh` runs `alembic upgrade head` on container start, so
-there's no separate step and no "forgot to migrate" failure mode. In
-**production** migrations are owned by a dedicated one-shot
-`entrypoint.sh migrate` ECS task (`cd-server-deploy.yml` runs it and
-waits for exit 0 before redeploying the service), so the service can
-move to a rolling/surge deployment without two briefly-overlapping app
-tasks racing `alembic upgrade` against `cd_customers`. Three independent
-guards keep the long-running service task out of the migration path:
-(1) its ECS task definition overrides `entryPoint` to skip
-`entrypoint.sh` (mirrors `cd-etl`); (2) the no-arg path in
-`entrypoint.sh` only migrates when `CD_SERVER_ENVIRONMENT` is unset or
-`local`, so a service task that falls through anyway starts against the
-existing schema and logs why; (3) `migrations/env.py` takes a
-transaction-scoped `pg_advisory_xact_lock`, serializing any two runners
-that still overlap. Because a rolling deploy means old code briefly runs
-against the new schema, migrations here must be **backward-compatible
-within one deploy** (expand/contract -- add before you require, stop
-reading before you drop). Its only
+`entrypoint.sh` runs `alembic upgrade head` on container start for local
+dev / CI (`docker compose up cd-server`, `make test-server`) and, today,
+for the production service task too -- there's no separate step and no
+"forgot to migrate" failure mode. That on-boot run is only safe in
+production because the ECS service runs **one task at a time**
+(`deployment_minimum_healthy_percent: 0`).
+
+The migrate-split (dormant in this repo until cd-infra#67 provisions its
+half) moves production to a dedicated one-shot `entrypoint.sh migrate`
+ECS task -- `cd-server-deploy.yml` will run it and wait for exit 0
+before redeploying the service -- so the service can then move to a
+rolling/surge deployment without two briefly-overlapping app tasks
+racing `alembic upgrade` against `cd_customers`. Once that lands, three
+independent guards keep the long-running service task out of the
+migration path: (1) its ECS task definition overrides `entryPoint` to
+skip `entrypoint.sh` entirely (mirrors `cd-etl`); (2) cd-infra also
+sets `CD_SERVER_MIGRATE_TASK=1` on that task, so the no-arg path skips
+the on-boot migrate even if the `entryPoint` override is ever dropped
+-- it defaults to running migrations, which is what keeps the split
+safe to ship before the one-shot task exists; (3) `migrations/env.py`
+takes a **session-scoped** `pg_advisory_lock` (not
+`pg_advisory_xact_lock`, which an `autocommit_block()` migration would
+drop mid-run), serializing any two runners that still overlap. Because a
+rolling deploy means old code briefly runs against the new schema,
+migrations here must be **backward-compatible within one deploy**
+(expand/contract -- add before you require, stop reading before you
+drop). Its only
 table today, `users` (`id`, `email`, `created_at`, `last_seen`), is
 upserted by `services/users_service.py`'s `UsersService` -- following the
 same client/service split as `CdApiService` above: `UsersClient` is the
