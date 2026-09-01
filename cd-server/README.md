@@ -73,6 +73,24 @@ against `cd-lib`'s shared `Member`/`MembersResponse` models and hands
 `schema.py`'s resolvers real `Member` objects, not a dict the resolver
 would otherwise have to parse itself.
 
+`CdApiService`'s `/members` handling is currently a **forward-compat
+shim** (cd-platform#104): it sends both the legacy `state`/`district`
+query params and the new `filter[state]`/`filter[district]`, and its
+`_members()` helper accepts either the old bespoke
+`{senators, representatives}` body or a new JSON:API
+`{"data": [<member resource>]}` collection. The JSON:API branch is
+validated through `cd-lib`'s `CollectionDocument[MemberDetail]` (a
+malformed envelope is a `ValidationError`, not a `KeyError` -- the trust
+boundary holds for the new shape too), then each resource's `id` becomes
+`bioguide_id` and its `state`/`in_office` attributes are dropped.
+`_members()` re-applies the chamber/district split client-side either way
+-- a backstop so a broken server-side `filter[*]` can't silently return
+the whole state's delegation. This ships *before* cd-api's `/members`
+flips so cd-server stays up across the switch (which **requires** cd-api's
+flip PR to keep `state`/`district` as deprecated accepted params, or the
+dual-send 400s on `JsonApiRoute`); the legacy branch, the dual-send, and
+`MembersResponse` are removed in a follow-up once cd-api has shipped.
+
 Both the transport `get()`s and the two GraphQL resolvers above are
 `async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
 pool (closed via `CdApiService.aclose()`, called from `app.py`'s FastAPI

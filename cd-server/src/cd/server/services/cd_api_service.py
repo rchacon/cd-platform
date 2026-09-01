@@ -5,7 +5,8 @@ from abc import ABC, abstractmethod
 import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
-from cd.lib.models import Member, MembersResponse
+from cd.lib.jsonapi import CollectionDocument
+from cd.lib.models import Member, MemberDetail, MembersResponse
 
 from cd.server import settings
 
@@ -153,6 +154,53 @@ def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
     }
 
 
+def _members(payload: dict, *, chamber: str, district: int | None = None) -> list[Member]:
+    """Normalise a `/members` response into a `list[Member]` for one
+    chamber ("senators" | "representatives"), optionally narrowed to one
+    district.
+
+    Forward-compat shim (cd-platform#104): cd-server ships this *before*
+    cd-api's `/members` flips to JSON:API and keeps working across the
+    switch. It accepts either shape:
+
+    - the new JSON:API `{"data": [<member resource>]}` -- validated
+      through `CollectionDocument[MemberDetail]` (so a malformed envelope
+      raises a `ValidationError`, not a bare `KeyError`), then each
+      resource's `id` becomes `bioguide_id` and its `state`/`in_office`
+      attributes are dropped (they aren't `Member` fields);
+    - the old bespoke `{senators, representatives}` body.
+
+    Both come back as a flat list; the `chamber`/`district` filters are
+    applied client-side either way. cd-api's own `filter[chamber]`/
+    `filter[district]` should already have narrowed the JSON:API result,
+    so these are a backstop -- a broken/ignored server-side filter can't
+    silently return the whole state's delegation. The legacy branch (and
+    this filtering) goes away in the follow-up PR once cd-api has shipped.
+    """
+    if "data" in payload:
+        document = CollectionDocument[MemberDetail].model_validate(payload)
+        members = [
+            Member(
+                bioguide_id=resource.id,
+                **resource.attributes.model_dump(exclude={"state", "in_office"}),
+            )
+            for resource in document.data
+        ]
+    else:
+        parsed = MembersResponse(**payload)
+        members = parsed.senators + parsed.representatives
+
+    # district is NULL only for a Senator (0/1+ for every House seat,
+    # Delegates and the Resident Commissioner included).
+    if chamber == "senators":
+        members = [m for m in members if m.district is None]
+    else:
+        members = [m for m in members if m.district is not None]
+        if district is not None:
+            members = [m for m in members if m.district == district]
+    return members
+
+
 class CdApiService:
     """The service layer schema.py depends on for cd-api data. Unlike the
     ApiClient it wraps (which just makes the call and hands back a raw
@@ -165,14 +213,34 @@ class CdApiService:
         self._transport = transport
 
     async def get_representatives(self, state: str, district: int) -> list[Member]:
+        # Sends BOTH the legacy `state`/`district` params and the new
+        # JSON:API `filter[state]`/`filter[district]` (cd-platform#104):
+        # today's cd-api reads the former and ignores the extras.
+        #
+        # CROSS-REPO CONTRACT: cd-api's flip PR moves /members onto
+        # JsonApiRoute, which 400s any query param it doesn't declare, so
+        # that PR MUST declare `state` and `district` as accepted
+        # (deprecated) aliases for the length of this transition window,
+        # or every call here breaks the moment it deploys.
         result = await self._transport.get(
-            "/members", {"state": state, "district": str(district)}
+            "/members",
+            {
+                "state": state,
+                "district": str(district),
+                "filter[state]": state,
+                "filter[district]": str(district),
+            },
         )
-        return MembersResponse(**result).representatives
+        return _members(result, chamber="representatives", district=district)
 
     async def get_senators(self, state: str) -> list[Member]:
-        result = await self._transport.get("/members", {"state": state})
-        return MembersResponse(**result).senators
+        # See get_representatives re: the dual-send and the cross-repo
+        # requirement that cd-api's flip PR keep `state` as a deprecated
+        # accepted param.
+        result = await self._transport.get(
+            "/members", {"state": state, "filter[state]": state}
+        )
+        return _members(result, chamber="senators")
 
     async def aclose(self) -> None:
         await self._transport.aclose()
