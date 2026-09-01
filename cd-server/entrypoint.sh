@@ -20,8 +20,21 @@ fi
 
 # No `migrate` arg: local dev / CI only. `docker compose up cd-server`
 # and `make test-server`'s own `docker compose run --rm cd-server uv run
-# pytest tests/` get a migrated cd_customers with no separate step. This
-# unconditional run never happens in production (see above).
-run_migrations
+# pytest tests/` get a migrated cd_customers with no separate step.
+#
+# Gated on CD_SERVER_ENVIRONMENT (unset -> "local" in both compose
+# paths; non-"local" everywhere cd-infra deploys) as a second guard,
+# independent of the entryPoint override above: if that override is ever
+# dropped or misconfigured, a production service task that falls through
+# to here still will not run migrations -- it starts against the
+# existing schema, and logs why. env.py's pg_advisory_xact_lock is the
+# third guard, for the case migrations somehow run concurrently anyway.
+# Same "branch on ENVIRONMENT == local" precedent as
+# services/cd_api_service.py and services/users_service.py.
+if [ "${CD_SERVER_ENVIRONMENT:-local}" = "local" ]; then
+    run_migrations
+else
+    echo "entrypoint: CD_SERVER_ENVIRONMENT=${CD_SERVER_ENVIRONMENT} is not 'local' -- skipping unconditional migrations (the one-shot 'migrate' task owns them in production). If this is a long-running service task, its entryPoint override is missing." >&2
+fi
 
 exec "$@"
