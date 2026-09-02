@@ -13,19 +13,21 @@ passes its own `Path(__file__).parent`, not this package's -- the
 `VERSION` file lives alongside the *consuming* component's deployed
 package, not alongside `cd-lib`.
 
-`src/cd/lib/models.py` -- Pydantic models `Member` and `MembersResponse`
-only, moved here from `cd-api` because `cd-server` actually consumes
-them: it validates/parses cd-api's real HTTP/Lambda responses against
-the same model cd-api itself built them from
-(`MembersResponse(**result)`), instead of trusting the JSON shape
-blindly. `cd-api`'s own `VersionResponse`/`ProblemDetail`/
+`src/cd/lib/models.py` -- Pydantic model `Member`, consumed only by
+`cd-server`: it flattens cd-api's JSON:API `/members` collection
+(`CollectionDocument[MemberDetail]`, see below) into a `list[Member]`,
+one `member` resource per `Member` (resource `id` -> the `bioguide_id`
+field), and derives its GraphQL `Representative`/`Senator` types from it.
+`cd-api` itself builds `MemberDetail`, not this -- `Member` is cd-server's
+own flattened shape and the only reason it stays a separate model.
+(Earlier it also parsed cd-api's pre-JSON:API bespoke
+`{senators, representatives}` body via a `MembersResponse` model;
+that body and model are both gone as of cd-platform#104 PR B /
+cd-api-v0.3.8.) `cd-api`'s own `VersionResponse`/`ProblemDetail`/
 `ValidationProblemDetail` deliberately stayed in
 `cd-api/src/cd/api/models.py` -- `cd-server` never touches them, and
 `cd-lib` is for code that's actually shared, not everywhere cd-api's
-own models happen to live. `cd-api` still owns *building* `Member`s
-(`transform.py`'s row -> dict functions, `response_model=`/`responses=`
-in `app.py`) -- only the `Member`/`MembersResponse` *definitions*
-moved, not the logic that populates them.
+own models happen to live.
 
 These models are deliberately **lenient** (Pydantic's default
 `extra="ignore"`, no `extra="forbid"`): they're a shared contract, and
@@ -42,8 +44,8 @@ the shared model.
 `bill` resource in `cd-api`'s `GET /bills`
 (`CollectionDocument[Bill]`, document `meta: {query}`) -- `cd-platform#9`'s
 semantic search over bills. Placed here rather than in `cd-api`-local
-models for the same reason as `Member`/`MembersResponse`: the future
-`cd-server` resolver validates against the exact shape `cd-api` builds.
+models for the same reason as `Member`: the future `cd-server` resolver
+validates against the exact shape `cd-api` builds.
 Only intrinsic bill data: the canonical bill id (`bills.bill_key`) is
 the resource `id`, not a field; why the bill matched *this* search is
 the resource's `meta.matches` (a list of `{"via": "policy_area" |
@@ -53,15 +55,16 @@ merges by id. No `votes` -- that's `GET /members/{bioguide_id}/votes`'
 `RollCallVote`; cd-server merges the two by resource id.
 
 `MemberDetail` and `RollCallVote` are the `attributes` payloads for
-`cd-api`'s two member-resource endpoints (`GET /members/{bioguide_id}`
-and `GET /members/{bioguide_id}/votes`), which return a JSON:API
-document (see `jsonapi.py` below). `MemberDetail` is `GET /members`'
-person fields *minus* `bioguide_id` (the id moves to the resource
-level), plus required `state` and `in_office`; it deliberately does
-**not** extend `Member`, since `Member` still carries `bioguide_id`
-in-body for `GET /members`' bespoke list and its OpenAPI `required`
-order is asserted -- the two share their field *descriptions* via
-module constants instead. `RollCallVote` is the attributes of a
+`cd-api`'s member-resource endpoints, which return a JSON:API document
+(see `jsonapi.py` below): `MemberDetail` backs both `GET /members` (the
+list -- `CollectionDocument[MemberDetail]`) and
+`GET /members/{bioguide_id}` (`Document[MemberDetail]`), `RollCallVote`
+backs `GET /members/{bioguide_id}/votes`. `MemberDetail` is the person fields
+*minus* `bioguide_id` (the id is the resource `id`), plus required
+`state` and `in_office`; it deliberately does **not** extend `Member`,
+since `Member` is cd-server's flattened shape and keeps `bioguide_id`
+in-body (its GraphQL types derive from it) -- the two share their field
+*descriptions* via module constants instead. `RollCallVote` is the attributes of a
 `roll_call_vote` resource (one member's cast position in one roll
 call): `vote_cast` plus `vote_question`/`result`/`vote_date`
 denormalised from the roll call -- the bill and member it relates to
@@ -122,10 +125,10 @@ Representative from a Delegate/Resident Commissioner within the House
 chamber) and `district` (always `null` for a Senator -- senators
 represent the whole state, not a district; `Representative` keeps it,
 since that's the whole point there) -- the two GraphQL types abstract
-away that cd-api's own `Member`/`current_members` don't actually
-separate senators and representatives into different tables, only a
-`chamber` column does (`cd-api/src/cd/api/transform.py`'s
-`group_representatives()`).
+away that cd-api's own `current_members` doesn't actually separate
+senators and representatives into different tables, only a `chamber`
+column does (cd-server sends `filter[chamber]` and splits the flat
+`/members` collection back out in `cd_api_service._members`).
 
 `cd-lib` uses the same `src/cd/lib/` layout as `cd-api`/`cd-etl`/`cd-server`'s
 own `src/cd/<component>/`, unlike those three, `cd-lib` genuinely gets
