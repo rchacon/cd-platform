@@ -143,12 +143,13 @@ trusting any `CD*` field found -- so a stray/legacy layer can't silently
 supply the wrong district, and disagreement between qualifying layers is
 treated as unresolvable rather than guessed at). One deliberate
 divergence from a straight port: the Census layer reports the FIPS
-nonvoting-delegate code `98` for DC / PR / GU / VI / AS / MP, but cd-api
-serves those jurisdictions at district `0` (its at-large convention, see
-`cd-lib`'s `apportionment.py`), so `get_district()` normalises `98` ->
-`0` for exactly the `NON_VOTING_TERRITORIES` set -- without it a
-`getDistrict` -> `getRepresentatives` chain 404s for those addresses
-(cd-platform#72). Raises
+nonvoting-delegate code `98` for DC / PR / GU / VI / AS / MP, but the
+rest of this project serves those jurisdictions at district `0` (the
+at-large convention), so `get_district()` runs `cd-lib`'s
+`apportionment.normalize_district()` (`98` -> `0`, scoped to those six)
+before returning -- without it a `getDistrict` -> `getRepresentatives`
+chain 404s for those addresses. cd-api applies the same helper to
+`GET /members`' `filter[district]` (cd-platform#72). Raises
 `NoAddressMatchError`/`AmbiguousAddressError` for a problem with the
 address itself, `GeocoderError` for anything else (network failure,
 unexpected response shape) -- both surface as normal GraphQL field

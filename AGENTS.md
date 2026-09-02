@@ -112,13 +112,19 @@ have; see `cd-lib/README.md`), `bedrock.py`'s `build_bedrock_client()`/
 `embed()` (Titan Text Embeddings V2 -- shared by `cd-api`'s
 `GET /bills` and `cd-etl`'s `bills_common.sync_bill`; the move is
 what first made `cd-etl` depend on `cd-lib`), and `apportionment.py`'s
-`SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` -- only the data lives in
-`cd-lib` now; cd-api's `max_valid_district`/`is_valid_district`
+`SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` (the data) plus
+`normalize_district()`. cd-api's `max_valid_district`/`is_valid_district`
 validation built on that table sits in
 `cd-api/src/cd/api/routes/members.py` (its only caller -- a future
-`validation/` package if more request-validation accrues). `cd-server`'s
-`getStates` needed the same seat counts/voting status cd-api already
-validates `district` against, hence the data move. All three services --
+`validation/` package if more request-validation accrues), but
+`normalize_district()` (Census FIPS nonvoting-delegate code `98` -> the
+at-large `0`, scoped to `NON_VOTING_TERRITORIES`) stays in `cd-lib`
+because it genuinely has two consumers: `cd-server`'s geocoder boundary
+and `cd-api`'s `GET /members` `filter[district]`, both so a caller that
+geocodes for itself (`cd-lookup`) needn't translate the code
+(cd-platform#72). `cd-server`'s `getStates` needed the same seat
+counts/voting status cd-api already validates `district` against, hence
+the data move. All three services --
 `cd-api`, `cd-etl`, `cd-server` -- now depend on `cd-lib`.
 Whether to use `editable = true` on the
 `[tool.uv.sources]` entry is a real, load-bearing choice, not a style

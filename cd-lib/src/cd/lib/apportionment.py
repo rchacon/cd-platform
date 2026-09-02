@@ -22,3 +22,27 @@ SEATS_PER_STATE: dict[str, int] = {
 # Delegate/Resident Commissioner rather than a full voting Representative
 # -- every other key in SEATS_PER_STATE is a full voting state.
 NON_VOTING_TERRITORIES: frozenset[str] = frozenset({"AS", "DC", "GU", "MP", "PR", "VI"})
+
+# The U.S. Census Bureau's geocoder reports the FIPS "nonvoting delegate"
+# district code 98 for the NON_VOTING_TERRITORIES above, where this
+# project's convention (cd-etl's member_terms.district, cd-api's
+# is_valid_district) is 0 for every single-seat jurisdiction. Both
+# cd-server (at its geocoder boundary) and cd-api (on GET /members, for a
+# caller that geocodes for itself, e.g. cd-lookup) need to translate --
+# hence this shared helper rather than the same `== 98` check in two
+# repos. See cd-platform#72.
+_FIPS_NONVOTING_DELEGATE_DISTRICT = 98
+
+
+def normalize_district(state: str, district: int | None) -> int | None:
+    """Map the Census FIPS nonvoting-delegate code (98) to this project's
+    at-large convention (0), but only for the six non-voting-delegate
+    jurisdictions -- every other `(state, district)` pair (including 98
+    for a regular voting state, where it's meaningless) is returned
+    unchanged."""
+    if (
+        district == _FIPS_NONVOTING_DELEGATE_DISTRICT
+        and state.upper() in NON_VOTING_TERRITORIES
+    ):
+        return 0
+    return district

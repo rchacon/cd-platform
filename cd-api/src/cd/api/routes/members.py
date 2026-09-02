@@ -16,7 +16,7 @@ from cd.api.transform import (
 # seat counts. Only the validation built on top of it is cd-api's, and
 # with GET /members its only caller it lives here. Pull it into a
 # validation/ package if more request-validation helpers accrue.
-from cd.lib.apportionment import SEATS_PER_STATE
+from cd.lib.apportionment import SEATS_PER_STATE, normalize_district
 from cd.lib.jsonapi import CollectionDocument, Document
 from cd.lib.models import MemberDetail, RollCallVote
 
@@ -137,7 +137,9 @@ def get_members(
             "House district number -- `0` for a 1-seat state's at-large "
             "seat, `1`+ for a numbered district. Selects House members in "
             "that district only (Senators have no district and never "
-            "match). Omit for all districts."
+            "match). Omit for all districts. For a non-voting-delegate "
+            "jurisdiction (DC, PR, GU, VI, AS, MP) the Census FIPS code "
+            "`98` is accepted as an alias for `0`."
         ),
     ),
 ) -> dict:
@@ -164,7 +166,12 @@ def get_members(
         )
     state = state_filter.upper()
 
-    district = district_filter
+    # Accept the Census FIPS nonvoting-delegate code (98) as an alias for
+    # the at-large 0 for DC/PR/GU/VI/AS/MP, so a caller that geocodes for
+    # itself (e.g. cd-lookup) doesn't have to translate -- cd-platform#72.
+    # Done before both is_valid_district and fetch_members, since
+    # member_terms.district stores 0.
+    district = normalize_district(state, district_filter)
 
     chamber = None
     if chamber_filter is not None:
