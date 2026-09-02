@@ -222,6 +222,106 @@ def test_fetch_member_returns_none_for_an_unknown_bioguide_id():
     assert db.fetch_member("NOTAREALID99") is None
 
 
+def _insert_seat(
+    pg_conn,
+    bioguide_id: str,
+    *,
+    chamber: str,
+    state: str,
+    district: int | None,
+    member_type: str | None = None,
+    end_year: int | None = None,
+) -> None:
+    if member_type is None:
+        member_type = "Senator" if chamber == "SENATE" else "Representative"
+    _insert_member(pg_conn, bioguide_id)
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO member_terms (
+                bioguide_id, congress, chamber, member_type, state, district,
+                start_year, end_year, source_hash
+            ) VALUES (%s, 119, %s, %s, %s, %s, 2023, %s, %s)
+            """,
+            (bioguide_id, chamber, member_type, state, district, end_year,
+             f"hash-term-{bioguide_id}"),
+        )
+
+
+def test_fetch_members_returns_senators_and_reps_for_a_state_by_default(pg_conn):
+    # A unique 2-char state so leftover "ZZ" rows from other tests in this
+    # shared DB can't leak into the result set.
+    st = uuid.uuid4().hex[:2].upper()
+    other = uuid.uuid4().hex[:2].upper()
+    sen_a, sen_b, rep, off = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(4))
+    _insert_seat(pg_conn, sen_a, chamber="SENATE", state=st, district=None)
+    _insert_seat(pg_conn, sen_b, chamber="SENATE", state=st, district=None)
+    _insert_seat(pg_conn, rep, chamber="HOUSE", state=st, district=7)
+    _insert_seat(pg_conn, off, chamber="HOUSE", state=other, district=1)
+    pg_conn.commit()
+
+    try:
+        rows = db.fetch_members(st)
+        assert {r["bioguide_id"] for r in rows} == {sen_a, sen_b, rep}
+        # ORDER BY: senators (district NULL) first, then House by district.
+        assert rows[-1]["bioguide_id"] == rep
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)",
+                        ([sen_a, sen_b, rep, off],))
+        pg_conn.commit()
+
+
+def test_fetch_members_chamber_filter_excludes_the_other_chamber(pg_conn):
+    st = uuid.uuid4().hex[:2].upper()
+    sen, rep = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
+    _insert_seat(pg_conn, sen, chamber="SENATE", state=st, district=None)
+    _insert_seat(pg_conn, rep, chamber="HOUSE", state=st, district=3)
+    pg_conn.commit()
+
+    try:
+        assert [r["bioguide_id"] for r in db.fetch_members(st, chamber="SENATE")] == [sen]
+        assert [r["bioguide_id"] for r in db.fetch_members(st, chamber="HOUSE")] == [rep]
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sen, rep],))
+        pg_conn.commit()
+
+
+def test_fetch_members_district_filter_never_bundles_senators(pg_conn):
+    # The old union trick returned "district N plus the state's senators".
+    # An honest collection returns only House members in district N.
+    st = uuid.uuid4().hex[:2].upper()
+    sen, rep = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
+    _insert_seat(pg_conn, sen, chamber="SENATE", state=st, district=None)
+    _insert_seat(pg_conn, rep, chamber="HOUSE", state=st, district=5)
+    pg_conn.commit()
+
+    try:
+        rows = db.fetch_members(st, district=5)
+        assert [r["bioguide_id"] for r in rows] == [rep]
+        assert db.fetch_members(st, district=9) == []  # vacant -> empty, not senators
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sen, rep],))
+        pg_conn.commit()
+
+
+def test_fetch_members_excludes_a_departed_member(pg_conn):
+    st = uuid.uuid4().hex[:2].upper()
+    sitting, gone = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
+    _insert_seat(pg_conn, sitting, chamber="HOUSE", state=st, district=1)
+    _insert_seat(pg_conn, gone, chamber="HOUSE", state=st, district=2, end_year=LAST_YEAR)
+    pg_conn.commit()
+
+    try:
+        assert [r["bioguide_id"] for r in db.fetch_members(st)] == [sitting]
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sitting, gone],))
+        pg_conn.commit()
+
+
 def test_fetch_closest_vocab_term_returns_the_nearest_match(pg_conn):
     kind = "POLICY_AREA"
     close_term, far_term = (f"test-term-{uuid.uuid4().hex[:8]}" for _ in range(2))

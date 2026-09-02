@@ -33,13 +33,13 @@ Gateway ahead of this application -- a missing or invalid key never \
 reaches this code, so it isn't reflected in any route's documented \
 responses below.
 
-**Errors:** the bespoke endpoints (`GET /members`, `GET /version`) \
-follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem \
-Details for HTTP APIs") -- `Content-Type: application/problem+json`, \
-body shaped `{"type", "title", "status", "detail", ...}`. The JSON:API \
-endpoints (`GET /members/{bioguide_id}`, \
-`GET /members/{bioguide_id}/votes`, `GET /bills`) instead \
-return a [JSON:API](https://jsonapi.org/format/#errors) error document -- \
+**Errors:** the one bespoke endpoint (`GET /version`) follows \
+[RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem Details \
+for HTTP APIs") -- `Content-Type: application/problem+json`, body \
+shaped `{"type", "title", "status", "detail", ...}`. The JSON:API \
+endpoints (`GET /members`, `GET /members/{bioguide_id}`, \
+`GET /members/{bioguide_id}/votes`, `GET /bills`) instead return a \
+[JSON:API](https://jsonapi.org/format/#errors) error document -- \
 `Content-Type: application/vnd.api+json`, body \
 `{"errors": [{"status", "title", "detail", "source"?}]}`. Neither is \
 ever a bespoke `{"error": "..."}` shape.\
@@ -70,12 +70,11 @@ app.openapi = _openapi
 # A JsonApiRoute handles errors from *within* its own handler, so what
 # reaches the app-level handlers below on these paths is only the
 # routing-layer 404 (unmatched) / 405 (bad method) -- which must still
-# come back as JSON:API, not problem+json. Matches the whole
-# `/members/<id>...` and `/bills...` namespace, not just the exact
-# route shapes, so a near-miss like `/members/K000401/votez` still gets a
-# JSON:API 404 rather than problem+json. `/members` (the bespoke list)
-# has no trailing segment, so it is not matched.
-_JSONAPI_PATH_RE = re.compile(r"^/(?:members/[^/]+|bills(?:/|$))")
+# come back as JSON:API, not problem+json. Matches the whole `/members`
+# and `/bills` namespaces, not just the exact route shapes, so a
+# near-miss like `/members/K000401/votez` still gets a JSON:API 404
+# rather than problem+json.
+_JSONAPI_PATH_RE = re.compile(r"^/(?:members(?:/|$)|bills(?:/|$))")
 
 
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
@@ -118,7 +117,6 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 app.include_router(version.router)
-app.include_router(members.router)
 app.include_router(members.jsonapi_router)
 app.include_router(bills.router)
 
