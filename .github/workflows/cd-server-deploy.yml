@@ -73,23 +73,22 @@ jobs:
               --reason "cd-server-deploy wait timed out" >/dev/null || true
             exit 1
           fi
-          # Check every container, not just containers[0] -- describe-tasks
-          # doesn't guarantee container order matches the task def, so if a
-          # sidecar is ever added a non-zero migrate exit could hide behind a
-          # zero-exit sidecar at index 0. A missing code (None) counts as a
-          # failure too.
-          EXIT_CODES=$(aws ecs describe-tasks --cluster cd-platform-cd-server --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[].exitCode' --output text)
-          if [ -z "$EXIT_CODES" ]; then
-            echo "::error::migrate task reported no container exit codes"
+          # Require EVERY container to have exited exactly 0. Not
+          # `containers[0].exitCode`: describe-tasks doesn't guarantee
+          # container order matches the task def, so a zero-exit log sidecar
+          # at index 0 could mask a failed migrate. The JMESPath filter
+          # `exitCode != `0`` also matches a container with NO exitCode at
+          # all (killed / never started -- `null != 0` is true), which a
+          # `containers[].exitCode` projection would instead silently drop.
+          UNCLEAN=$(aws ecs describe-tasks --cluster cd-platform-cd-server --tasks "$TASK_ARN" \
+            --query 'length(tasks[0].containers[?exitCode!=`0`])' --output text)
+          if [ "$UNCLEAN" != "0" ]; then
+            echo "::error::migration task did not complete cleanly:"
+            aws ecs describe-tasks --cluster cd-platform-cd-server --tasks "$TASK_ARN" \
+              --query 'tasks[0].containers[].{name:name,exitCode:exitCode,reason:reason}' \
+              --output table
             exit 1
           fi
-          for code in $EXIT_CODES; do
-            if [ "$code" != "0" ]; then
-              echo "::error::migrate task container exited with code $code"
-              exit 1
-            fi
-          done
 
       - name: Deploy to ECS
         run: |
