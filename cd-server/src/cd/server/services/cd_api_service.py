@@ -6,7 +6,7 @@ import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from cd.lib.jsonapi import CollectionDocument
-from cd.lib.models import Member, MemberDetail, MembersResponse
+from cd.lib.models import Member, MemberDetail
 
 from cd.server import settings
 
@@ -155,40 +155,31 @@ def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
 
 
 def _members(payload: dict, *, chamber: str, district: int | None = None) -> list[Member]:
-    """Normalise a `/members` response into a `list[Member]` for one
-    chamber ("senators" | "representatives"), optionally narrowed to one
-    district.
+    """Flatten cd-api's JSON:API `/members` collection document into a
+    `list[Member]` for one chamber ("senators" | "representatives"),
+    optionally narrowed to one district.
 
-    Forward-compat shim (cd-platform#104): cd-server ships this *before*
-    cd-api's `/members` flips to JSON:API and keeps working across the
-    switch. It accepts either shape:
+    cd-api's `/members` returns `CollectionDocument[MemberDetail]` (since
+    cd-api-v0.3.8, cd-platform#104 PR B). It's validated through that
+    model here -- a malformed envelope raises a `ValidationError`, not a
+    bare `KeyError` -- then each resource's `id` becomes `bioguide_id`
+    and its `state`/`in_office` attributes are dropped (not `Member`
+    fields).
 
-    - the new JSON:API `{"data": [<member resource>]}` -- validated
-      through `CollectionDocument[MemberDetail]` (so a malformed envelope
-      raises a `ValidationError`, not a bare `KeyError`), then each
-      resource's `id` becomes `bioguide_id` and its `state`/`in_office`
-      attributes are dropped (they aren't `Member` fields);
-    - the old bespoke `{senators, representatives}` body.
-
-    Both come back as a flat list; the `chamber`/`district` filters are
-    applied client-side either way. cd-api's own `filter[chamber]`/
-    `filter[district]` should already have narrowed the JSON:API result,
-    so these are a backstop -- a broken/ignored server-side filter can't
-    silently return the whole state's delegation. The legacy branch (and
-    this filtering) goes away in the follow-up PR once cd-api has shipped.
+    The `chamber`/`district` filtering is a client-side backstop:
+    `get_senators`/`get_representatives` already send `filter[chamber]`
+    (and `filter[district]`) so cd-api narrows server-side, but a
+    broken/ignored server-side filter must not silently return the whole
+    state's delegation.
     """
-    if "data" in payload:
-        document = CollectionDocument[MemberDetail].model_validate(payload)
-        members = [
-            Member(
-                bioguide_id=resource.id,
-                **resource.attributes.model_dump(exclude={"state", "in_office"}),
-            )
-            for resource in document.data
-        ]
-    else:
-        parsed = MembersResponse(**payload)
-        members = parsed.senators + parsed.representatives
+    document = CollectionDocument[MemberDetail].model_validate(payload)
+    members = [
+        Member(
+            bioguide_id=resource.id,
+            **resource.attributes.model_dump(exclude={"state", "in_office"}),
+        )
+        for resource in document.data
+    ]
 
     # district is NULL only for a Senator (0/1+ for every House seat,
     # Delegates and the Resident Commissioner included).
@@ -204,41 +195,33 @@ def _members(payload: dict, *, chamber: str, district: int | None = None) -> lis
 class CdApiService:
     """The service layer schema.py depends on for cd-api data. Unlike the
     ApiClient it wraps (which just makes the call and hands back a raw
-    dict), this validates cd-api's response against the shared
-    Member/MembersResponse models from cd-lib and returns real Member
-    objects -- the response-shape trust boundary lives here, not in
-    schema.py's resolvers."""
+    dict), this validates cd-api's response against cd-lib's
+    `CollectionDocument[MemberDetail]` and returns real `Member` objects
+    -- the response-shape trust boundary lives here, not in schema.py's
+    resolvers."""
 
     def __init__(self, transport: ApiClient):
         self._transport = transport
 
     async def get_representatives(self, state: str, district: int) -> list[Member]:
-        # Sends BOTH the legacy `state`/`district` params and the new
-        # JSON:API `filter[state]`/`filter[district]` (cd-platform#104):
-        # today's cd-api reads the former and ignores the extras.
-        #
-        # CROSS-REPO CONTRACT: cd-api's flip PR moves /members onto
-        # JsonApiRoute, which 400s any query param it doesn't declare, so
-        # that PR MUST declare `state` and `district` as accepted
-        # (deprecated) aliases for the length of this transition window,
-        # or every call here breaks the moment it deploys.
+        # One filtered call -- cd-api's honest `/members` collection
+        # (cd-platform#104 PR B) narrows to this state's House seat for
+        # the district server-side; `_members` re-applies the same filter
+        # as a backstop.
         result = await self._transport.get(
             "/members",
             {
-                "state": state,
-                "district": str(district),
                 "filter[state]": state,
+                "filter[chamber]": "house",
                 "filter[district]": str(district),
             },
         )
         return _members(result, chamber="representatives", district=district)
 
     async def get_senators(self, state: str) -> list[Member]:
-        # See get_representatives re: the dual-send and the cross-repo
-        # requirement that cd-api's flip PR keep `state` as a deprecated
-        # accepted param.
         result = await self._transport.get(
-            "/members", {"state": state, "filter[state]": state}
+            "/members",
+            {"filter[state]": state, "filter[chamber]": "senate"},
         )
         return _members(result, chamber="senators")
 

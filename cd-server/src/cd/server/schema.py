@@ -36,11 +36,12 @@ states_service = StatesService()
 users_service = get_users_service()
 
 
-# Derived from cd-lib's shared Member model (also used by cd-api itself
-# to build its own response) rather than hand-rolled -- also carries over
-# each field's Field(description=...) into the generated GraphQL schema
-# for free. from_pydantic() below is what strawberry_pydantic.type
-# generates for converting a validated Member into this GraphQL type.
+# Derived from cd-lib's Member model (cd_api_service flattens cd-api's
+# JSON:API /members collection into these) rather than hand-rolled --
+# also carries over each field's Field(description=...) into the
+# generated GraphQL schema for free. from_pydantic() below is what
+# strawberry_pydantic.type generates for converting a validated Member
+# into this GraphQL type.
 @strawberry_pydantic.type(model=Member, all_fields=True)
 class Representative:
     pass

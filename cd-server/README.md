@@ -72,27 +72,24 @@ routing/validation/error-formatting all get exercised exactly as they
 would over real HTTP rather than reaching around cd-api's HTTP layer to
 call its internal functions directly. `CdApiService` itself is where the
 response-shape trust boundary lives: it validates cd-api's raw JSON
-against `cd-lib`'s shared `Member`/`MembersResponse` models and hands
+against `cd-lib`'s `CollectionDocument[MemberDetail]` and hands
 `schema.py`'s resolvers real `Member` objects, not a dict the resolver
 would otherwise have to parse itself.
 
-`CdApiService`'s `/members` handling is currently a **forward-compat
-shim** (cd-platform#104): it sends both the legacy `state`/`district`
-query params and the new `filter[state]`/`filter[district]`, and its
-`_members()` helper accepts either the old bespoke
-`{senators, representatives}` body or a new JSON:API
-`{"data": [<member resource>]}` collection. The JSON:API branch is
+`CdApiService` calls cd-api's JSON:API `/members` collection
+(cd-platform#104 PR B, cd-api-v0.3.8) once per resolver:
+`getSenators` sends `filter[state]` + `filter[chamber]=senate`,
+`getRepresentatives` sends `filter[state]` + `filter[chamber]=house` +
+`filter[district]`. The `{"data": [<member resource>]}` response is
 validated through `cd-lib`'s `CollectionDocument[MemberDetail]` (a
-malformed envelope is a `ValidationError`, not a `KeyError` -- the trust
-boundary holds for the new shape too), then each resource's `id` becomes
-`bioguide_id` and its `state`/`in_office` attributes are dropped.
-`_members()` re-applies the chamber/district split client-side either way
--- a backstop so a broken server-side `filter[*]` can't silently return
-the whole state's delegation. This ships *before* cd-api's `/members`
-flips so cd-server stays up across the switch (which **requires** cd-api's
-flip PR to keep `state`/`district` as deprecated accepted params, or the
-dual-send 400s on `JsonApiRoute`); the legacy branch, the dual-send, and
-`MembersResponse` are removed in a follow-up once cd-api has shipped.
+malformed envelope is a `ValidationError`, not a `KeyError`), then each
+resource's `id` becomes `bioguide_id` and its `state`/`in_office`
+attributes are dropped. `_members()` re-applies the chamber/district
+split client-side as a backstop, so a broken server-side `filter[*]`
+can't silently return the whole state's delegation. (An earlier
+forward-compat shim also accepted cd-api's pre-JSON:API bespoke
+`{senators, representatives}` body and dual-sent bare `state`/`district`
+params; both are gone now that cd-api has flipped.)
 
 Both the transport `get()`s and the two GraphQL resolvers above are
 `async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
