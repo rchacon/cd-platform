@@ -43,15 +43,15 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           # cd-platform-cd-server-deploy gained ecs:RunTask / ecs:DescribeTasks
-          # / iam:PassRole for the migrate task in cd-infra#67 (#68).
+          # / ecs:StopTask / iam:PassRole for the migrate task in cd-infra#68.
           role-to-assume: arn:aws:iam::658430303091:role/cd-platform-cd-server-deploy
           aws-region: us-west-2
 
       # Migrations run once here, not in every service task -- the long-running
       # task sets CD_SERVER_MIGRATE_TASK=1 so entrypoint.sh skips the on-boot
-      # `alembic upgrade head` (cd-server#133 / cd-infra#67). A failed migration
-      # stops the workflow before the service is redeployed against a stale
-      # schema. Mirrors cd-etl-deploy.yml.
+      # `alembic upgrade head` (cd-platform#133 / cd-infra#68). A failed
+      # migration stops the workflow before the service is redeployed against a
+      # stale schema. Mirrors cd-etl-deploy.yml.
       - name: Run migration task
         run: |
           TASK_ARN=$(aws ecs run-task \
