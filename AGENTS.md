@@ -40,9 +40,13 @@ interchangeable async client implementations sharing an `ApiClient` ABC
 via a direct `boto3` invoke -- wrapped in `asyncio.to_thread()` since
 `boto3` itself has no async API -- of the real function in production)
 picked by `settings.ENVIRONMENT`, and is also where cd-api's raw JSON
-response gets validated against `cd-lib`'s shared `Member`/
-`MembersResponse` models before a real `Member` object reaches the
-resolver; both GraphQL resolvers are `async` too, so a query requesting
+response gets validated against `cd-lib`'s
+`CollectionDocument[MemberDetail]` (cd-api's JSON:API `/members`
+collection, flattened one resource per `Member`) before a real `Member`
+object reaches the resolver -- `getSenators`/`getRepresentatives` each
+make a single filtered call (`filter[chamber]=senate` /
+`filter[chamber]=house&filter[district]=N`); both GraphQL resolvers are
+`async` too, so a query requesting
 multiple fields makes their cd-api calls concurrently rather than
 sequentially. Also exposes `getStates`
 (`services/states_service.py`'s `StatesService`, a static abbreviation ->
@@ -95,10 +99,12 @@ provisioned in `cd-infra`.
 depend on as a local path dependency (`[tool.uv.sources]`, not a
 published package, not a `uv` workspace -- each component keeps its own
 independent `pyproject.toml`/`uv.lock`): `version.py`'s `read_version()`
-(consumed by `cd-server`), `models.py`'s `Member`/`MembersResponse`
-Pydantic models -- only those two, moved out of `cd-api` so `cd-server`
-can validate cd-api's actual responses against the same model cd-api
-itself built them from (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
+(consumed by `cd-server`), `models.py`'s Pydantic models for the shapes
+`cd-server` validates cd-api's actual responses against -- `Member`
+(cd-server's own flattened member, `bioguide_id` in-body) plus the
+JSON:API `attributes` payloads `MemberDetail`/`RollCallVote`/`Bill` --
+and `jsonapi.py`'s generic `Resource`/`Document`/`CollectionDocument`
+wrappers (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
 `ValidationProblemDetail` deliberately stayed in `cd-api/src/cd/api/models.py`,
 since `cd-server` never touches them -- `cd-lib` is for code that's
 actually shared, not a dumping ground for every model cd-api happens to
