@@ -42,8 +42,34 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          # cd-platform-cd-server-deploy gained ecs:RunTask / ecs:DescribeTasks
+          # / iam:PassRole for the migrate task in cd-infra#67 (#68).
           role-to-assume: arn:aws:iam::658430303091:role/cd-platform-cd-server-deploy
           aws-region: us-west-2
+
+      # Migrations run once here, not in every service task -- the long-running
+      # task sets CD_SERVER_MIGRATE_TASK=1 so entrypoint.sh skips the on-boot
+      # `alembic upgrade head` (cd-server#133 / cd-infra#67). A failed migration
+      # stops the workflow before the service is redeployed against a stale
+      # schema. Mirrors cd-etl-deploy.yml.
+      - name: Run migration task
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster cd-platform-cd-server \
+            --task-definition cd-platform-cd-server-migrate \
+            --launch-type EC2 \
+            --query 'tasks[0].taskArn' --output text)
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::run-task returned no task (no EC2 capacity for the migrate task?)"
+            exit 1
+          fi
+          aws ecs wait tasks-stopped --cluster cd-platform-cd-server --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster cd-platform-cd-server --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration task failed with exit code $EXIT_CODE"
+            exit 1
+          fi
 
       - name: Deploy to ECS
         run: |
