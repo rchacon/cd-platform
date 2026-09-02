@@ -67,6 +67,14 @@ def test_extract_congressional_district_returns_null_for_non_numeric_value():
     assert _extract_congressional_district(geographies) is None
 
 
+def test_extract_congressional_district_passes_the_fips_delegate_code_through_raw():
+    # The 98 -> 0 normalisation is deliberately in get_district() (which
+    # knows the state), not here -- this stays a faithful port of
+    # cd-lookup's extractor. See cd-platform#72.
+    geographies = {"119th Congressional Districts": [{"CD119": "98"}]}
+    assert _extract_congressional_district(geographies) == "98"
+
+
 def test_extract_congressional_district_returns_null_for_falsy_first_entry():
     geographies = {"119th Congressional Districts": [None]}
     assert _extract_congressional_district(geographies) is None
@@ -104,6 +112,31 @@ def test_get_district_returns_state_and_district_on_success(monkeypatch):
     assert asyncio.run(
         service.get_district("1 Dr Carlton B Goodlett Pl, San Francisco, CA")
     ) == ("CA", 11)
+
+
+@pytest.mark.parametrize("territory", ["DC", "PR", "GU", "VI", "AS", "MP"])
+def test_get_district_normalises_fips_delegate_code_to_at_large_for_territories(
+    monkeypatch, territory
+):
+    # Census reports CD119 "98" (FIPS nonvoting-delegate code) for the six
+    # delegate jurisdictions; cd-api serves them at district 0, so a
+    # getDistrict -> getRepresentatives chain needs the normalisation
+    # (cd-platform#72).
+    payload = {"result": {"addressMatches": [_match(state=territory, district="98")]}}
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
+    assert asyncio.run(GeocoderService().get_district("1600 Pennsylvania Ave NW")) == (
+        territory,
+        0,
+    )
+
+
+def test_get_district_leaves_98_alone_for_a_non_delegate_state(monkeypatch):
+    # The normalisation is scoped to NON_VOTING_TERRITORIES on purpose: a
+    # regular state reporting 98 is an anomaly that should surface, not be
+    # silently rewritten to an at-large seat.
+    payload = {"result": {"addressMatches": [_match(state="WY", district="98")]}}
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
+    assert asyncio.run(GeocoderService().get_district("some address")) == ("WY", 98)
 
 
 def test_get_district_raises_no_match_error_on_zero_matches(monkeypatch):
