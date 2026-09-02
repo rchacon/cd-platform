@@ -63,13 +63,33 @@ jobs:
             echo "::error::run-task returned no task (no EC2 capacity for the migrate task?)"
             exit 1
           fi
-          aws ecs wait tasks-stopped --cluster cd-platform-cd-server --tasks "$TASK_ARN"
-          EXIT_CODE=$(aws ecs describe-tasks --cluster cd-platform-cd-server --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[0].exitCode' --output text)
-          if [ "$EXIT_CODE" != "0" ]; then
-            echo "::error::Migration task failed with exit code $EXIT_CODE"
+          # `wait` polls for up to ~10 min (6s x 100). If the task is still
+          # running after that, stop it -- otherwise it could go on to apply
+          # `alembic upgrade head` after this workflow has already bailed,
+          # leaving the schema ahead of the still-old service tasks.
+          if ! aws ecs wait tasks-stopped --cluster cd-platform-cd-server --tasks "$TASK_ARN"; then
+            echo "::error::migrate task did not stop within the wait window; stopping it"
+            aws ecs stop-task --cluster cd-platform-cd-server --task "$TASK_ARN" \
+              --reason "cd-server-deploy wait timed out" >/dev/null || true
             exit 1
           fi
+          # Check every container, not just containers[0] -- describe-tasks
+          # doesn't guarantee container order matches the task def, so if a
+          # sidecar is ever added a non-zero migrate exit could hide behind a
+          # zero-exit sidecar at index 0. A missing code (None) counts as a
+          # failure too.
+          EXIT_CODES=$(aws ecs describe-tasks --cluster cd-platform-cd-server --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[].exitCode' --output text)
+          if [ -z "$EXIT_CODES" ]; then
+            echo "::error::migrate task reported no container exit codes"
+            exit 1
+          fi
+          for code in $EXIT_CODES; do
+            if [ "$code" != "0" ]; then
+              echo "::error::migrate task container exited with code $code"
+              exit 1
+            fi
+          done
 
       - name: Deploy to ECS
         run: |
