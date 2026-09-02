@@ -208,9 +208,14 @@ def get_members(
         )
 
     rows = fetch_members(state, chamber=chamber, district=district)
-    # Empty is a real answer (vacant district, a chamber with no seated
-    # member) -- 200 with `data: []` -- UNLESS the state isn't a known
-    # one at all and nothing matched, which stays a 404 as before.
+    # Empty is a real answer for a known state (vacant district, a
+    # chamber with no seated member) -- 200 with `data: []`. Only a
+    # state absent from the apportionment table (`seats is None`) that
+    # also matched nothing is a 404, keeping the pre-JSON:API
+    # unknown-state contract. That's the one asymmetry: an unknown state
+    # + a narrowing filter that matches nothing 404s where a real state
+    # would 200-empty -- but a real 2-letter USPS code is always in the
+    # table, so this only bites synthetic test codes.
     if not rows and seats is None:
         raise HTTPException(
             status_code=404, detail=f"No data found for state {state}"

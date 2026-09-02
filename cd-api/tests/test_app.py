@@ -598,6 +598,19 @@ def test_get_members_omitted_district_returns_the_whole_state(seeded_state):
     assert len(response.json()["data"]) == 3  # 2 senators + 1 rep
 
 
+def test_get_members_real_state_with_no_members_is_200_empty():
+    # An "honest collection": a real (apportionment-table) state that
+    # simply has nobody synced is an empty collection, not a 404. (A
+    # state NOT in the table -- only synthetic test codes, never a real
+    # 2-letter USPS code -- still 404s; see the unknown-state test.) MT
+    # has 2 districts so it's a real state; nothing is seeded for it.
+    client = TestClient(app)
+    response = client.get("/members", params={"filter[state]": "MT"})
+
+    assert response.status_code == 200
+    assert response.json() == {"data": []}
+
+
 def test_get_members_out_of_range_district_returns_jsonapi_404():
     # cd-platform#12: GA has 14 districts (see apportionment.SEATS_PER_STATE)
     # -- 99 is out of range regardless of what's seeded; the check happens
