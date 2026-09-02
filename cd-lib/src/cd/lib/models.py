@@ -15,11 +15,13 @@ from pydantic import BaseModel, Field
 # assert the exact field set -- that strictness belongs with the
 # producer, not baked into the shared model.
 
-# Shared field descriptions -- `Member` (GET /members' bespoke list) and
-# `MemberDetail` (the JSON:API resource attributes for
-# GET /members/{bioguide_id}) declare their common fields independently
-# rather than one extending the other (see MemberDetail's own comment),
-# so the prose lives here once instead of being copy-pasted.
+# Shared field descriptions -- `Member` (cd-server's flattened member
+# shape, `bioguide_id` in-body) and `MemberDetail` (cd-api's JSON:API
+# resource attributes for the `/members` list and
+# GET /members/{bioguide_id}, where `bioguide_id` is the resource `id`)
+# declare their common fields independently rather than one extending the
+# other (see MemberDetail's own comment), so the prose lives here once
+# instead of being copy-pasted.
 _ROLE_DESCRIPTION = (
     'Congress.gov\'s member_type for this seat -- "Senator", '
     '"Representative", "Delegate" for a non-voting territory seat '
@@ -35,6 +37,11 @@ _DISTRICT_DESCRIPTION = (
 
 
 class Member(BaseModel):
+    # cd-server-only: it flattens cd-api's JSON:API `/members` collection
+    # (each `member` resource -> one of these, resource `id` -> the
+    # `bioguide_id` field below) and derives its GraphQL `Representative`/
+    # `Senator` types from this model. cd-api itself builds `MemberDetail`,
+    # not this.
     bioguide_id: str = Field(description="Congress.gov's stable identifier for this member.")
     first_name: str | None = Field(None, description="Given name.")
     middle_name: str | None = None
@@ -49,25 +56,20 @@ class Member(BaseModel):
     district: int | None = Field(None, description=_DISTRICT_DESCRIPTION)
 
 
-class MembersResponse(BaseModel):
-    senators: list[Member]
-    representatives: list[Member]
-
-
 class MemberDetail(BaseModel):
-    # The `attributes` payload of GET /members/{bioguide_id}, served as a
-    # JSON:API single-resource document -- Document[MemberDetail], i.e.
+    # The `attributes` payload of cd-api's JSON:API `member` resource,
+    # served by both GET /members (CollectionDocument[MemberDetail]) and
+    # GET /members/{bioguide_id} (Document[MemberDetail]) -- i.e.
     # {"data": {"type": "member", "id": "<bioguide_id>", "attributes":
     # {...this model...}}}. The bioguide id is the resource `id`, so it
     # is deliberately NOT a field here.
     #
     # This does NOT extend `Member`, even though it shares eleven fields:
-    # `Member` still carries `bioguide_id` in-body for GET /members'
-    # bespoke list (cd-lookup / cd-server read it there), and its OpenAPI
-    # `required` order is asserted with `bioguide_id` first -- which
-    # subclassing to add fields would disturb. Keeping the two models
-    # independent lets each have exactly the field set its endpoint
-    # needs; the shared descriptions above stop the prose from drifting.
+    # `Member` is cd-server's flattened shape and keeps `bioguide_id`
+    # in-body (its GraphQL types derive from it), whereas here the id is
+    # the resource `id` and absent from attributes. Keeping the two
+    # independent lets each carry exactly its own field set; the shared
+    # descriptions above stop the prose from drifting.
     first_name: str | None = Field(None, description="Given name.")
     middle_name: str | None = None
     last_name: str | None = Field(None, description="Family name.")
