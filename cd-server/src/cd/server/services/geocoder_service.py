@@ -5,12 +5,19 @@ from cd.lib.apportionment import NON_VOTING_TERRITORIES
 
 CENSUS_GEOCODER_ENDPOINT = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
 
-# The Census geocoder's "...Congressional Districts" layer reports the
-# FIPS "nonvoting delegate" code 98 for the six non-voting-delegate
-# jurisdictions (DC, PR, GU, VI, AS, MP), whereas cd-api's convention
-# (and cd-lib's apportionment table) is district 0 for every single-seat
-# jurisdiction. Left as 98, a getDistrict -> getRepresentatives chain
-# 404s for these -- see cd-platform#72.
+# The rest of this stack represents a non-voting delegate seat (DC, PR,
+# GU, VI, AS, MP) as district 0. That's not a choice made here -- it comes
+# straight from the Congress.gov API, whose list endpoint returns
+# "district": 0 for every at-large House-side seat, delegates included;
+# cd-etl stores that in member_terms.district (NULL=Senator / 0=at-large /
+# 1+=numbered), and cd-api's is_valid_district validates against it.
+#
+# The Census geocoder is the one outlier: its "...Congressional Districts"
+# layer reports the FIPS "nonvoting delegate" code 98 for those same six
+# jurisdictions. Left as 98, a getDistrict -> getRepresentatives chain
+# 404s for them (is_valid_district only accepts 0 for a 1-seat state), so
+# get_district() below translates 98 -> 0 at this single boundary rather
+# than teaching the 98 convention to anything downstream -- cd-platform#72.
 _FIPS_NONVOTING_DELEGATE_DISTRICT = 98
 
 
