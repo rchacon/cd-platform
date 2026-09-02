@@ -30,11 +30,6 @@ district 5 -- Senators have no district and are never bundled in (unlike
 the old shape). "Who represents this address" is now two calls (one per
 chamber), which `cd-server` already makes concurrently.
 
-`cd-server` still sends the pre-JSON:API bare `state`/`district` params
-during the migration window (cd-platform#104 PR A, #127); both are
-accepted as **deprecated aliases** for `filter[state]`/`filter[district]`
-and dropped in a later PR.
-
 Each `member` resource's `attributes` is the shared `MemberDetail` shape
 -- `first_name`, `middle_name`, `last_name`, `nickname`, `suffix` (the
 individual name parts, passed through as-is -- the API does not derive a

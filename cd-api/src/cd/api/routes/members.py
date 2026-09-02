@@ -140,29 +140,13 @@ def get_members(
             "match). Omit for all districts."
         ),
     ),
-    state_deprecated: str | None = Query(
-        None,
-        alias="state",
-        deprecated=True,
-        description="Deprecated alias for `filter[state]`.",
-        **_STATE_QUERY,
-    ),
-    district_deprecated: int | None = Query(
-        None,
-        alias="district",
-        ge=0,
-        deprecated=True,
-        description="Deprecated alias for `filter[district]`.",
-    ),
 ) -> dict:
     """List current members, filtered.
 
     An honest collection: each `filter[...]` narrows the set, and they
     compose. `filter[state]=GA` alone returns every current GA member
     (both Senators and Representatives); add `filter[chamber]=house` or
-    `filter[district]=5` to narrow further. `filter[state]` (or its
-    deprecated bare `state` alias, which cd-server still sends during the
-    migration) is required.
+    `filter[district]=5` to narrow further. `filter[state]` is required.
 
     Returns a JSON:API collection of `member` resources -- the same
     resource shape as `GET /members/{bioguide_id}`, `in_office` always
@@ -174,16 +158,13 @@ def get_members(
     apportionment) is `404`; a real district that's currently vacant is
     `200` with `data` empty. An unknown `filter[state]` is `404`.
     """
-    state = state_filter if state_filter is not None else state_deprecated
-    if state is None:
+    if state_filter is None:
         raise HTTPException(
             status_code=422, detail="`filter[state]` is required."
         )
-    state = state.upper()
+    state = state_filter.upper()
 
-    district = (
-        district_filter if district_filter is not None else district_deprecated
-    )
+    district = district_filter
 
     chamber = None
     if chamber_filter is not None:
