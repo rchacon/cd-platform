@@ -204,13 +204,8 @@ def test_openapi_members_list_documents_filter_parameters():
         p["name"]: p for p in schema["paths"]["/members"]["get"]["parameters"]
     }
     assert set(parameters) == {
-        "filter[state]", "filter[chamber]", "filter[district]", "state", "district"
+        "filter[state]", "filter[chamber]", "filter[district]"
     }
-    # The bare aliases cd-server still sends during the migration are
-    # marked deprecated.
-    assert parameters["state"]["deprecated"] is True
-    assert parameters["district"]["deprecated"] is True
-    assert parameters["filter[state]"].get("deprecated") is not True
 
     district_desc = parameters["filter[district]"]["description"].lower()
     assert "at-large" in district_desc
@@ -438,33 +433,14 @@ def test_get_members_filter_by_district_does_not_bundle_senators(seeded_state):
     assert [r["id"] for r in response.json()["data"]] == [seeded_state["rep"]]
 
 
-def test_get_members_accepts_deprecated_bare_state_and_district_aliases(seeded_state):
-    # cd-server's #127 dual-send keeps sending bare `state`/`district`
-    # until PR C -- they must still bind, not 400 as unsupported params.
+def test_get_members_rejects_the_removed_bare_state_and_district_aliases(seeded_state):
+    # The deprecated bare `state`/`district` aliases were dropped once
+    # cd-server stopped dual-sending them (cd-server-v0.4.1) -- they're
+    # now undeclared params, so JsonApiRoute 400s them.
     client = TestClient(app)
-    response = client.get(
-        "/members", params={"state": STATE, "district": DISTRICT}
-    )
-
-    assert response.status_code == 200
-    assert [r["id"] for r in response.json()["data"]] == [seeded_state["rep"]]
-
-
-def test_get_members_dual_sent_filter_and_bare_params_do_not_conflict(seeded_state):
-    # cd-server sends BOTH `state` and `filter[state]` (same for district)
-    # during the migration window -- distinct keys, so JsonApiRoute's
-    # repeated-param check doesn't fire, and the canonical one wins.
-    client = TestClient(app)
-    response = client.get(
-        "/members",
-        params={
-            "state": STATE, "filter[state]": STATE,
-            "district": DISTRICT, "filter[district]": DISTRICT,
-        },
-    )
-
-    assert response.status_code == 200
-    assert [r["id"] for r in response.json()["data"]] == [seeded_state["rep"]]
+    for params in ({"state": STATE}, {"filter[state]": STATE, "district": DISTRICT}):
+        response = client.get("/members", params=params)
+        assert response.status_code == 400
 
 
 def test_get_members_role_comes_from_member_type_for_a_delegate(pg_conn):
