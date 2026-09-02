@@ -210,6 +210,8 @@ def test_openapi_members_list_documents_filter_parameters():
     district_desc = parameters["filter[district]"]["description"].lower()
     assert "at-large" in district_desc
     assert "senator" in district_desc
+    # The FIPS-98 alias for delegate jurisdictions is documented.
+    assert "98" in district_desc
 
 
 def test_openapi_version_errors_use_problem_json_shared_refs():
@@ -615,6 +617,43 @@ def test_get_members_district_one_invalid_for_at_large_state_returns_404():
     detail = response.json()["errors"][0]["detail"]
     assert "District 1 does not exist for state WY" in detail
     assert "1 district)" in detail
+
+
+def test_get_members_accepts_fips_98_as_at_large_alias_for_a_delegate_jurisdiction(pg_conn):
+    # cd-platform#72: the Census FIPS nonvoting-delegate code 98 is
+    # accepted as an alias for this API's at-large convention (0) for
+    # DC/PR/GU/VI/AS/MP, so a consumer carrying the FIPS code around
+    # (cd-lookup, which geocodes for itself) doesn't have to translate.
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id, "Eleanor", "Norton")
+    _insert_term(pg_conn, bioguide_id, "HOUSE", 0, member_type="Delegate", state="DC")
+    pg_conn.commit()
+
+    try:
+        client = TestClient(app)
+        by_98 = client.get("/members", params={"filter[state]": "DC", "filter[district]": 98})
+        by_0 = client.get("/members", params={"filter[state]": "DC", "filter[district]": 0})
+
+        assert by_98.status_code == 200
+        assert [r["id"] for r in by_98.json()["data"]] == [bioguide_id]
+        # Same request, the two spellings -- byte-identical response.
+        assert by_98.json() == by_0.json()
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
+
+
+def test_get_members_fips_98_still_invalid_for_a_voting_at_large_state():
+    # The 98 alias is scoped to the six delegate jurisdictions -- for a
+    # regular 1-seat state it's meaningless and still 404s.
+    client = TestClient(app)
+    response = client.get(
+        "/members", params={"filter[state]": "WY", "filter[district]": 98}
+    )
+
+    assert response.status_code == 404
+    assert "District 98 does not exist for state WY" in response.json()["errors"][0]["detail"]
 
 
 def test_get_members_valid_but_vacant_district_returns_200_empty_data(pg_conn):

@@ -25,3 +25,7 @@ def test_is_valid_district_unknown_state_defers_to_existing_state_check():
     # Not this module's job to reject an unrecognized state -- app.py's
     # existing "no data found for state X" path already handles that.
     assert is_valid_district("ZZ", 99) is True
+
+# normalize_district (the Census FIPS-98 -> 0 alias) lives in cd-lib now,
+# tested in cd-lib/tests/test_apportionment.py; GET /members' use of it is
+# covered by test_app.py's endpoint tests.

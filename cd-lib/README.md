@@ -101,6 +101,13 @@ Representative). Moved here from `cd-api/src/cd/api/apportionment.py` (only the 
 caller) once `cd-server`'s `getStates` GraphQL field needed the same
 seat counts and voting status cd-api was already using to validate
 `district` query params, rather than a second hand-transcribed copy.
+Also `normalize_district(state, district)` -- maps the U.S. Census
+Bureau's FIPS "nonvoting delegate" code `98` to this project's at-large
+`0`, scoped to `NON_VOTING_TERRITORIES`. Unlike `is_valid_district` this
+one *is* shared: `cd-server` runs it at its geocoder boundary and
+`cd-api` on `GET /members`' `filter[district]`, both so a caller that
+geocodes for itself (e.g. `cd-lookup`) never has to translate the code
+(cd-platform#72).
 
 `src/cd/lib/bedrock.py` -- `build_bedrock_client(config=None)` and
 `embed(client, text)` for Amazon Titan Text Embeddings V2. Shared by

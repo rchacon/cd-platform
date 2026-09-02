@@ -30,6 +30,13 @@ district 5 -- Senators have no district and are never bundled in (unlike
 the old shape). "Who represents this address" is now two calls (one per
 chamber), which `cd-server` already makes concurrently.
 
+For the six non-voting-delegate jurisdictions (DC, PR, GU, VI, AS, MP),
+`filter[district]=98` -- the U.S. Census Bureau's FIPS "nonvoting
+delegate" code, which its geocoder emits for those addresses -- is
+accepted as an alias for the at-large `0`, so a caller that geocodes for
+itself (e.g. `cd-lookup`) doesn't have to translate. `98` is still a
+`404` for any other state (cd-platform#72).
+
 Each `member` resource's `attributes` is the shared `MemberDetail` shape
 -- `first_name`, `middle_name`, `last_name`, `nickname`, `suffix` (the
 individual name parts, passed through as-is -- the API does not derive a
