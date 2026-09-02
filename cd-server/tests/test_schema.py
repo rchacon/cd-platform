@@ -308,6 +308,34 @@ def test_get_district_returns_state_and_district(client, monkeypatch):
     assert response.json()["data"] == {"getDistrict": {"state": "CA", "district": 11}}
 
 
+def test_get_district_returns_at_large_zero_for_a_delegate_jurisdiction(client, monkeypatch):
+    # Census returns CD119 "98" for DC (FIPS nonvoting-delegate code);
+    # getDistrict must hand back 0 so a getDistrict -> getRepresentatives
+    # chain resolves (cd-platform#72).
+    payload = {
+        "result": {
+            "addressMatches": [
+                {
+                    "addressComponents": {"state": "DC"},
+                    "geographies": {"119th Congressional Districts": [{"CD119": "98"}]},
+                }
+            ]
+        }
+    }
+
+    async def fake_get(self, url, params=None, timeout=None):
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    response = client.post(
+        "/graphql",
+        json={"query": '{ getDistrict(address: "1600 Pennsylvania Ave NW, Washington, DC") { state district } }'},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {"getDistrict": {"state": "DC", "district": 0}}
+
+
 def test_get_district_surfaces_no_match_error(client, monkeypatch):
     async def fake_get(self, url, params=None, timeout=None):
         return httpx.Response(

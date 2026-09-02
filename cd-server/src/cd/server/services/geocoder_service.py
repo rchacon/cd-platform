@@ -1,8 +1,17 @@
 import re
 
 import httpx
+from cd.lib.apportionment import NON_VOTING_TERRITORIES
 
 CENSUS_GEOCODER_ENDPOINT = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
+
+# The Census geocoder's "...Congressional Districts" layer reports the
+# FIPS "nonvoting delegate" code 98 for the six non-voting-delegate
+# jurisdictions (DC, PR, GU, VI, AS, MP), whereas cd-api's convention
+# (and cd-lib's apportionment table) is district 0 for every single-seat
+# jurisdiction. Left as 98, a getDistrict -> getRepresentatives chain
+# 404s for these -- see cd-platform#72.
+_FIPS_NONVOTING_DELEGATE_DISTRICT = 98
 
 
 class GeocoderError(Exception):
@@ -121,7 +130,15 @@ class GeocoderService:
                 "Census geocoder response was missing a Congressional Districts geography"
             )
 
-        return state, int(district)
+        district_number = int(district)
+        # Normalise the Census FIPS nonvoting-delegate code (98) to
+        # cd-api's at-large convention (0), but only for the jurisdictions
+        # that actually have a non-voting delegate seat -- any other state
+        # reporting 98 is left alone to surface as the anomaly it is.
+        if district_number == _FIPS_NONVOTING_DELEGATE_DISTRICT and state in NON_VOTING_TERRITORIES:
+            district_number = 0
+
+        return state, district_number
 
     async def aclose(self) -> None:
         await self._client.aclose()
