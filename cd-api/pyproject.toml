@@ -1,6 +1,6 @@
 [project]
 name = "cd-api"
-version = "0.3.7"
+version = "0.3.8"
 description = "REST API for cd-lookup, backed by current_members"
 requires-python = ">=3.12"
 dependencies = [
