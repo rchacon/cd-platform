@@ -96,11 +96,24 @@ params; both are gone now that cd-api has flipped.)
 `member_votes(bioguide_id, bill_keys)` (`GET /members/{id}/votes`) --
 each a thin transport call whose raw dict is validated through
 `cd-lib`'s `CollectionDocument[Bill]` / `CollectionDocument[RollCallVote]`
-and returned *whole* (not flattened to a list, unlike `_members`):
-`BillSearchService` (cd-platform#104 Phase B) needs each resource's `id`,
-per-resource `meta.matches`, `relationships.bill.data.id`, and the
-document `meta` to zip the two responses by bill id. No resolver calls
-them yet.
+and returned *whole* (not flattened to a list, unlike `_members`), so the
+composition layer can read each resource's `id`, per-resource
+`meta.matches`, `relationships.bill.data.id`, and the document `meta`.
+
+That composition layer is `services/bill_search_service.py`'s
+`BillSearchService` (cd-platform#104 Phase B): `discover(query)` returns
+`BillResult`s from `search_bills` alone (`votes` always `[]`), and
+`search(bioguide_id, query)` additionally calls `member_votes` with the
+ids the search returned, groups the `roll_call_vote` resources onto each
+bill by `relationships.bill.data.id`, and preserves search-relevance
+order. A matched bill the member didn't vote on keeps an explicit
+`votes: []` -- never a dropped entry, since "matched, no vote on record"
+is a first-class UX state. The two cd-api hops are sequential by
+necessity (the vote filter needs the search's ids); an empty search
+short-circuits before the second call (an empty `filter[bill]` is a
+`422`). `BillResult`/`VoteResult` are plain dataclasses -- cd-server's
+own domain shape, mapped to GraphQL types by the (not-yet-built)
+`searchBills`/`discoverBills` resolvers.
 
 Both the transport `get()`s and the two GraphQL resolvers above are
 `async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
