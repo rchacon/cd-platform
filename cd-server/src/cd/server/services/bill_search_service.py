@@ -9,6 +9,12 @@ from cd.lib.models import Bill, RollCallVote
 
 from cd.server.services.cd_api_service import CdApiService
 
+# cd-api's GET /members/{id}/votes rejects a filter[bill] naming more than
+# this many ids (its own MAX_VOTE_BILLS). GET /bills' page[size] cap is a
+# separate constant over there that happens to match today; `search()`
+# clamps to this so the votes hop can't 422 if the two ever diverge.
+_MAX_VOTE_BILLS = 50
+
 
 @dataclass(frozen=True)
 class VoteResult:
@@ -110,6 +116,12 @@ class BillSearchService:
     ) -> list[BillResult]:
         """Topic search plus how `bioguide_id` voted on each matched bill.
         Backs `searchBills`."""
+        # Never ask for more bills than the votes endpoint will accept in
+        # one filter[bill] -- keeps the second hop self-consistent (every
+        # returned bill gets a real vote lookup) rather than 422ing.
+        # `None` stays `None` (cd-api's own default is well under the cap).
+        if page_size is not None:
+            page_size = min(page_size, _MAX_VOTE_BILLS)
         bills = await self._cd_api.search_bills(query, page_size)
         if not bills.data:
             # No bills -> nothing to filter votes by; skip the second hop

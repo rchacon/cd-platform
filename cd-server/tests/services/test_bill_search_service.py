@@ -135,6 +135,20 @@ def test_search_with_no_matching_bills_skips_the_votes_call():
     assert stub.votes_calls == []  # an empty filter[bill] would 422
 
 
+def test_search_clamps_page_size_to_the_votes_endpoint_cap():
+    # search() must not ask GET /bills for more bills than
+    # GET /members/{id}/votes will accept in one filter[bill] (50).
+    stub = _StubCdApi(_bills_doc(_bill("119-hr-2616")), _votes_doc())
+    asyncio.run(BillSearchService(stub).search("K000401", "q", page_size=200))
+    assert stub.search_calls == [("q", 50)]
+
+
+def test_search_leaves_page_size_none_alone():
+    stub = _StubCdApi(_bills_doc(_bill("119-hr-2616")), _votes_doc())
+    asyncio.run(BillSearchService(stub).search("K000401", "q"))
+    assert stub.search_calls == [("q", None)]
+
+
 def test_search_drops_a_vote_resource_with_no_bill_linkage():
     stub = _StubCdApi(
         _bills_doc(_bill("119-hr-2616")),
