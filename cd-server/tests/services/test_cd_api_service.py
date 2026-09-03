@@ -365,3 +365,101 @@ def test_cd_api_service_aclose_delegates_to_transport():
     asyncio.run(service.aclose())
 
     assert transport.closed is True
+
+
+# --- search_bills / member_votes (cd-platform#104 PR 6) ---
+
+_BILL_RESOURCE = {
+    "type": "bill",
+    "id": "119-hr-2616",
+    "attributes": {
+        "congress": 119,
+        "bill_type": "HR",
+        "bill_number": 2616,
+        "title": "A bill for things",
+        "policy_area": "Education",
+        "crs_summary": "<p>...</p>",
+    },
+    "meta": {"matches": [{"via": "policy_area"}]},
+}
+
+_VOTE_RESOURCE = {
+    "type": "roll_call_vote",
+    "id": "119-house-1-327:K000401",
+    "attributes": {
+        "vote_cast": "YEA",
+        "vote_question": "On Passage",
+        "result": "Passed",
+        "vote_date": "2026-05-20",
+    },
+    "relationships": {
+        "member": {"data": {"type": "member", "id": "K000401"}},
+        "roll_call": {"data": {"type": "roll_call", "id": "119-house-1-327"}},
+        "bill": {"data": {"type": "bill", "id": "119-hr-2616"}},
+    },
+}
+
+
+def test_search_bills_sends_filter_query_and_returns_typed_collection():
+    transport = _FakeTransport({"data": [_BILL_RESOURCE], "meta": {"query": "schools"}})
+    service = CdApiService(transport)
+
+    doc = asyncio.run(service.search_bills("schools"))
+
+    assert transport.calls == [("/bills", {"filter[query]": "schools"})]
+    assert [r.id for r in doc.data] == ["119-hr-2616"]
+    assert doc.data[0].attributes.policy_area == "Education"
+    # per-resource meta (why it matched) and document meta (echoed query)
+    # both survive validation -- BillSearchService needs both.
+    assert doc.data[0].meta == {"matches": [{"via": "policy_area"}]}
+    assert doc.meta == {"query": "schools"}
+
+
+def test_search_bills_passes_page_size_only_when_given():
+    transport = _FakeTransport({"data": [], "meta": {"query": "q"}})
+    asyncio.run(CdApiService(transport).search_bills("q", page_size=5))
+    assert transport.calls == [("/bills", {"filter[query]": "q", "page[size]": "5"})]
+
+
+def test_search_bills_malformed_envelope_raises_validation_error():
+    from pydantic import ValidationError
+
+    # a resource missing `attributes` -- the trust boundary, same as _members
+    transport = _FakeTransport({"data": [{"type": "bill", "id": "119-hr-1"}]})
+    with pytest.raises(ValidationError):
+        asyncio.run(CdApiService(transport).search_bills("q"))
+
+
+def test_member_votes_sends_comma_joined_filter_bill_and_returns_typed_collection():
+    transport = _FakeTransport(
+        {"data": [_VOTE_RESOURCE], "meta": {"bills_without_votes": ["119-s-5"]}}
+    )
+    service = CdApiService(transport)
+
+    doc = asyncio.run(service.member_votes("K000401", ["119-hr-2616", "119-s-5"]))
+
+    assert transport.calls == [
+        ("/members/K000401/votes", {"filter[bill]": "119-hr-2616,119-s-5"})
+    ]
+    assert doc.data[0].attributes.vote_cast == "YEA"
+    # the derived bill edge BillSearchService groups on
+    assert doc.data[0].relationships["bill"].data.id == "119-hr-2616"
+    assert doc.meta == {"bills_without_votes": ["119-s-5"]}
+
+
+def test_member_votes_malformed_envelope_raises_validation_error():
+    from pydantic import ValidationError
+
+    transport = _FakeTransport({"data": [{"type": "roll_call_vote"}]})
+    with pytest.raises(ValidationError):
+        asyncio.run(CdApiService(transport).member_votes("K000401", ["119-hr-1"]))
+
+
+def test_search_bills_propagates_transport_error():
+    class _Failing(ApiClient):
+        async def get(self, path, query):
+            raise ApiClientError(503, "bedrock down")
+
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(CdApiService(_Failing()).search_bills("q"))
+    assert exc.value.status_code == 503

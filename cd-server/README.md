@@ -91,6 +91,17 @@ forward-compat shim also accepted cd-api's pre-JSON:API bespoke
 `{senators, representatives}` body and dual-sent bare `state`/`district`
 params; both are gone now that cd-api has flipped.)
 
+`CdApiService` also has `search_bills(query, page_size=None)` (cd-api
+`GET /bills`, cd-platform#9's semantic search) and
+`member_votes(bioguide_id, bill_keys)` (`GET /members/{id}/votes`) --
+each a thin transport call whose raw dict is validated through
+`cd-lib`'s `CollectionDocument[Bill]` / `CollectionDocument[RollCallVote]`
+and returned *whole* (not flattened to a list, unlike `_members`):
+`BillSearchService` (cd-platform#104 Phase B) needs each resource's `id`,
+per-resource `meta.matches`, `relationships.bill.data.id`, and the
+document `meta` to zip the two responses by bill id. No resolver calls
+them yet.
+
 Both the transport `get()`s and the two GraphQL resolvers above are
 `async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
 pool (closed via `CdApiService.aclose()`, called from `app.py`'s FastAPI

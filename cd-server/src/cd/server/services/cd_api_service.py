@@ -6,7 +6,7 @@ import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from cd.lib.jsonapi import CollectionDocument
-from cd.lib.models import Member, MemberDetail
+from cd.lib.models import Bill, Member, MemberDetail, RollCallVote
 
 from cd.server import settings
 
@@ -224,6 +224,49 @@ class CdApiService:
             {"filter[state]": state, "filter[chamber]": "senate"},
         )
         return _members(result, chamber="senators")
+
+    async def search_bills(
+        self, query: str, page_size: int | None = None
+    ) -> CollectionDocument[Bill]:
+        """cd-api `GET /bills` -- semantic search over synced bills
+        (cd-platform#9). Returns the validated JSON:API collection whole,
+        not a flat list: `BillSearchService` needs each resource's `id`
+        (the canonical bill key, to zip with `/votes`) and per-resource
+        `meta.matches` (why the bill surfaced), plus the document
+        `meta.query`.
+
+        A malformed envelope raises `pydantic.ValidationError` (the
+        response-shape trust boundary, same as `_members`); a non-2xx
+        (e.g. `503` when Bedrock is down) propagates as `ApiClientError`
+        from the transport.
+        """
+        params = {"filter[query]": query}
+        if page_size is not None:
+            params["page[size]"] = str(page_size)
+        result = await self._transport.get("/bills", params)
+        return CollectionDocument[Bill].model_validate(result)
+
+    async def member_votes(
+        self, bioguide_id: str, bill_keys: list[str]
+    ) -> CollectionDocument[RollCallVote]:
+        """cd-api `GET /members/{bioguide_id}/votes?filter[bill]=...` --
+        how one member voted on a specific set of bills. Returns the
+        validated JSON:API collection whole: `BillSearchService` groups
+        the `roll_call_vote` resources onto search results by
+        `relationships.bill.data.id`, and reads the document
+        `meta.bills_without_votes` for the "matched, no vote on record"
+        state.
+
+        `bill_keys` must be non-empty (cd-api `422`s an empty
+        `filter[bill]`) and hold at most 50 ids. `404` for an unknown
+        member and `400` for a malformed id both propagate as
+        `ApiClientError`.
+        """
+        result = await self._transport.get(
+            f"/members/{bioguide_id}/votes",
+            {"filter[bill]": ",".join(bill_keys)},
+        )
+        return CollectionDocument[RollCallVote].model_validate(result)
 
     async def aclose(self) -> None:
         await self._transport.aclose()
