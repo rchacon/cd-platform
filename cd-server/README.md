@@ -91,11 +91,15 @@ forward-compat shim also accepted cd-api's pre-JSON:API bespoke
 `{senators, representatives}` body and dual-sent bare `state`/`district`
 params; both are gone now that cd-api has flipped.)
 
-`CdApiService` also has `search_bills(query, page_size=None)` (cd-api
-`GET /bills`, cd-platform#9's semantic search) and
+`CdApiService` also has `member_detail(bioguide_id)` (cd-api
+`GET /members/{id}` -> `Document[MemberDetail]`, for cd-webapp's
+deep-linkable member detail page -- the `member` fields plus `state` and
+`in_office`, which the list drops), `search_bills(query, page_size=None)`
+(cd-api `GET /bills`, cd-platform#9's semantic search) and
 `member_votes(bioguide_id, bill_keys)` (`GET /members/{id}/votes`) --
 each a thin transport call whose raw dict is validated through
-`cd-lib`'s `CollectionDocument[Bill]` / `CollectionDocument[RollCallVote]`
+`cd-lib`'s `Document[MemberDetail]` / `CollectionDocument[Bill]` /
+`CollectionDocument[RollCallVote]`
 and returned *whole* (not flattened to a list, unlike `_members`), so the
 composition layer can read each resource's `id`, per-resource
 `meta.matches`, `relationships.bill.data.id`, and the document `meta`.
