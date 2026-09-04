@@ -367,6 +367,40 @@ def test_cd_api_service_aclose_delegates_to_transport():
     assert transport.closed is True
 
 
+# --- member_detail (GET /members/{id}, for cd-webapp's detail page) ---
+
+
+def test_member_detail_fetches_by_id_and_returns_typed_document():
+    transport = _FakeTransport({"data": _resource(_MEMBER)})
+    doc = asyncio.run(CdApiService(transport).member_detail("D000001"))
+
+    assert transport.calls == [("/members/D000001", {})]
+    assert doc.data.id == "D000001"
+    assert doc.data.attributes.last_name == "Doe"
+    # state / in_office -- the fields the list drops but a detail page needs
+    assert doc.data.attributes.state == "CA"
+    assert doc.data.attributes.in_office is True
+
+
+def test_member_detail_malformed_envelope_raises_validation_error():
+    from pydantic import ValidationError
+
+    # single-resource `data` must be an object, not a list
+    transport = _FakeTransport({"data": [_resource(_MEMBER)]})
+    with pytest.raises(ValidationError):
+        asyncio.run(CdApiService(transport).member_detail("D000001"))
+
+
+def test_member_detail_propagates_transport_404():
+    class _Failing(ApiClient):
+        async def get(self, path, query):
+            raise ApiClientError(404, "no current-Congress member")
+
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(CdApiService(_Failing()).member_detail("X000000"))
+    assert exc.value.status_code == 404
+
+
 # --- search_bills / member_votes (cd-platform#104 PR 6) ---
 
 _BILL_RESOURCE = {

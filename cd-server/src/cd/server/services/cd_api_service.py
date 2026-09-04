@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 import boto3
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
-from cd.lib.jsonapi import CollectionDocument
+from cd.lib.jsonapi import CollectionDocument, Document
 from cd.lib.models import Bill, Member, MemberDetail, RollCallVote
 
 from cd.server import settings
@@ -224,6 +224,24 @@ class CdApiService:
             {"filter[state]": state, "filter[chamber]": "senate"},
         )
         return _members(result, chamber="senators")
+
+    async def member_detail(self, bioguide_id: str) -> Document[MemberDetail]:
+        """cd-api `GET /members/{bioguide_id}` -- one current-Congress
+        member (sitting *or* departed mid-term, `in_office` flag),
+        for cd-webapp's deep-linkable member detail page.
+
+        Returns the validated JSON:API single-resource document whole:
+        the bioguide id is `data.id` (not an attribute), and
+        `data.attributes` is the full `MemberDetail` set -- the list's
+        `member` fields plus `state` and `in_office`, which the list drops
+        but a detail page needs.
+
+        A malformed envelope raises `pydantic.ValidationError`; a `404`
+        (an id with no current-Congress term -- e.g. a past-Congress
+        member) propagates as `ApiClientError` from the transport.
+        """
+        result = await self._transport.get(f"/members/{bioguide_id}", {})
+        return Document[MemberDetail].model_validate(result)
 
     async def search_bills(
         self, query: str, page_size: int | None = None
