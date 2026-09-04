@@ -28,6 +28,7 @@ The schema (`src/cd/server/schema.py`) currently exposes:
   getDistrict(address: "1600 Pennsylvania Ave NW, Washington, DC") { state district }
   getSenators(state: "CA") { bioguideId firstName lastName party }
   getRepresentatives(state: "CA", district: 12) { bioguideId firstName lastName role district }
+  getMember(bioguideId: "K000401") { bioguideId firstName lastName role district state inOffice }
 }
 ```
 
@@ -119,7 +120,20 @@ short-circuits before the second call (an empty `filter[bill]` is a
 own domain shape, mapped to GraphQL types by the (not-yet-built)
 `searchBills`/`discoverBills` resolvers.
 
-Both the transport `get()`s and the two GraphQL resolvers above are
+`getMember(bioguideId!)` is backed by `member_detail()` -> cd-api
+`GET /members/{id}`. Unlike `getSenators`/`getRepresentatives` (which
+return `Representative`/`Senator`, both derived from `Member`), it
+returns a `MemberDetail` type -- every `Member` field plus `state` and
+`inOffice` -- for cd-webapp's deep-linkable member page, where a
+bookmark to a since-departed member must still resolve (`inOffice:
+false`) rather than 404. The resolver maps `Document.data.id` ->
+`bioguideId` (the JSON:API resource id, not a `MemberDetail` attribute)
+and `Document.data.attributes` -> the rest; a cd-api `404` (an id with
+no current-Congress term) propagates as a GraphQL error, same as the
+other resolvers' cd-api failures.
+
+Both the transport `get()`s and the cd-api-backed GraphQL resolvers
+above are
 `async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
 pool (closed via `CdApiService.aclose()`, called from `app.py`'s FastAPI
 `lifespan` on shutdown), and `LambdaApiClient` wraps `boto3`'s own invoke

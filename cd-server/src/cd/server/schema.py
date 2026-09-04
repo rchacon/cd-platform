@@ -4,6 +4,7 @@ from pathlib import Path
 import strawberry
 import strawberry.experimental.pydantic as strawberry_pydantic
 from cd.lib.models import Member
+from cd.lib.models import MemberDetail as MemberDetailModel
 from cd.lib.version import read_version
 from strawberry.extensions import DisableIntrospection
 
@@ -70,6 +71,18 @@ class Senator:
     photo_url: strawberry.auto
 
 
+# The `getMember` detail type -- every `Member` field plus `state` and
+# `in_office` (which the list resolvers' `Representative`/`Senator` don't
+# carry), for cd-webapp's deep-linkable member page. Derived from
+# cd-lib's `MemberDetail` for the field descriptions, same as the two
+# list types above; `bioguide_id` is added because it's the JSON:API
+# resource id, not a `MemberDetail` attribute -- the resolver threads it
+# in via `from_pydantic(..., extra=...)`.
+@strawberry_pydantic.type(model=MemberDetailModel, all_fields=True)
+class MemberDetail:
+    bioguide_id: str
+
+
 @strawberry.type
 class State:
     abbr: str
@@ -119,6 +132,19 @@ class Query:
     async def get_senators(self, state: str) -> list[Senator]:
         members = await cd_api_service.get_senators(state)
         return [Senator.from_pydantic(member) for member in members]
+
+    @strawberry.field
+    async def get_member(self, bioguide_id: str) -> MemberDetail:
+        """One member of the current Congress by bioguide id -- for a
+        deep-linkable detail page. Serves a sitting *or* a departed
+        member (`inOffice` distinguishes them); a bioguide id with no
+        current-Congress term surfaces as a GraphQL error (cd-api 404),
+        same as the other resolvers' cd-api failures.
+        """
+        doc = await cd_api_service.member_detail(bioguide_id)
+        return MemberDetail.from_pydantic(
+            doc.data.attributes, extra={"bioguide_id": doc.data.id}
+        )
 
 
 schema = strawberry.Schema(
