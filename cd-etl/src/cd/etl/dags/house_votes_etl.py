@@ -35,7 +35,13 @@ from typing import Any
 import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bills_common, congress_api, db
+from cd.etl import congress_api, db
+from cd.etl.roll_calls_common import (
+    ROLL_CALL_MEMBER_VOTES_UPSERT_SQL,
+    ROLL_CALLS_UPSERT_SQL,
+    VOTE_CAST_MAP,
+    get_or_sync_bill,
+)
 from cd.lib import bedrock
 from cd.etl.congress_models import (
     AmendmentResponse,
@@ -70,76 +76,11 @@ VOTE_BATCH_SIZE = 50
 _API_SESSION = congress_api.build_session(pool_maxsize=MEMBER_VOTES_FETCH_WORKERS)
 _BEDROCK_CLIENT = bedrock.build_bedrock_client()
 
-# House roll calls report different literal values depending on voteType
-# ("Recorded Vote" uses Aye/No/Not Voting; "Yea-and-Nay" uses Yea/Nay/Not
-# Voting) -- normalized case-insensitively onto vote_cast_type, matching
-# the rationale already documented on that enum in the schema migration.
-VOTE_CAST_MAP = {
-    "yea": "YEA",
-    "aye": "YEA",
-    "nay": "NAY",
-    "no": "NAY",
-    "present": "PRESENT",
-    "not voting": "NOT_VOTING",
-}
-
-ROLL_CALLS_UPSERT_SQL = """
-    INSERT INTO roll_calls (
-        chamber, congress, session, vote_number, bill_id,
-        vote_question, result, vote_date, source_hash
-    )
-    VALUES %s
-    ON CONFLICT (chamber, congress, session, vote_number) DO UPDATE SET
-        bill_id = EXCLUDED.bill_id,
-        vote_question = EXCLUDED.vote_question,
-        result = EXCLUDED.result,
-        vote_date = EXCLUDED.vote_date,
-        source_hash = EXCLUDED.source_hash,
-        synced_at = NOW(),
-        updated_at = CASE
-            WHEN roll_calls.source_hash IS DISTINCT FROM EXCLUDED.source_hash
-            THEN NOW()
-            ELSE roll_calls.updated_at
-        END
-    WHERE roll_calls.source_hash IS DISTINCT FROM EXCLUDED.source_hash
-"""
-
-ROLL_CALL_MEMBER_VOTES_UPSERT_SQL = """
-    INSERT INTO roll_call_member_votes (roll_call_id, bioguide_id, vote_cast)
-    VALUES %s
-    ON CONFLICT (roll_call_id, bioguide_id) DO UPDATE SET
-        vote_cast = EXCLUDED.vote_cast,
-        updated_at = NOW()
-    WHERE roll_call_member_votes.vote_cast IS DISTINCT FROM EXCLUDED.vote_cast
-"""
+# VOTE_CAST_MAP, ROLL_CALLS_UPSERT_SQL, ROLL_CALL_MEMBER_VOTES_UPSERT_SQL
+# and get_or_sync_bill now live in cd.etl.roll_calls_common (shared with
+# senate_votes_etl); imported at the top of this module.
 
 logger = logging.getLogger(__name__)
-
-
-def get_or_sync_bill(
-    session: requests.Session,
-    conn: Any,
-    congress: int,
-    bill_type: str,
-    bill_number: int,
-    bedrock_client: Any,
-) -> int:
-    # Sync-once, not a refresh path: once a bill is stored, this helper
-    # never re-fetches it. Only bills actually referenced by a vote are
-    # ever synced at all -- see house_votes_etl's module docstring for
-    # why a full proactive bill sync was rejected, and for where the
-    # refresh path lives instead (bills_etl.py, via the same
-    # bills_common.sync_bill this calls on a cache miss).
-    with conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT bill_id FROM bills WHERE congress = %s AND bill_type = %s AND bill_number = %s",
-            (congress, bill_type, bill_number),
-        )
-        row = cursor.fetchone()
-    if row is not None:
-        return row[0]
-
-    return bills_common.sync_bill(session, conn, congress, bill_type, bill_number, bedrock_client)
 
 
 def resolve_amendment_bill(
