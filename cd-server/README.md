@@ -29,6 +29,10 @@ The schema (`src/cd/server/schema.py`) currently exposes:
   getSenators(state: "CA") { bioguideId firstName lastName party }
   getRepresentatives(state: "CA", district: 12) { bioguideId firstName lastName role district }
   getMember(bioguideId: "K000401") { bioguideId firstName lastName role district state inOffice }
+  discoverBills(q: "schools telling parents", limit: 5) { billKey title policyArea matches }
+  searchBills(bioguideId: "K000401", q: "immigration") {
+    billKey title matches votes { voteCast voteQuestion result voteDate }
+  }
 }
 ```
 
@@ -117,8 +121,16 @@ is a first-class UX state. The two cd-api hops are sequential by
 necessity (the vote filter needs the search's ids); an empty search
 short-circuits before the second call (an empty `filter[bill]` is a
 `422`). `BillResult`/`VoteResult` are plain dataclasses -- cd-server's
-own domain shape, mapped to GraphQL types by the (not-yet-built)
-`searchBills`/`discoverBills` resolvers.
+own domain shape, mapped to the `Bill`/`BillVote` GraphQL types by two
+resolvers: `discoverBills(q!, limit=10)` (`BillSearchService.discover`
+-- bills + why they matched, no member) and `searchBills(bioguideId!,
+q!, limit=10)` (`BillSearchService.search` -- same bills, each with the
+member's `votes`, `[]` for a matched bill they didn't vote on).
+`Bill.matches` is exposed as a `JSON` scalar rather than a typed field
+-- its shape is cd-api's to evolve (cd-platform#131/#132) and cd-server
+merges bills by `billKey`, never on `matches`. cd-api failures
+propagate as GraphQL errors (unknown `bioguideId` -> 404, Bedrock
+outage -> 503), the same thin style as the other resolvers.
 
 `getMember(bioguideId!)` is backed by `member_detail()` -> cd-api
 `GET /members/{id}`. Unlike `getSenators`/`getRepresentatives` (which

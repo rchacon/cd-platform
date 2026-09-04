@@ -3,7 +3,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cd.server.app import app
-from cd.server.schema import cd_api_service, geocoder_service, schema, users_service
+from cd.server.schema import (
+    bill_search_service,
+    cd_api_service,
+    geocoder_service,
+    schema,
+    users_service,
+)
 from cd.server.services.users_service import InvalidTokenError
 
 
@@ -433,6 +439,106 @@ def test_get_member_surfaces_cd_api_404_as_a_graphql_error(client, monkeypatch):
 
     response = client.post(
         "/graphql", json={"query": '{ getMember(bioguideId: "X000000") { bioguideId } }'}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "404" in response.json()["errors"][0]["message"]
+
+
+# --- discoverBills / searchBills (cd-platform#104 PR 7) ---
+
+from datetime import date  # noqa: E402
+
+from cd.server.services.bill_search_service import BillResult, VoteResult  # noqa: E402
+
+
+def _bill_result(bill_key="119-hr-2616", *, votes=(), via="policy_area"):
+    congress, bill_type, number = bill_key.split("-")
+    return BillResult(
+        bill_key=bill_key,
+        congress=int(congress),
+        bill_type=bill_type.upper(),
+        bill_number=int(number),
+        title=f"A bill about {bill_key}",
+        policy_area="Education",
+        crs_summary="<p>...</p>",
+        matches=[{"via": via}],
+        votes=list(votes),
+    )
+
+
+_VOTE = VoteResult(
+    vote_cast="YEA", vote_question="On Passage", result="Passed",
+    vote_date=date(2026, 5, 20),
+)
+
+
+def test_discover_bills_returns_bills_with_matches_and_no_votes(client, monkeypatch):
+    async def fake_discover(q, page_size):
+        assert (q, page_size) == ("schools", 5)
+        return [_bill_result(via="subject")]
+
+    monkeypatch.setattr(bill_search_service, "discover", fake_discover)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": (
+                '{ discoverBills(q: "schools", limit: 5) '
+                "{ billKey billType title policyArea matches votes { voteCast } } }"
+            )
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["discoverBills"] == [
+        {
+            "billKey": "119-hr-2616",
+            "billType": "HR",
+            "title": "A bill about 119-hr-2616",
+            "policyArea": "Education",
+            "matches": [{"via": "subject"}],
+            "votes": [],
+        }
+    ]
+
+
+def test_search_bills_merges_votes_and_keeps_matched_no_vote_bills(client, monkeypatch):
+    async def fake_search(bioguide_id, q, page_size):
+        assert (bioguide_id, q, page_size) == ("K000401", "schools", 10)
+        return [
+            _bill_result("119-hr-2616", votes=[_VOTE]),
+            _bill_result("119-s-5"),  # matched, member never voted -> votes: []
+        ]
+
+    monkeypatch.setattr(bill_search_service, "search", fake_search)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": (
+                '{ searchBills(bioguideId: "K000401", q: "schools") '
+                "{ billKey votes { voteCast voteDate } } }"
+            )
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["searchBills"] == [
+        {"billKey": "119-hr-2616", "votes": [{"voteCast": "YEA", "voteDate": "2026-05-20"}]},
+        {"billKey": "119-s-5", "votes": []},
+    ]
+
+
+def test_search_bills_surfaces_cd_api_error_as_a_graphql_error(client, monkeypatch):
+    from cd.server.services.cd_api_service import ApiClientError
+
+    async def fake_search(bioguide_id, q, page_size):
+        raise ApiClientError(404, "no current-Congress member")
+
+    monkeypatch.setattr(bill_search_service, "search", fake_search)
+
+    response = client.post(
+        "/graphql",
+        json={"query": '{ searchBills(bioguideId: "X000000", q: "x") { billKey } }'},
     )
     assert response.status_code == 200
     assert response.json()["data"] is None

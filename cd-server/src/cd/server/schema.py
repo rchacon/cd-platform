@@ -1,4 +1,5 @@
 import os
+from datetime import date
 from pathlib import Path
 
 import strawberry
@@ -7,7 +8,9 @@ from cd.lib.models import Member
 from cd.lib.models import MemberDetail as MemberDetailModel
 from cd.lib.version import read_version
 from strawberry.extensions import DisableIntrospection
+from strawberry.scalars import JSON
 
+from cd.server.services.bill_search_service import BillResult, BillSearchService
 from cd.server.services.cd_api_service import get_cd_api_service
 from cd.server.services.geocoder_service import GeocoderService
 from cd.server.services.states_service import StatesService
@@ -32,6 +35,7 @@ GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 # httpx.AsyncClient()'s synchronous constructor) -- see its own
 # connect(), also called from app.py's lifespan, this time on startup.
 cd_api_service = get_cd_api_service()
+bill_search_service = BillSearchService(cd_api_service)
 geocoder_service = GeocoderService()
 states_service = StatesService()
 users_service = get_users_service()
@@ -84,6 +88,63 @@ class MemberDetail:
 
 
 @strawberry.type
+class BillVote:
+    """One cast position by the `searchBills` member on one roll call --
+    from `BillSearchService`'s `VoteResult`."""
+
+    vote_cast: str
+    vote_question: str
+    result: str
+    vote_date: date
+
+
+@strawberry.type
+class Bill:
+    """A bill from cd-api's `GET /bills` semantic search, merged with the
+    queried member's votes on it (`searchBills`) or with `votes` empty
+    (`discoverBills`) -- from `BillSearchService`'s `BillResult`.
+
+    `matches` (why this bill surfaced -- `[{"via": "policy_area"}, ...]`)
+    is passed through as `JSON` rather than a typed field: its shape is
+    cd-api's to evolve (cd-platform#131/#132 add more `via` kinds and
+    per-entry detail), and cd-server merges bills by `billKey`, never on
+    `matches`.
+    """
+
+    bill_key: str
+    congress: int
+    bill_type: str
+    bill_number: int
+    title: str | None
+    policy_area: str | None
+    crs_summary: str | None
+    matches: JSON
+    votes: list[BillVote]
+
+
+def _to_bill(result: BillResult) -> Bill:
+    return Bill(
+        bill_key=result.bill_key,
+        congress=result.congress,
+        bill_type=result.bill_type,
+        bill_number=result.bill_number,
+        title=result.title,
+        policy_area=result.policy_area,
+        crs_summary=result.crs_summary,
+        matches=result.matches,
+        votes=[
+            BillVote(
+                vote_cast=v.vote_cast,
+                vote_question=v.vote_question,
+                result=v.result,
+                vote_date=v.vote_date,
+            )
+            for v in result.votes
+        ],
+    )
+
+
+@strawberry.type
 class State:
     abbr: str
     name: str
@@ -132,6 +193,29 @@ class Query:
     async def get_senators(self, state: str) -> list[Senator]:
         members = await cd_api_service.get_senators(state)
         return [Senator.from_pydantic(member) for member in members]
+
+    @strawberry.field
+    async def discover_bills(self, q: str, limit: int = 10) -> list[Bill]:
+        """Semantic topic search over synced bills (cd-platform#9) -- the
+        bills matching a free-text topic and why, with no member context.
+        `limit` caps the result; cd-api may return fewer (even zero) when
+        little in the corpus is relevant. A Bedrock outage surfaces as a
+        GraphQL error (cd-api 503).
+        """
+        results = await bill_search_service.discover(q, limit)
+        return [_to_bill(r) for r in results]
+
+    @strawberry.field
+    async def search_bills(
+        self, bioguide_id: str, q: str, limit: int = 10
+    ) -> list[Bill]:
+        """`discoverBills` plus how the given member voted on each matched
+        bill. A matched bill the member never voted on comes back with
+        `votes: []` (not omitted). An unknown `bioguideId` surfaces as a
+        GraphQL error (cd-api 404), a Bedrock outage likewise (503).
+        """
+        results = await bill_search_service.search(bioguide_id, q, limit)
+        return [_to_bill(r) for r in results]
 
     @strawberry.field
     async def get_member(self, bioguide_id: str) -> MemberDetail:
