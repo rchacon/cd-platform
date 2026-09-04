@@ -19,7 +19,10 @@ members of the current Congress from api.congress.gov,
 `bills_common.py`; the on-demand bill resolution + the
 `roll_calls`/`roll_call_member_votes` upsert SQL it shares with a future
 `senate_votes_etl` live in `cd/etl/roll_calls_common.py`, mirroring
-`bills_common.py`), and `cd-etl/src/cd/etl/dags/bills_etl.py` refreshes
+`bills_common.py` -- and `cd/etl/senate_votes_source.py` reads senate.gov's
+own roll-call XML feed, since api.congress.gov has no Senate vote endpoint;
+the `senate_votes_etl` DAG that consumes it isn't built yet),
+and `cd-etl/src/cd/etl/dags/bills_etl.py` refreshes
 already-synced bills' `policy_area`/subjects/title/CRS summary on its own
 schedule (see that file's own DAG pipeline section below) -- all into a
 Postgres schema managed by Alembic migrations (`cd-etl/migrations/`). `cd-api`
