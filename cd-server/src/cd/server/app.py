@@ -64,18 +64,25 @@ app.add_middleware(
 # caller into cd_customers if the Authorization header carries a valid
 # Cognito ID token, and silently does nothing if there's no header at all
 # (see UsersService.upsert_user_from_authorization_header's own docstring
-# -- no resolver requires auth yet, so an anonymous request must never be
-# blocked). A bearer token that IS present but fails to verify is a
-# different case: InvalidTokenError propagates here as an HTTP 401,
+# -- most resolvers don't require auth, so an anonymous request must
+# never be blocked). A bearer token that IS present but fails to verify
+# is a different case: InvalidTokenError propagates here as an HTTP 401,
 # rejecting the whole request before Strawberry ever executes it.
+#
+# The verified Cognito `sub` (or None for an anonymous caller) is placed
+# in GraphQL context as "user_id" -- a resolver that requires auth (e.g.
+# schema.py's summarizeVotingRecord/myAiSummaries) reads
+# info.context["user_id"] and raises its own error if it's None. A
+# resolver only ever sees "anonymous" or "verified" here, never "invalid"
+# -- an actually-bad token 401s above before any resolver runs.
 async def get_graphql_context(request: Request) -> dict:
     try:
-        await users_service.upsert_user_from_authorization_header(
+        user_id = await users_service.upsert_user_from_authorization_header(
             request.headers.get("Authorization")
         )
     except InvalidTokenError as e:
         raise HTTPException(status_code=401, detail=str(e)) from e
-    return {}
+    return {"user_id": user_id}
 
 
 app.include_router(

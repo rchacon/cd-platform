@@ -57,13 +57,19 @@ class UsersService:
     a raw Authorization header against Cognito's JWKS and upserts the
     resulting user via UsersClient -- called unconditionally on every
     GraphQL request (see app.py), not throttled or gated to "new" users
-    specifically, a deliberately simple first pass. A missing header (or
-    verification disabled entirely) and a database hiccup during the
-    upsert itself both stay silent no-ops -- neither should break any of
-    the 5 existing public resolvers, none of which require auth. But a
-    bearer token that IS present must actually verify: raises
-    InvalidTokenError otherwise, so app.py can reject the request outright
-    rather than silently downgrading a bad token to an anonymous one."""
+    specifically, a deliberately simple first pass.
+    upsert_user_from_authorization_header() returns the verified Cognito
+    `sub` on success (so a resolver can gate on/tag content with it via
+    GraphQL context), or None for a missing header, verification disabled
+    entirely, or a JWKS-connectivity hiccup -- all silent no-ops, since
+    most resolvers don't require auth. A database hiccup during the
+    upsert itself is also a silent no-op, but still returns the sub: the
+    token verified fine, so the caller IS authenticated even though their
+    users row didn't get touched this time -- "authenticated" and "upsert
+    succeeded" are separate concerns. But a bearer token that IS present
+    must actually verify: raises InvalidTokenError otherwise, so app.py
+    can reject the request outright rather than silently downgrading a
+    bad token to an anonymous one."""
 
     def __init__(
         self,
@@ -85,15 +91,15 @@ class UsersService:
     async def aclose(self) -> None:
         await self._client.close()
 
-    async def upsert_user_from_authorization_header(self, header: str | None) -> None:
+    async def upsert_user_from_authorization_header(self, header: str | None) -> str | None:
         if self._jwk_client is None or not header:
-            return
+            return None
         scheme, _, token = header.partition(" ")
         if scheme.lower() != "bearer" or not token:
             # Not a bearer-JWT attempt at all (missing/empty/other scheme)
             # -- nothing was "provided" in the sense that requires
             # validity, so this stays anonymous rather than rejected.
-            return
+            return None
 
         try:
             signing_key = self._jwk_client.get_signing_key_from_jwt(token)
@@ -103,7 +109,7 @@ class UsersService:
             # an unrelated infra hiccup" precedent as the DB upsert
             # failure below, not the "reject an actually-bad token" path.
             logger.warning("Could not reach Cognito's JWKS endpoint: %s", e)
-            return
+            return None
         except PyJWTError as e:
             logger.warning("Rejected invalid JWT on GraphQL request: %s", e)
             raise InvalidTokenError(str(e)) from e
@@ -141,8 +147,14 @@ class UsersService:
             # A Postgres hiccup here must not take down an unrelated
             # getRepresentatives/getStates/etc. query -- log and move on,
             # same "don't block the request" principle as an invalid
-            # token above.
+            # token above. The token itself verified fine, so the caller
+            # IS authenticated even though this particular upsert failed
+            # -- still return the verified sub below rather than None;
+            # "authenticated" and "upsert succeeded" are separate
+            # concerns, and a caller of this method needs the former.
             logger.exception("Failed to upsert user %s from JWT", claims["sub"])
+
+        return claims["sub"]
 
 
 def get_users_service() -> UsersService:

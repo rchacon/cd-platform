@@ -51,9 +51,10 @@ def test_no_upsert_when_jwk_client_is_none():
     client = _FakeUsersClient()
     service = UsersService(client, jwk_client=None, issuer=_ISSUER, audiences=_AUDIENCES)
 
-    asyncio.run(service.upsert_user_from_authorization_header("Bearer whatever"))
+    result = asyncio.run(service.upsert_user_from_authorization_header("Bearer whatever"))
 
     assert client.calls == []
+    assert result is None
 
 
 @pytest.mark.parametrize("header", [None, "", "Basic dXNlcjpwYXNz", "Bearer"])
@@ -62,10 +63,11 @@ def test_no_upsert_when_header_missing_or_malformed(header):
     jwk_client = _FakeJwkClient()
     service = UsersService(client, jwk_client, issuer=_ISSUER, audiences=_AUDIENCES)
 
-    asyncio.run(service.upsert_user_from_authorization_header(header))
+    result = asyncio.run(service.upsert_user_from_authorization_header(header))
 
     assert client.calls == []
     assert jwk_client.calls == []
+    assert result is None
 
 
 def test_valid_id_token_upserts_sub_and_email(monkeypatch):
@@ -83,10 +85,11 @@ def test_valid_id_token_upserts_sub_and_email(monkeypatch):
 
     monkeypatch.setattr(jwt, "decode", fake_decode)
 
-    asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
+    result = asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
 
     assert jwk_client.calls == ["a.b.c"]
     assert client.calls == [("abc-123", "person@example.com")]
+    assert result == "abc-123"
 
 
 def test_invalid_token_raises_and_does_not_upsert(monkeypatch):
@@ -119,9 +122,10 @@ def test_jwks_connection_failure_does_not_raise_or_upsert():
     # A JWKS-fetch hiccup is Cognito's own connectivity, not the token's
     # fault -- must degrade to anonymous like a missing header, not raise
     # InvalidTokenError/401 the way an actually-bad signature does.
-    asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
+    result = asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
 
     assert client.calls == []
+    assert result is None
 
 
 def test_access_token_rejected_by_token_use(monkeypatch):
@@ -151,8 +155,12 @@ def test_db_failure_during_upsert_does_not_raise(monkeypatch):
 
     monkeypatch.setattr(jwt, "decode", fake_decode)
 
-    # Should not raise.
-    asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
+    # Should not raise -- and the token DID verify, so the sub still
+    # comes back despite the storage failure ("authenticated" and
+    # "upsert succeeded" are separate concerns).
+    result = asyncio.run(service.upsert_user_from_authorization_header("Bearer a.b.c"))
+
+    assert result == "abc-123"
 
 
 def test_upsert_user_runs_expected_sql():

@@ -1,8 +1,11 @@
+import asyncio
+import types
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from cd.server.app import app
+from cd.server.app import app, get_graphql_context
 from cd.server.schema import (
     bill_search_service,
     cd_api_service,
@@ -134,6 +137,39 @@ def test_graphql_request_with_invalid_token_is_rejected_with_401(client, monkeyp
 
     assert response.status_code == 401
     assert response.json() == {"detail": "bad signature"}
+
+
+def test_get_graphql_context_carries_the_verified_user_id(monkeypatch):
+    # Direct unit test of the context_getter itself (bypassing Strawberry/
+    # TestClient) -- confirms the verified sub now actually reaches
+    # GraphQL context as "user_id", not just that the request still
+    # succeeds. A resolver requiring auth (summarizeVotingRecord/
+    # myAiSummaries) reads this key.
+    async def fake_upsert(header):
+        return "cognito-sub-123"
+
+    monkeypatch.setattr(
+        users_service, "upsert_user_from_authorization_header", fake_upsert
+    )
+
+    request = types.SimpleNamespace(headers={"Authorization": "Bearer a.b.c"})
+    context = asyncio.run(get_graphql_context(request))
+
+    assert context == {"user_id": "cognito-sub-123"}
+
+
+def test_get_graphql_context_carries_none_for_an_anonymous_caller(monkeypatch):
+    async def fake_upsert(header):
+        return None
+
+    monkeypatch.setattr(
+        users_service, "upsert_user_from_authorization_header", fake_upsert
+    )
+
+    request = types.SimpleNamespace(headers={})
+    context = asyncio.run(get_graphql_context(request))
+
+    assert context == {"user_id": None}
 
 
 def test_version_query_returns_dev_when_no_version_file(client):
