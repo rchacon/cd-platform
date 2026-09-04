@@ -352,3 +352,88 @@ def test_get_district_surfaces_no_match_error(client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["data"] is None
     assert "No address match found" in response.json()["errors"][0]["message"]
+
+
+# --- getMember (cd-api GET /members/{id}, cd-webapp's detail page) ---
+
+_MEMBER_DETAIL_DOC = {
+    "data": {
+        "type": "member",
+        "id": "K000401",
+        "attributes": {
+            "first_name": "Kevin",
+            "middle_name": None,
+            "last_name": "Kiley",
+            "nickname": None,
+            "suffix": None,
+            "role": "Representative",
+            "party": "Republican",
+            "phone": "202-555-0100",
+            "website": "https://kiley.example.gov",
+            "photo_url": "https://example.gov/K000401.jpg",
+            "district": 3,
+            "state": "CA",
+            "in_office": True,
+        },
+    }
+}
+
+
+def _stub_member_detail(monkeypatch, doc=None, *, raises=None):
+    from cd.lib.jsonapi import Document
+    from cd.lib.models import MemberDetail
+
+    async def fake(bioguide_id):
+        if raises is not None:
+            raise raises
+        return Document[MemberDetail].model_validate(doc)
+
+    monkeypatch.setattr(cd_api_service, "member_detail", fake)
+
+
+def test_get_member_returns_detail_with_state_and_in_office(client, monkeypatch):
+    _stub_member_detail(monkeypatch, _MEMBER_DETAIL_DOC)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": (
+                '{ getMember(bioguideId: "K000401") '
+                "{ bioguideId firstName lastName role district state inOffice } }"
+            )
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["getMember"] == {
+        "bioguideId": "K000401",
+        "firstName": "Kevin",
+        "lastName": "Kiley",
+        "role": "Representative",
+        "district": 3,
+        "state": "CA",
+        "inOffice": True,
+    }
+
+
+def test_get_member_serves_a_departed_member_with_in_office_false(client, monkeypatch):
+    doc = {"data": {**_MEMBER_DETAIL_DOC["data"]}}
+    doc["data"]["attributes"] = {**_MEMBER_DETAIL_DOC["data"]["attributes"], "in_office": False}
+    _stub_member_detail(monkeypatch, doc)
+
+    response = client.post(
+        "/graphql", json={"query": '{ getMember(bioguideId: "K000401") { inOffice } }'}
+    )
+    assert response.json()["data"]["getMember"] == {"inOffice": False}
+
+
+def test_get_member_surfaces_cd_api_404_as_a_graphql_error(client, monkeypatch):
+    from cd.server.services.cd_api_service import ApiClientError
+
+    _stub_member_detail(monkeypatch, raises=ApiClientError(404, "no current-Congress member"))
+
+    response = client.post(
+        "/graphql", json={"query": '{ getMember(bioguideId: "X000000") { bioguideId } }'}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "404" in response.json()["errors"][0]["message"]
