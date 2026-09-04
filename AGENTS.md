@@ -16,6 +16,9 @@ Airflow DAGs -- `cd-etl/src/cd/etl/dags/members_etl.py` syncs House and Senate
 members of the current Congress from api.congress.gov,
 `cd-etl/src/cd/etl/dags/house_votes_etl.py` syncs House roll call votes
 (syncing whatever bill each vote references on demand, via
+`bills_common.py`; the on-demand bill resolution + the
+`roll_calls`/`roll_call_member_votes` upsert SQL it shares with a future
+`senate_votes_etl` live in `cd/etl/roll_calls_common.py`, mirroring
 `bills_common.py`), and `cd-etl/src/cd/etl/dags/bills_etl.py` refreshes
 already-synced bills' `policy_area`/subjects/title/CRS summary on its own
 schedule (see that file's own DAG pipeline section below) -- all into a
@@ -328,8 +331,9 @@ correctness problem -- the same loosely-coupled precedent
 `extract_legislators_crosswalk` above already set for a related-but-
 independent sync.
 
-Both `house_votes_etl.get_or_sync_bill()` (on a cache miss) and
-`bills_etl.refresh_bills` (unconditionally, for every known bill) call the
+Both `roll_calls_common.get_or_sync_bill()` (called by `house_votes_etl`
+on a cache miss) and `bills_etl.refresh_bills` (unconditionally, for every
+known bill) call the
 same fetch+upsert function, `bills_common.sync_bill()` -- it fetches a
 bill's detail, `/subjects`, and `/summaries` sub-resources concurrently,
 storing `title`, `policy_area`, the most recent CRS summary (by
