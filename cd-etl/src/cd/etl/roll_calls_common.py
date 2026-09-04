@@ -12,14 +12,11 @@ extraction stays in each DAG module.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import requests
 
 from cd.etl import bills_common
-
-logger = logging.getLogger(__name__)
 
 # House roll calls report Aye/No ("Recorded Vote") or Yea/Nay
 # ("Yea-and-Nay"); Senate roll calls report Yea/Nay/Present/Not Voting.
