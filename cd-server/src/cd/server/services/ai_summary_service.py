@@ -1,15 +1,19 @@
 """Stores and serves back AI-generated summaries -- general-purpose, not
 voting-record-specific (see migrations/versions/0002_ai_summaries.py's
-own docstring on `kind`/`subject`). This is the storage half only --
-AiSummaryClient (thin, owns the ai_summaries connection pool and raw
-SQL, no prompt/Bedrock knowledge -- same role/shape as UsersClient) and
-AiSummaryService's history() read path. Prompt composition + the actual
-Bedrock call (a kind-specific generate(), e.g. for voting-record
-summaries) land in a follow-up once the Bedrock side exists; this PR is
-independently testable without either.
+own docstring on `kind`/`subject`). AiSummaryClient is the storage half
+(thin, owns the ai_summaries connection pool and raw SQL, no prompt/
+Bedrock knowledge -- same role/shape as UsersClient). AiSummaryService is
+where the two live: a kind-agnostic history() read path, plus the one
+kind this repo actually generates today, voting-record summaries
+(generate_voting_record_summary() -- prompt composition + the Bedrock
+Converse call + persisting the result). A future kind (e.g. a bill's
+legislative evolution) gets its own generate_*() method here, not a
+generic one -- each kind's prompt/inputs are different enough that a
+shared "generate" abstraction would just be indirection.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +22,9 @@ from typing import Any
 import asyncpg
 
 from cd.server import settings
+from cd.server.services.bedrock_chat_service import BedrockChatClient, get_bedrock_chat_client
+from cd.server.services.bill_search_service import BillResult, BillSearchService
+from cd.server.services.cd_api_service import CdApiService
 
 
 @dataclass(frozen=True)
@@ -148,14 +155,119 @@ class AiSummaryClient:
         return [_record(row) for row in rows]
 
 
-class AiSummaryService:
-    """What schema.py's resolvers depend on. Storage-only for now --
-    generate() (prompt composition + the Bedrock Converse call, for
-    whichever kind a follow-up PR adds first) lands alongside the
-    Bedrock client itself."""
+# The exact, validated system prompt for kind="voting_record" -- iterated
+# on and tested against a real searchBills(bioguideId, q) response before
+# landing here; treat as fixed text, not a place to improvise wording.
+# Stored per-row in ai_summaries.prompt_template on generation (see the
+# migration's own docstring for why: correlating a later wording change
+# against output quality, without needing a prompt_templates table yet).
+_VOTING_RECORD_SYSTEM_PROMPT = """\
+You are a neutral, nonpartisan legislative-research assistant. You summarize
+a member of Congress's voting record using ONLY the JSON data provided in
+the user message — no outside knowledge about the member, the bills, or the
+topic. If the data doesn't support a claim, don't make it.
 
-    def __init__(self, client: AiSummaryClient):
+Field meanings you must respect:
+- `matches[].via`: how this bill matched the search topic. "policy_area" or
+  "subject" means an exact controlled-vocabulary match (high confidence).
+  "summary" means semantic similarity to the bill's CRS summary (lower
+  confidence — the bill may only be tangentially related; check the title
+  and summary yourself before treating it as on-topic).
+- `votes`: this member's cast positions on this bill. An EMPTY array means
+  the bill matched the search topic but the member has NO recorded vote on
+  it — state this explicitly per bill, never omit the bill or invent a vote.
+- `voteQuestion`: distinguish procedural questions (e.g. "On Motion to
+  Recommit", "On Ordering the Previous Question") from substantive ones
+  (e.g. "On Passage", "On the Resolution"). A motion to recommit is
+  typically a parliamentary tactic — often used to try to amend or kill a
+  bill before final passage — NOT a vote on the bill's content. Never
+  describe a motion-to-recommit vote as if it were a vote on the bill
+  itself; report it as its own line with its own label.
+
+Output format — be terse. One line per bill, no restated CRS text beyond
+a 5-8 word gloss. State each rule (MTR = procedural, "summary" match =
+lower confidence) ONCE, up top, not per bill:
+
+1. One sentence: overall pattern on substantive votes only.
+2. One line per bill: "<vote> — <bill id>, <title> (<5-8 word gloss>), <date>"
+   Tag with "*" if via=summary and the title suggests it's off-topic.
+3. One line noting any procedural (MTR) votes exist and how they went,
+   without repeating them per bill.
+4. One line: data covers only House-voted bills matching by similarity.
+
+Do not speculate about motive. Do not characterize the member's overall
+stance on the topic as a value judgment (e.g. "supports/opposes X rights")
+— describe only the specific legislative actions in the data.\
+"""
+
+
+# `topic` is caller-supplied free text and lands in the natural-language
+# instruction sentence _build_user_prompt() wraps around the JSON block
+# (i.e. outside the data the system prompt is told to trust) -- a length
+# cap bounds a prompt-injection attempt. Not a charset restriction: a
+# real topic legitimately carries punctuation and non-ASCII, and the
+# blast radius here is only the caller's own generated/stored summary.
+# 200 chars is well clear of any genuine search topic.
+_MAX_TOPIC_LEN = 200
+
+
+def _bill_to_json(bill: BillResult) -> dict[str, Any]:
+    # The exact shape searchBills returns over GraphQL (camelCase keys) --
+    # the prompt was designed and validated against that response, and
+    # this doubles as ai_summaries.subject's stored snapshot (see the
+    # migration's own docstring on its dual purpose), so it needs to
+    # match byte-for-byte, not just carry equivalent information.
+    return {
+        "billKey": bill.bill_key,
+        "congress": bill.congress,
+        "billType": bill.bill_type,
+        "billNumber": bill.bill_number,
+        "title": bill.title,
+        "policyArea": bill.policy_area,
+        "crsSummary": bill.crs_summary,
+        "matches": bill.matches,
+        "votes": [
+            {
+                "voteCast": vote.vote_cast,
+                "voteQuestion": vote.vote_question,
+                "result": vote.result,
+                "voteDate": vote.vote_date.isoformat(),
+            }
+            for vote in bill.votes
+        ],
+    }
+
+
+def _display_name(first_name: str | None, last_name: str | None, bioguide_id: str) -> str:
+    # Simplest correct name for prompt substitution -- nickname/suffix
+    # composition can be added later if a generated summary reads oddly
+    # for a member who goes by one; not load-bearing for correctness
+    # today. Falls back to the bioguide id in the (effectively never, for
+    # a sitting/current-Congress member) case both name fields are null,
+    # rather than producing "None None".
+    name = " ".join(part for part in (first_name, last_name) if part)
+    return name or bioguide_id
+
+
+def _build_user_prompt(member_name: str, topic: str, bills_json: list[dict[str, Any]]) -> str:
+    payload = json.dumps(bills_json, indent=2)
+    return f'Summarize {member_name}\'s voting record on "{topic}" using this data:\n\n{payload}'
+
+
+class AiSummaryService:
+    """What schema.py's resolvers depend on."""
+
+    def __init__(
+        self,
+        client: AiSummaryClient,
+        cd_api: CdApiService,
+        bill_search: BillSearchService,
+        chat: BedrockChatClient,
+    ):
         self._client = client
+        self._cd_api = cd_api
+        self._bill_search = bill_search
+        self._chat = chat
 
     async def connect(self) -> None:
         await self._client.connect()
@@ -166,6 +278,69 @@ class AiSummaryService:
     async def history(self, user_id: str, limit: int = 20) -> list[AiSummaryRecord]:
         return await self._client.fetch_history(user_id, limit)
 
+    async def generate_voting_record_summary(
+        self, user_id: str, bioguide_id: str, topic: str, limit: int = 10
+    ) -> AiSummaryRecord:
+        """Resolves the member's display name and this topic's matched
+        bills+votes (the same data searchBills(bioguideId, topic, limit)
+        itself returns) concurrently, composes the validated prompt,
+        calls Bedrock, and stores the result. Always generates fresh --
+        no caching/dedup of repeat identical requests, so every call
+        produces a new row (see the migration's own docstring on why
+        that matters for usage insight).
 
-def get_ai_summary_service() -> AiSummaryService:
-    return AiSummaryService(AiSummaryClient(settings.PG_DSN))
+        An unknown bioguide_id surfaces as a GraphQL error once wired up
+        (cd-api 404, from either the member-detail or the votes hop); a
+        Bedrock outage surfaces as BedrockConverseError. Neither is
+        caught here -- propagates raw to the caller, same "let it
+        propagate" style the rest of this schema uses. An over-long
+        `topic` is a ValueError, raised before any cd-api/Bedrock work.
+        """
+        if len(topic) > _MAX_TOPIC_LEN:
+            raise ValueError(
+                f"topic must be at most {_MAX_TOPIC_LEN} characters (got {len(topic)})"
+            )
+
+        # return_exceptions=True so a failure in one hop doesn't leave the
+        # other running as an orphan whose exception is never retrieved
+        # (asyncio logs "Task exception was never retrieved" for that, and
+        # the wasted cd-api calls keep going). gather waits for both, then
+        # we re-raise the first failure with its own type -- an
+        # asyncio.TaskGroup would cancel the sibling but wrap the error in
+        # an ExceptionGroup, changing what schema.py's resolver re-raises.
+        member_doc, bills = await asyncio.gather(
+            self._cd_api.member_detail(bioguide_id),
+            self._bill_search.search(bioguide_id, topic, limit),
+            return_exceptions=True,
+        )
+        for result in (member_doc, bills):
+            if isinstance(result, BaseException):
+                raise result
+
+        member_name = _display_name(
+            member_doc.data.attributes.first_name,
+            member_doc.data.attributes.last_name,
+            bioguide_id,
+        )
+        bills_json = [_bill_to_json(bill) for bill in bills]
+        subject = {"bioguideId": bioguide_id, "topic": topic, "bills": bills_json}
+        user_prompt = _build_user_prompt(member_name, topic, bills_json)
+
+        summary_text = await self._chat.converse(_VOTING_RECORD_SYSTEM_PROMPT, user_prompt)
+
+        return await self._client.insert_summary(
+            user_id,
+            "voting_record",
+            subject,
+            _VOTING_RECORD_SYSTEM_PROMPT,
+            summary_text,
+            self._chat.model_id,
+        )
+
+
+def get_ai_summary_service(
+    cd_api: CdApiService, bill_search: BillSearchService
+) -> AiSummaryService:
+    return AiSummaryService(
+        AiSummaryClient(settings.PG_DSN), cd_api, bill_search, get_bedrock_chat_client()
+    )

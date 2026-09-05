@@ -59,3 +59,18 @@ COGNITO_CLIENT_IDS = [
     for client_id in os.environ.get("COGNITO_CLIENT_IDS", "").split(",")
     if client_id.strip()
 ]
+
+# Anthropic Claude via Bedrock's Converse API (services/bedrock_chat_service.py),
+# for summarizeVotingRecord. A cross-region inference profile id (the
+# "us."-prefixed form), not a bare on-demand model id -- Anthropic
+# models on Bedrock generally require invoking via an inference profile.
+# No hardcoded default: which profile id is valid depends on what's
+# actually been granted model access in the target AWS account/region
+# (cd-infra Terraform, out of scope here). Unlike COGNITO_USER_POOL_ID/
+# CD_API_FUNCTION_NAME, there's no local-friendly "verification/feature
+# disabled" branch for this one -- get_bedrock_chat_client() still warns
+# and constructs the client rather than failing at import when
+# ENVIRONMENT is "local", since local dev genuinely needs real Bedrock
+# access to exercise this feature at all (the local-bedrock AWS profile
+# already set up for cd-etl's Titan embeddings is the precedent).
+BEDROCK_CHAT_MODEL_ID = os.environ.get("BEDROCK_CHAT_MODEL_ID", "")
