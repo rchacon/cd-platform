@@ -164,6 +164,23 @@ services:
       COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-}
       COGNITO_REGION: ${COGNITO_REGION:-}
       COGNITO_CLIENT_IDS: ${COGNITO_CLIENT_IDS:-}
+      # Anthropic Claude via Bedrock's Converse API
+      # (services/bedrock_chat_service.py) for the summarizeVotingRecord
+      # mutation. Same local-dev shape as cd-etl's own Bedrock block
+      # above: AWS_PROFILE names a profile in ~/.aws that assumes a small
+      # purpose-built role holding bedrock:InvokeModel -- NOT a profile
+      # whose own long-lived user directly holds the grant -- and ~/.aws
+      # is bind-mounted read-only below so boto3 in the container resolves
+      # it. All three empty by default: with CD_SERVER_ENVIRONMENT unset
+      # (-> "local"), get_bedrock_chat_client() only warns when
+      # BEDROCK_CHAT_MODEL_ID is missing rather than failing startup, so
+      # `make start-server` still needs zero AWS setup -- only
+      # summarizeVotingRecord itself fails if actually invoked. Set them
+      # via .env (BEDROCK_CHAT_MODEL_ID = a Bedrock cross-region inference
+      # profile id you have model access to) to exercise it locally.
+      AWS_PROFILE: ${AWS_PROFILE:-}
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      BEDROCK_CHAT_MODEL_ID: ${BEDROCK_CHAT_MODEL_ID:-}
     # host.docker.internal doesn't resolve by default on Linux (unlike
     # Docker Desktop's Mac/Windows builds) -- this is Docker's own
     # documented workaround (Engine 20.10+), needed for
@@ -186,6 +203,11 @@ services:
       # Same live-edit convenience as the src mount above, for the
       # cd-lib code this service also depends on.
       - ./cd-lib/src:/cd-lib/src
+      # Read-only ~/.aws so boto3 in the container can resolve AWS_PROFILE
+      # for the Bedrock Converse call -- same rationale and caveats as
+      # cd-etl's identical mount above (harmless if AWS_PROFILE is unset;
+      # Compose auto-creates an empty ~/.aws on a host that has none).
+      - ~/.aws:/root/.aws:ro
 
 volumes:
   postgres_data:
