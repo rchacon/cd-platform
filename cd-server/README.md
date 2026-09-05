@@ -33,6 +33,17 @@ The schema (`src/cd/server/schema.py`) currently exposes:
   searchBills(bioguideId: "K000401", q: "immigration") {
     billKey title matches votes { voteCast voteQuestion result voteDate }
   }
+  myAiSummaries(limit: 20) { id bioguideId query summary createdAt }  # auth required
+}
+```
+
+plus one mutation:
+
+```graphql
+mutation {
+  summarizeVotingRecord(bioguideId: "K000401", q: "immigration") {  # auth required
+    id bioguideId query summary createdAt
+  }
 }
 ```
 
@@ -267,6 +278,73 @@ an `Authorization` header to any of its GraphQL calls, so nothing upserts
 in practice until that's wired up there, separately. `cd-server` will
 still get its own API-key/billing management down the line -- not built
 yet.
+
+### AI voting-record summaries
+
+`summarizeVotingRecord(bioguideId!, q!, limit = 10): AiSummary!` --
+cd-server's first `Mutation` -- generates a short, nonpartisan AI summary
+of how one member voted on the bills matching a free-text topic, stores
+it, and returns it. `myAiSummaries(limit = 20): [AiSummary!]!` reads a
+caller's own past summaries back, newest first (for a "History" view).
+Both **require a verified caller**: the resolver reads
+`info.context["user_id"]` (the Cognito `sub` `app.py`'s `context_getter`
+puts there) and raises `NotAuthenticatedError` -- a normal GraphQL field
+error -- if it's `None`. This is cd-server's first auth-gated resolver;
+an actually-invalid token still 401s in `context_getter` before any
+resolver runs, unchanged.
+
+The work is `services/ai_summary_service.py`, same client/service split as
+the rest: `AiSummaryClient` is the thin storage half (its own `asyncpg`
+pool against `cd_customers`, the raw `ai_summaries` insert/select SQL, a
+`jsonb` type codec so the `subject` column binds/reads as a plain Python
+object), `AiSummaryService` owns the orchestration.
+`generate_voting_record_summary()` resolves the member's display name
+(`CdApiService.member_detail()`) and the topic's matched bills+votes
+(`BillSearchService.search()` -- the exact data `searchBills` returns)
+**concurrently**, composes a fixed, validated system prompt plus a
+user-turn wrapper around that bill JSON, calls Bedrock, and persists the
+result. The member name is always resolved server-side, never taken from
+the client; `q` is capped at 200 characters (a prompt-injection bound --
+it lands in the natural-language wrapper, outside the JSON the system
+prompt is told to trust). Every call generates fresh -- no dedup of
+repeat identical requests, which keeps the stored history honest as a
+usage signal.
+
+`ai_summaries` (migration `0002`) is deliberately **general-purpose**: a
+`kind` discriminator (`"voting_record"` today) plus a self-describing
+`subject` JSONB blob (`{"bioguideId", "topic", "bills": [...]}` for that
+kind -- the full `searchBills`-shaped bill data, enough for a read-only
+"History" view to re-render the same results without re-running a
+now-drifted search), so a future summary type needs no schema change. The
+verbatim system prompt is snapshotted per row (`prompt_template`) so a
+later wording change can be correlated against output quality without a
+`prompt_templates` table yet; `model_id` is per-row too. The GraphQL
+`AiSummary` type stays flat and voting-record-shaped for now -- the
+resolver reads `bioguideId`/`query` out of `subject`, and `myAiSummaries`
+filters to `kind == "voting_record"` -- a polymorphic shape is a later
+problem, once a second kind exists.
+
+Generation calls **AWS Bedrock's Converse API** with an Anthropic Claude
+model (`services/bedrock_chat_service.py`'s `BedrockChatClient`, the sync
+`boto3` call wrapped in `asyncio.to_thread()`, same as `LambdaApiClient`;
+it stays cd-server-local rather than moving into `cd-lib`, which is for
+code with a second real consumer -- only `cd.lib.bedrock.build_bedrock_client()`
+is reused). It rejects a truncated (`stopReason == "max_tokens"`) or
+empty completion rather than storing a partial summary as if finished.
+The model is `settings.BEDROCK_CHAT_MODEL_ID` -- a Bedrock cross-region
+inference profile id, **no hardcoded default**. Unlike
+`COGNITO_USER_POOL_ID`, an unset value doesn't get a "feature disabled"
+branch: `get_bedrock_chat_client()` still warns and constructs the client
+when `CD_SERVER_ENVIRONMENT` is `"local"` (so `make start-server` keeps
+its zero-AWS-setup promise -- `summarizeVotingRecord` just fails if
+actually invoked), but **any other environment raises at import** if it's
+unset, same fail-fast as `get_cd_api_service()`. That means the
+production task definition must set `BEDROCK_CHAT_MODEL_ID` (and its task
+role must hold `bedrock:InvokeModel` for that model, with a 443 egress
+path to `bedrock-runtime`) *before* this ships -- tracked in cd-infra#69.
+Locally, set `BEDROCK_CHAT_MODEL_ID` plus `AWS_PROFILE`/`AWS_REGION` in
+`.env` (the `~/.aws` read-only mount and the same assumable-role pattern
+cd-etl already uses for Titan embeddings) to exercise it end to end.
 
 ### Calling cd-api locally
 

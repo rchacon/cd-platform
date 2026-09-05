@@ -139,17 +139,27 @@ class AiSummaryClient:
             created_at=row["created_at"],
         )
 
-    async def fetch_history(self, user_id: str, limit: int) -> list[AiSummaryRecord]:
+    async def fetch_history(
+        self, user_id: str, limit: int, kind: str | None = None
+    ) -> list[AiSummaryRecord]:
         assert self._pool is not None, "AiSummaryClient.connect() was never called"
+        # kind (when given) is filtered in SQL, not by the caller after the
+        # fetch -- otherwise LIMIT counts rows of every kind, and a
+        # kind-scoped caller (myAiSummaries) silently gets back fewer than
+        # `limit` once a second kind is ever stored, with no way to page
+        # to the rest. $2::text so asyncpg can type the parameter in the
+        # `IS NULL` branch (nothing else constrains it there).
         rows = await self._pool.fetch(
             """
             SELECT ai_summary_id, kind, subject, prompt_template, summary, model_id, created_at
             FROM ai_summaries
             WHERE user_id = $1
+              AND ($2::text IS NULL OR kind = $2)
             ORDER BY created_at DESC
-            LIMIT $2
+            LIMIT $3
             """,
             user_id,
+            kind,
             limit,
         )
         return [_record(row) for row in rows]
@@ -275,8 +285,10 @@ class AiSummaryService:
     async def aclose(self) -> None:
         await self._client.close()
 
-    async def history(self, user_id: str, limit: int = 20) -> list[AiSummaryRecord]:
-        return await self._client.fetch_history(user_id, limit)
+    async def history(
+        self, user_id: str, limit: int = 20, kind: str | None = None
+    ) -> list[AiSummaryRecord]:
+        return await self._client.fetch_history(user_id, limit, kind)
 
     async def generate_voting_record_summary(
         self, user_id: str, bioguide_id: str, topic: str, limit: int = 10

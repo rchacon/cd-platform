@@ -8,6 +8,7 @@ from cd.server import settings
 from cd.server.schema import (
     GRAPHIQL_ENABLED,
     VERSION,
+    ai_summary_service,
     cd_api_service,
     geocoder_service,
     schema,
@@ -18,12 +19,13 @@ from cd.server.services.users_service import InvalidTokenError
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # users_service's connection pool is the one thing here that must be
-    # opened before serving any request, not just closed after the last
-    # one -- unlike cd_api_service/geocoder_service, whose pools open
+    # users_service and ai_summary_service each hold an asyncpg pool that
+    # must be opened before serving any request, not just closed after the
+    # last one -- unlike cd_api_service/geocoder_service, whose pools open
     # synchronously at import time (see schema.py), asyncpg.create_pool()
     # is a coroutine and has no synchronous equivalent.
     await users_service.connect()
+    await ai_summary_service.connect()
     yield
     # cd_api_service's aclose() delegates to its underlying ApiClient
     # (HttpApiClient holds an open httpx.AsyncClient connection pool;
@@ -34,6 +36,7 @@ async def lifespan(app: FastAPI):
     await cd_api_service.aclose()
     await geocoder_service.aclose()
     await users_service.aclose()
+    await ai_summary_service.aclose()
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)
