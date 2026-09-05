@@ -800,3 +800,47 @@ def test_my_ai_summaries_returns_only_the_callers_voting_record_summaries(client
     ]
     # the caller's verified sub, and kind scoped to voting_record in the query
     assert seen["args"] == ("cognito-sub-123", 5, "voting_record")
+
+
+def test_my_ai_summaries_clamps_a_negative_limit(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+    seen = {}
+
+    async def fake_history(user_id, limit, kind=None):
+        seen["limit"] = limit
+        return []
+
+    monkeypatch.setattr(ai_summary_service, "history", fake_history)
+
+    response = client.post(
+        "/graphql",
+        json={"query": "{ myAiSummaries(limit: -1) { id } }"},
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {"myAiSummaries": []}
+    assert seen["limit"] == 1  # clamped before it reaches Postgres LIMIT
+
+
+def test_summarize_voting_record_clamps_a_negative_limit(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+    seen = {}
+
+    async def fake_generate(user_id, bioguide_id, q, limit):
+        seen["limit"] = limit
+        return _AI_SUMMARY_RECORD
+
+    monkeypatch.setattr(ai_summary_service, "generate_voting_record_summary", fake_generate)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": (
+                'mutation { summarizeVotingRecord(bioguideId: "K1", q: "x", limit: -5) '
+                "{ id } }"
+            )
+        },
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+    assert response.status_code == 200
+    assert seen["limit"] == 1  # clamped before BillSearchService.search()'s min(limit, 50)

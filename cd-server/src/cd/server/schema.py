@@ -194,6 +194,16 @@ def _to_ai_summary(record: AiSummaryRecord) -> AiSummary:
     )
 
 
+def _clamp_limit(limit: int) -> int:
+    # A negative `limit` otherwise reaches Postgres `LIMIT` (a runtime
+    # "must not be negative" error) or, via BillSearchService.search()'s
+    # min(limit, 50), cd-api's page[size] as a negative. Floor at 1 --
+    # 0 rows is a pointless call, negative is nonsense. No upper cap here
+    # (cd-api caps page[size] itself; myAiSummaries is bounded by rows
+    # that exist), matching discoverBills/searchBills.
+    return max(1, limit)
+
+
 @strawberry.type
 class State:
     abbr: str
@@ -294,7 +304,9 @@ class Query:
         user_id = info.context["user_id"]
         if user_id is None:
             raise NotAuthenticatedError("myAiSummaries requires authentication")
-        records = await ai_summary_service.history(user_id, limit, kind="voting_record")
+        records = await ai_summary_service.history(
+            user_id, _clamp_limit(limit), kind="voting_record"
+        )
         return [_to_ai_summary(r) for r in records]
 
 
@@ -321,7 +333,7 @@ class Mutation:
         if user_id is None:
             raise NotAuthenticatedError("summarizeVotingRecord requires authentication")
         record = await ai_summary_service.generate_voting_record_summary(
-            user_id, bioguide_id, q, limit
+            user_id, bioguide_id, q, _clamp_limit(limit)
         )
         return _to_ai_summary(record)
 
