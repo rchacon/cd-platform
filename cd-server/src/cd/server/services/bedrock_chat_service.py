@@ -72,10 +72,30 @@ class BedrockChatClient:
         except (ClientError, BotoCoreError) as e:
             raise BedrockConverseError(f"Bedrock Converse call failed: {e}") from e
 
+        # A generation that hit the maxTokens ceiling is cut off
+        # mid-sentence -- AiSummaryService persists whatever comes back as
+        # a finished summary, so a truncated one has to fail loudly here
+        # rather than land in the DB looking complete. "end_turn"/
+        # "stop_sequence" are the healthy stops; "max_tokens" is the one
+        # that means "there was more to say" (raise _MAX_TOKENS, or move
+        # to a model/prompt that fits, if this starts firing).
+        if response.get("stopReason") == "max_tokens":
+            raise BedrockConverseError(
+                f"Bedrock Converse response truncated at maxTokens={_MAX_TOKENS} "
+                "(stopReason=max_tokens) -- refusing to store a partial summary"
+            )
+
         try:
-            return response["output"]["message"]["content"][0]["text"]
+            text = response["output"]["message"]["content"][0]["text"]
         except (KeyError, IndexError, TypeError) as e:
             raise BedrockConverseError(f"Malformed Bedrock Converse response: {e}") from e
+
+        # An all-whitespace/empty completion (a content filter firing, a
+        # model returning nothing) is not a usable summary -- same "don't
+        # persist it as success" reasoning as the truncation check above.
+        if not text.strip():
+            raise BedrockConverseError("Bedrock Converse returned an empty completion")
+        return text
 
 
 def get_bedrock_chat_client() -> BedrockChatClient:

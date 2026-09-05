@@ -23,8 +23,11 @@ class _FakeBedrockClient:
         return self._response
 
 
-def _response(text: str) -> dict:
-    return {"output": {"message": {"content": [{"text": text}]}}}
+def _response(text: str, stop_reason: str = "end_turn") -> dict:
+    return {
+        "output": {"message": {"content": [{"text": text}]}},
+        "stopReason": stop_reason,
+    }
 
 
 def test_converse_returns_the_generated_text():
@@ -82,6 +85,27 @@ def test_converse_raises_on_malformed_response_instead_of_a_raw_keyerror(malform
     client = BedrockChatClient(fake, "anthropic.claude-3-5-haiku")
 
     with pytest.raises(BedrockConverseError, match="Malformed Bedrock Converse response"):
+        asyncio.run(client.converse("s", "u"))
+
+
+def test_converse_raises_when_the_generation_was_truncated_at_max_tokens():
+    # stopReason=max_tokens -> the text is cut off mid-sentence; must not
+    # be returned (and then persisted) as a complete summary.
+    fake = _FakeBedrockClient(
+        response=_response("Voted NAY on HR 1, then AYE on HR 2, then", stop_reason="max_tokens")
+    )
+    client = BedrockChatClient(fake, "anthropic.claude-3-5-haiku")
+
+    with pytest.raises(BedrockConverseError, match="truncated at maxTokens"):
+        asyncio.run(client.converse("s", "u"))
+
+
+@pytest.mark.parametrize("empty_text", ["", "   ", "\n\t"])
+def test_converse_raises_on_an_empty_completion(empty_text):
+    fake = _FakeBedrockClient(response=_response(empty_text))
+    client = BedrockChatClient(fake, "anthropic.claude-3-5-haiku")
+
+    with pytest.raises(BedrockConverseError, match="empty completion"):
         asyncio.run(client.converse("s", "u"))
 
 
