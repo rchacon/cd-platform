@@ -201,6 +201,16 @@ stance on the topic as a value judgment (e.g. "supports/opposes X rights")
 """
 
 
+# `topic` is caller-supplied free text and lands in the natural-language
+# instruction sentence _build_user_prompt() wraps around the JSON block
+# (i.e. outside the data the system prompt is told to trust) -- a length
+# cap bounds a prompt-injection attempt. Not a charset restriction: a
+# real topic legitimately carries punctuation and non-ASCII, and the
+# blast radius here is only the caller's own generated/stored summary.
+# 200 chars is well clear of any genuine search topic.
+_MAX_TOPIC_LEN = 200
+
+
 def _bill_to_json(bill: BillResult) -> dict[str, Any]:
     # The exact shape searchBills returns over GraphQL (camelCase keys) --
     # the prompt was designed and validated against that response, and
@@ -283,8 +293,14 @@ class AiSummaryService:
         (cd-api 404, from either the member-detail or the votes hop); a
         Bedrock outage surfaces as BedrockConverseError. Neither is
         caught here -- propagates raw to the caller, same "let it
-        propagate" style the rest of this schema uses.
+        propagate" style the rest of this schema uses. An over-long
+        `topic` is a ValueError, raised before any cd-api/Bedrock work.
         """
+        if len(topic) > _MAX_TOPIC_LEN:
+            raise ValueError(
+                f"topic must be at most {_MAX_TOPIC_LEN} characters (got {len(topic)})"
+            )
+
         # return_exceptions=True so a failure in one hop doesn't leave the
         # other running as an orphan whose exception is never retrieved
         # (asyncio logs "Task exception was never retrieved" for that, and

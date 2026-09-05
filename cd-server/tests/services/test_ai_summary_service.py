@@ -460,6 +460,27 @@ def test_generate_voting_record_summary_propagates_bedrock_failure():
         asyncio.run(service.generate_voting_record_summary("user-1", "K000401", "immigration"))
 
 
+def test_generate_voting_record_summary_rejects_an_over_long_topic():
+    from cd.server.services.ai_summary_service import _MAX_TOPIC_LEN
+
+    cd_api = _FakeCdApi()
+    bill_search = _FakeBillSearch([_BILL_WITH_VOTE])
+    chat = _FakeChat()
+    service = AiSummaryService(_FakeInsertOnlyClient(), cd_api, bill_search, chat)
+
+    with pytest.raises(ValueError, match="topic must be at most"):
+        asyncio.run(
+            service.generate_voting_record_summary(
+                "user-1", "K000401", "x" * (_MAX_TOPIC_LEN + 1)
+            )
+        )
+
+    # Rejected before any cd-api/Bedrock work.
+    assert cd_api.calls == []
+    assert bill_search.calls == []
+    assert chat.calls == []
+
+
 def test_generate_voting_record_summary_raises_a_single_error_when_both_hops_fail():
     # Both concurrent hops fail -- gather(return_exceptions=True) means
     # neither is left as an orphaned task ("Task exception was never
