@@ -294,8 +294,8 @@ class Query:
         user_id = info.context["user_id"]
         if user_id is None:
             raise NotAuthenticatedError("myAiSummaries requires authentication")
-        records = await ai_summary_service.history(user_id, limit)
-        return [_to_ai_summary(r) for r in records if r.kind == "voting_record"]
+        records = await ai_summary_service.history(user_id, limit, kind="voting_record")
+        return [_to_ai_summary(r) for r in records]
 
 
 @strawberry.type

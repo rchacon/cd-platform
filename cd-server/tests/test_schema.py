@@ -738,9 +738,13 @@ def test_my_ai_summaries_returns_only_the_callers_voting_record_summaries(client
     )
     seen = {}
 
-    async def fake_history(user_id, limit):
-        seen["args"] = (user_id, limit)
-        return [other_kind, _AI_SUMMARY_RECORD]
+    async def fake_history(user_id, limit, kind=None):
+        # Mimics the SQL `AND ($2 IS NULL OR kind = $2)` filter -- the
+        # resolver delegates the kind scoping to the service, not applied
+        # here after the fact (so LIMIT counts only returned rows).
+        seen["args"] = (user_id, limit, kind)
+        rows = [other_kind, _AI_SUMMARY_RECORD]
+        return [r for r in rows if kind is None or r.kind == kind]
 
     monkeypatch.setattr(ai_summary_service, "history", fake_history)
 
@@ -751,9 +755,8 @@ def test_my_ai_summaries_returns_only_the_callers_voting_record_summaries(client
     )
 
     assert response.status_code == 200
-    # the bill_evolution row is filtered out -- only kind="voting_record"
-    # is exposed on this surface for now
     assert response.json()["data"]["myAiSummaries"] == [
         {"id": "42", "bioguideId": "K000401", "query": "immigration"}
     ]
-    assert seen["args"] == ("cognito-sub-123", 5)
+    # the caller's verified sub, and kind scoped to voting_record in the query
+    assert seen["args"] == ("cognito-sub-123", 5, "voting_record")
