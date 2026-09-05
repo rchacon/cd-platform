@@ -724,6 +724,46 @@ def test_my_ai_summaries_requires_authentication(client):
     assert "requires authentication" in response.json()["errors"][0]["message"]
 
 
+def test_not_authenticated_error_is_not_logged_as_a_server_error(client, caplog):
+    # A routine "not signed in" state must not produce an ERROR log +
+    # traceback (Strawberry's default process_errors would) -- it'd be
+    # steady alert noise once cd-webapp renders a History view for
+    # logged-out visitors.
+    import logging
+
+    with caplog.at_level(logging.ERROR, logger="strawberry.execution"):
+        response = client.post("/graphql", json={"query": "{ myAiSummaries { id } }"})
+
+    assert "requires authentication" in response.json()["errors"][0]["message"]
+    assert [r for r in caplog.records if r.name == "strawberry.execution"] == []
+
+
+def test_a_genuine_resolver_error_is_still_logged(client, caplog, monkeypatch):
+    # The process_errors override only silences NotAuthenticatedError --
+    # a real upstream failure still logs.
+    import logging
+
+    from cd.server.services.cd_api_service import ApiClientError
+
+    _as_verified_user(monkeypatch)
+
+    async def fake_generate(user_id, bioguide_id, q, limit):
+        raise ApiClientError(502, "cd-api unreachable")
+
+    monkeypatch.setattr(ai_summary_service, "generate_voting_record_summary", fake_generate)
+
+    with caplog.at_level(logging.ERROR, logger="strawberry.execution"):
+        client.post(
+            "/graphql",
+            json={
+                "query": 'mutation { summarizeVotingRecord(bioguideId: "K1", q: "x") { id } }'
+            },
+            headers={"Authorization": "Bearer a.b.c"},
+        )
+
+    assert [r for r in caplog.records if r.name == "strawberry.execution"] != []
+
+
 def test_my_ai_summaries_returns_only_the_callers_voting_record_summaries(client, monkeypatch):
     _as_verified_user(monkeypatch)
 

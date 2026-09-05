@@ -326,7 +326,26 @@ class Mutation:
         return _to_ai_summary(record)
 
 
-schema = strawberry.Schema(
+class _Schema(strawberry.Schema):
+    """Strawberry's default `process_errors` logs every GraphQL field
+    error at ERROR with a full traceback. `NotAuthenticatedError` is a
+    routine "caller isn't signed in" signal, not a server fault -- an
+    anonymous hit on `myAiSummaries` (e.g. cd-webapp rendering a History
+    view for a logged-out visitor) shouldn't spew ERROR logs or trip
+    alerts. Every other error still logs exactly as before -- an
+    `ApiClientError` is a genuine upstream failure worth seeing."""
+
+    def process_errors(self, errors, execution_context=None):
+        loud = [
+            e
+            for e in errors
+            if not isinstance(getattr(e, "original_error", None), NotAuthenticatedError)
+        ]
+        if loud:
+            super().process_errors(loud, execution_context)
+
+
+schema = _Schema(
     query=Query,
     mutation=Mutation,
     extensions=[] if GRAPHIQL_ENABLED else [DisableIntrospection],
