@@ -285,10 +285,22 @@ class AiSummaryService:
         caught here -- propagates raw to the caller, same "let it
         propagate" style the rest of this schema uses.
         """
+        # return_exceptions=True so a failure in one hop doesn't leave the
+        # other running as an orphan whose exception is never retrieved
+        # (asyncio logs "Task exception was never retrieved" for that, and
+        # the wasted cd-api calls keep going). gather waits for both, then
+        # we re-raise the first failure with its own type -- an
+        # asyncio.TaskGroup would cancel the sibling but wrap the error in
+        # an ExceptionGroup, changing what schema.py's resolver re-raises.
         member_doc, bills = await asyncio.gather(
             self._cd_api.member_detail(bioguide_id),
             self._bill_search.search(bioguide_id, topic, limit),
+            return_exceptions=True,
         )
+        for result in (member_doc, bills):
+            if isinstance(result, BaseException):
+                raise result
+
         member_name = _display_name(
             member_doc.data.attributes.first_name,
             member_doc.data.attributes.last_name,

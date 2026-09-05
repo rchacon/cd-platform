@@ -458,3 +458,17 @@ def test_generate_voting_record_summary_propagates_bedrock_failure():
 
     with pytest.raises(BedrockConverseError):
         asyncio.run(service.generate_voting_record_summary("user-1", "K000401", "immigration"))
+
+
+def test_generate_voting_record_summary_raises_a_single_error_when_both_hops_fail():
+    # Both concurrent hops fail -- gather(return_exceptions=True) means
+    # neither is left as an orphaned task ("Task exception was never
+    # retrieved"); one plain exception propagates, not an ExceptionGroup.
+    from cd.server.services.cd_api_service import ApiClientError
+
+    cd_api = _FakeCdApi(raises=ApiClientError(404, "no such member"))
+    bill_search = _FakeBillSearch([], raises=ApiClientError(503, "search unavailable"))
+    service = AiSummaryService(_FakeInsertOnlyClient(), cd_api, bill_search, _FakeChat())
+
+    with pytest.raises(ApiClientError):
+        asyncio.run(service.generate_voting_record_summary("user-1", "K000401", "immigration"))
