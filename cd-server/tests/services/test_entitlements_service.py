@@ -30,17 +30,23 @@ _NEXT_DAY = datetime(2026, 9, 7, tzinfo=timezone.utc)
 
 
 class _FakeAiSummaryService:
-    def __init__(self, user_count=0, global_count=0):
+    def __init__(self, user_count=0, global_count=0, user_raises=None, global_raises=None):
         self._user_count = user_count
         self._global_count = global_count
+        self._user_raises = user_raises
+        self._global_raises = global_raises
         self.calls: list[tuple] = []
 
     async def count_by_user_since(self, user_id, since, kind=None):
         self.calls.append(("user", user_id, since, kind))
+        if self._user_raises is not None:
+            raise self._user_raises
         return self._user_count
 
     async def count_global_since(self, since, kind=None):
         self.calls.append(("global", since, kind))
+        if self._global_raises is not None:
+            raise self._global_raises
         return self._global_count
 
 
@@ -123,6 +129,23 @@ def test_a_non_positive_global_limit_disables_that_cap():
     )
     assert status.enabled is True
     assert status.reason is None
+
+
+@pytest.mark.parametrize("which", ["user", "global"])
+def test_status_propagates_a_failing_count_query_with_its_own_type(which):
+    boom = RuntimeError("cd_customers hiccup")
+    svc = EntitlementsService(
+        _FakeAiSummaryService(
+            user_raises=boom if which == "user" else None,
+            global_raises=boom if which == "global" else None,
+        ),
+        per_user_daily_limit=10,
+        global_daily_limit=100,
+    )
+    # the raw RuntimeError, not an ExceptionGroup (return_exceptions=True
+    # + re-raise, so the sibling isn't orphaned either)
+    with pytest.raises(RuntimeError, match="cd_customers hiccup"):
+        asyncio.run(svc.ai_summary_status("u1", now=_NOW))
 
 
 def test_features_returns_the_ai_summary_status():
