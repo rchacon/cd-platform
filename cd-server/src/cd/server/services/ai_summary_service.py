@@ -164,6 +164,24 @@ class AiSummaryClient:
         )
         return [_record(row) for row in rows]
 
+    async def count_since(self, since: datetime, user_id: str | None = None) -> int:
+        """Rows created at or after `since`. `user_id` None -> across all
+        callers (the global daily cap); given -> just that caller (the
+        per-user cap). Same `$2::text IS NULL OR ...` idiom as
+        fetch_history() -- the global path hits idx_ai_summaries_created_at
+        (0003), the per-user path idx_ai_summaries_user_created (0002)."""
+        assert self._pool is not None, "AiSummaryClient.connect() was never called"
+        return await self._pool.fetchval(
+            """
+            SELECT count(*)
+            FROM ai_summaries
+            WHERE created_at >= $1
+              AND ($2::text IS NULL OR user_id = $2)
+            """,
+            since,
+            user_id,
+        )
+
 
 # The exact, validated system prompt for kind="voting_record" -- iterated
 # on and tested against a real searchBills(bioguideId, q) response before
@@ -289,6 +307,17 @@ class AiSummaryService:
         self, user_id: str, limit: int = 20, kind: str | None = None
     ) -> list[AiSummaryRecord]:
         return await self._client.fetch_history(user_id, limit, kind)
+
+    async def count_by_user_since(self, user_id: str, since: datetime) -> int:
+        """How many summaries this caller has generated at/after `since`.
+        Backs EntitlementsService's per-user daily cap -- this layer picks
+        no window, just counts."""
+        return await self._client.count_since(since, user_id)
+
+    async def count_global_since(self, since: datetime) -> int:
+        """How many summaries all callers have generated at/after `since`.
+        Backs EntitlementsService's global daily cost ceiling."""
+        return await self._client.count_since(since)
 
     async def generate_voting_record_summary(
         self, user_id: str, bioguide_id: str, topic: str, limit: int = 10

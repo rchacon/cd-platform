@@ -74,3 +74,16 @@ COGNITO_CLIENT_IDS = [
 # access to exercise this feature at all (the local-bedrock AWS profile
 # already set up for cd-etl's Titan embeddings is the precedent).
 BEDROCK_CHAT_MODEL_ID = os.environ.get("BEDROCK_CHAT_MODEL_ID", "")
+
+# Daily caps on the summarizeVotingRecord mutation (cd-platform#169),
+# enforced by services/entitlements_service.py and reported by the
+# `features` query. Both count ai_summaries rows on the current UTC
+# calendar day -- one per caller, one across all callers (a cost
+# ceiling, since every generation is a real Bedrock spend). `0` (or
+# negative) disables that cap -- handy for local dev iterating on the
+# feature. Low defaults are a deliberate hard lid while the feature is
+# new; prod tunes these via the task-def env, same plain-read pattern as
+# BEDROCK_CHAT_MODEL_ID (sane defaults so make start-server / tests need
+# nothing set).
+AI_SUMMARY_FREE_TIER_DAILY_LIMIT = int(os.environ.get("AI_SUMMARY_FREE_TIER_DAILY_LIMIT", "10"))
+AI_SUMMARY_GLOBAL_DAILY_LIMIT = int(os.environ.get("AI_SUMMARY_GLOBAL_DAILY_LIMIT", "100"))

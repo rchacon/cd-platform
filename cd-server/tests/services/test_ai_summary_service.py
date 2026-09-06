@@ -35,10 +35,11 @@ _ROW = {
 
 
 class _FakePool:
-    def __init__(self, fetchrow_result=None, fetch_result=None):
+    def __init__(self, fetchrow_result=None, fetch_result=None, fetchval_result=None):
         self.calls: list[tuple] = []
         self._fetchrow_result = fetchrow_result
         self._fetch_result = fetch_result or []
+        self._fetchval_result = fetchval_result
 
     async def fetchrow(self, query, *args):
         self.calls.append(("fetchrow", query, args))
@@ -47,6 +48,10 @@ class _FakePool:
     async def fetch(self, query, *args):
         self.calls.append(("fetch", query, args))
         return self._fetch_result
+
+    async def fetchval(self, query, *args):
+        self.calls.append(("fetchval", query, args))
+        return self._fetchval_result
 
 
 def test_insert_summary_runs_expected_sql_and_returns_the_record():
@@ -136,6 +141,35 @@ def test_fetch_history_returns_empty_list_for_a_user_with_no_history():
     assert asyncio.run(client.fetch_history("user-1", 20)) == []
 
 
+_SINCE = datetime(2026, 9, 6, tzinfo=timezone.utc)
+
+
+def test_count_since_global_passes_null_user_id():
+    client = AiSummaryClient("postgresql://ignored")
+    client._pool = _FakePool(fetchval_result=7)
+
+    result = asyncio.run(client.count_since(_SINCE))
+
+    kind, query, args = client._pool.calls[0]
+    assert kind == "fetchval"
+    assert "SELECT count(*)" in query
+    assert "created_at >= $1" in query
+    assert "($2::text IS NULL OR user_id = $2)" in query
+    assert args == (_SINCE, None)  # None -> the IS NULL branch -> counts every caller
+    assert result == 7
+
+
+def test_count_since_per_user_passes_the_user_id():
+    client = AiSummaryClient("postgresql://ignored")
+    client._pool = _FakePool(fetchval_result=3)
+
+    result = asyncio.run(client.count_since(_SINCE, "user-1"))
+
+    _, _, args = client._pool.calls[0]
+    assert args == (_SINCE, "user-1")
+    assert result == 3
+
+
 def test_fetch_history_mixes_summary_kinds_for_one_user():
     # One History page across every summary type -- fetch_history doesn't
     # filter by kind.
@@ -191,11 +225,13 @@ def test_connect_registers_the_codec_hook_on_the_pool(monkeypatch):
 
 
 class _FakeAiSummaryClient:
-    def __init__(self, history_result=None):
+    def __init__(self, history_result=None, count_result=0):
         self.connected = False
         self.closed = False
         self.history_calls: list[tuple] = []
+        self.count_calls: list[tuple] = []
         self._history_result = history_result if history_result is not None else []
+        self._count_result = count_result
 
     async def connect(self) -> None:
         self.connected = True
@@ -206,6 +242,10 @@ class _FakeAiSummaryClient:
     async def fetch_history(self, user_id, limit, kind=None):
         self.history_calls.append((user_id, limit, kind))
         return self._history_result
+
+    async def count_since(self, since, user_id=None):
+        self.count_calls.append((since, user_id))
+        return self._count_result
 
 
 def test_ai_summary_service_connect_and_aclose_delegate_to_the_client():
@@ -249,6 +289,26 @@ def test_ai_summary_service_history_passes_kind_through_to_the_client():
     asyncio.run(service.history("user-1", limit=5, kind="voting_record"))
 
     assert client.history_calls == [("user-1", 5, "voting_record")]
+
+
+def test_ai_summary_service_count_by_user_since_delegates_with_the_user_id():
+    client = _FakeAiSummaryClient(count_result=4)
+    service = AiSummaryService(client, None, None, None)
+
+    result = asyncio.run(service.count_by_user_since("user-1", _SINCE))
+
+    assert client.count_calls == [(_SINCE, "user-1")]
+    assert result == 4
+
+
+def test_ai_summary_service_count_global_since_delegates_without_a_user_id():
+    client = _FakeAiSummaryClient(count_result=42)
+    service = AiSummaryService(client, None, None, None)
+
+    result = asyncio.run(service.count_global_since(_SINCE))
+
+    assert client.count_calls == [(_SINCE, None)]
+    assert result == 42
 
 
 def test_get_ai_summary_service_returns_a_wired_service(monkeypatch):
