@@ -34,6 +34,7 @@ The schema (`src/cd/server/schema.py`) currently exposes:
     billKey title matches votes { voteCast voteQuestion result voteDate }
   }
   myAiSummaries(limit: 20) { id bioguideId query summary createdAt }  # auth required
+  features { name enabled reason dailyLimit usedToday resetsAt }  # auth required
 }
 ```
 
@@ -345,6 +346,46 @@ path to `bedrock-runtime`) *before* this ships -- tracked in cd-infra#69.
 Locally, set `BEDROCK_CHAT_MODEL_ID` plus `AWS_PROFILE`/`AWS_REGION` in
 `.env` (the `~/.aws` read-only mount and the same assumable-role pattern
 cd-etl already uses for Titan embeddings) to exercise it end to end.
+
+#### Daily caps
+
+`summarizeVotingRecord` is gated by two daily limits (cd-platform#169) --
+every call is a real Bedrock spend, so there's a **per-user free-tier
+allowance** and a **global cost ceiling**, both counted on the UTC
+calendar day off `ai_summaries` row counts (scoped to
+`kind = 'voting_record'`). Defaults are `AI_SUMMARY_FREE_TIER_DAILY_LIMIT`
+= 10 and `AI_SUMMARY_GLOBAL_DAILY_LIMIT` = 100 -- deliberately low while
+the feature is new; prod tunes them via the task-def env, and `0`
+disables a cap (handy for local iteration).
+
+The logic is `services/entitlements_service.py`'s `EntitlementsService`,
+pure logic with no pool of its own -- it composes `AiSummaryService`'s two
+`count_*_since` methods (run concurrently) with the configured limits.
+`ai_summary_status()` returns a `FeatureStatus` (`enabled`, a `reason`
+slug when not -- `daily_limit_reached` vs `globally_unavailable` --
+`used_today`, `daily_limit`, `resets_at` = next UTC midnight). The global
+ceiling wins over a per-user hit, and hitting it emits a single WARN per
+UTC day per process.
+
+Two surfaces:
+
+- **`features` query** (`[Feature!]!`, auth-gated like `myAiSummaries`) --
+  what cd-webapp reads to show/hide the "Summarize with AI" affordance and
+  explain why (`{ name enabled reason dailyLimit usedToday resetsAt }`).
+  v1 returns exactly one entry, `ai_summary`.
+- **`summarizeVotingRecord`** calls `entitlements_service.require()` after
+  the auth check and before any cd-api/Bedrock work -- a gated caller gets
+  a `FeatureUnavailableError` GraphQL field error (not ERROR-logged, same
+  as `NotAuthenticatedError`). The server enforces this independently;
+  the query is only a UI hint.
+
+The count-then-generate-then-insert path isn't atomic, so concurrent
+requests can overshoot a cap by roughly the in-flight burst concurrency
+-- a bounded handful, acceptable for a cost guardrail (not a security
+control), same call cd-platform#169 made. A generation that fails (e.g. a
+Bedrock outage) inserts no row, so it doesn't count -- each failed
+attempt still costs an errored Bedrock call (negligible), and Bedrock
+throttles its own side.
 
 ### Calling cd-api locally
 

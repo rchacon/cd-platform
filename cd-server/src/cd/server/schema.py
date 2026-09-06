@@ -10,9 +10,16 @@ from cd.lib.version import read_version
 from strawberry.extensions import DisableIntrospection
 from strawberry.scalars import JSON
 
+from cd.server import settings
 from cd.server.services.ai_summary_service import AiSummaryRecord, get_ai_summary_service
 from cd.server.services.bill_search_service import BillResult, BillSearchService
 from cd.server.services.cd_api_service import get_cd_api_service
+from cd.server.services.entitlements_service import (
+    AI_SUMMARY,
+    EntitlementsService,
+    FeatureStatus,
+    FeatureUnavailableError,
+)
 from cd.server.services.geocoder_service import GeocoderService
 from cd.server.services.states_service import StatesService
 from cd.server.services.users_service import get_users_service
@@ -50,6 +57,15 @@ users_service = get_users_service()
 # get_cd_api_service()/get_users_service() already apply to their own
 # required config.
 ai_summary_service = get_ai_summary_service(cd_api_service, bill_search_service)
+# Pure logic over ai_summary_service's row counts + the configured daily
+# limits -- no pool of its own, so nothing to open/close in app.py's
+# lifespan. Reported by the `features` query and enforced by
+# summarizeVotingRecord (cd-platform#169).
+entitlements_service = EntitlementsService(
+    ai_summary_service,
+    settings.AI_SUMMARY_FREE_TIER_DAILY_LIMIT,
+    settings.AI_SUMMARY_GLOBAL_DAILY_LIMIT,
+)
 
 
 # Derived from cd-lib's Member model (cd_api_service flattens cd-api's
@@ -194,6 +210,35 @@ def _to_ai_summary(record: AiSummaryRecord) -> AiSummary:
     )
 
 
+@strawberry.type
+class Feature:
+    """One feature's availability for the calling user, right now -- from
+    EntitlementsService's FeatureStatus. `enabled` is the flag to branch
+    on; `reason` (a slug, null when enabled) tells "you've spent your
+    daily allowance" (`daily_limit_reached`) from "temporarily off for
+    everyone" (`globally_unavailable`); `usedToday`/`dailyLimit`/
+    `resetsAt` drive a "N of <limit> used, resets <time>" hint. v1 has
+    exactly one, `ai_summary` (the summarizeVotingRecord mutation)."""
+
+    name: str
+    enabled: bool
+    reason: str | None
+    daily_limit: int | None
+    used_today: int
+    resets_at: datetime
+
+
+def _to_feature(status: FeatureStatus) -> Feature:
+    return Feature(
+        name=status.name,
+        enabled=status.enabled,
+        reason=status.reason,
+        daily_limit=status.daily_limit,
+        used_today=status.used_today,
+        resets_at=status.resets_at,
+    )
+
+
 def _clamp_limit(limit: int) -> int:
     # A negative `limit` otherwise reaches Postgres `LIMIT` (a runtime
     # "must not be negative" error) or, via BillSearchService.search()'s
@@ -309,6 +354,22 @@ class Query:
         )
         return [_to_ai_summary(r) for r in records]
 
+    @strawberry.field
+    async def features(self, info: strawberry.Info) -> list[Feature]:
+        """Which features the calling user can use right now -- for
+        cd-webapp to show/hide the "Summarize with AI" affordance and
+        explain why. Requires a verified caller (same as myAiSummaries) --
+        `NotAuthenticatedError` otherwise. v1 returns exactly one,
+        `ai_summary`, with its daily-cap state; summarizeVotingRecord
+        enforces the same gate server-side (never trusting the client to
+        have hidden the button).
+        """
+        user_id = info.context["user_id"]
+        if user_id is None:
+            raise NotAuthenticatedError("features requires authentication")
+        statuses = await entitlements_service.features(user_id)
+        return [_to_feature(s) for s in statuses]
+
 
 @strawberry.type
 class Mutation:
@@ -322,9 +383,12 @@ class Mutation:
         Bedrock. Field names mirror `searchBills`'.
 
         Requires a verified caller (`Authorization: Bearer <Cognito id
-        token>`); raises `NotAuthenticatedError` otherwise. An unknown
-        `bioguideId` surfaces as a cd-api 404 GraphQL error, a Bedrock
-        outage as `BedrockConverseError`, a `q` over 200 chars as
+        token>`); raises `NotAuthenticatedError` otherwise, and
+        `FeatureUnavailableError` when the caller has spent their daily
+        free-tier allowance or the global daily ceiling is hit
+        (cd-platform#169 -- the `features` query reports the same state).
+        An unknown `bioguideId` surfaces as a cd-api 404 GraphQL error, a
+        Bedrock outage as `BedrockConverseError`, a `q` over 200 chars as
         `ValueError` -- none caught here, same "let it propagate" style as
         the rest of this schema. Every call generates fresh (no dedup of
         repeat identical requests -- keeps the usage signal honest).
@@ -332,6 +396,7 @@ class Mutation:
         user_id = info.context["user_id"]
         if user_id is None:
             raise NotAuthenticatedError("summarizeVotingRecord requires authentication")
+        await entitlements_service.require(user_id, AI_SUMMARY)
         record = await ai_summary_service.generate_voting_record_summary(
             user_id, bioguide_id, q, _clamp_limit(limit)
         )
@@ -340,18 +405,23 @@ class Mutation:
 
 class _Schema(strawberry.Schema):
     """Strawberry's default `process_errors` logs every GraphQL field
-    error at ERROR with a full traceback. `NotAuthenticatedError` is a
-    routine "caller isn't signed in" signal, not a server fault -- an
-    anonymous hit on `myAiSummaries` (e.g. cd-webapp rendering a History
-    view for a logged-out visitor) shouldn't spew ERROR logs or trip
-    alerts. Every other error still logs exactly as before -- an
-    `ApiClientError` is a genuine upstream failure worth seeing."""
+    error at ERROR with a full traceback. `NotAuthenticatedError`
+    (caller isn't signed in) and `FeatureUnavailableError` (caller hit a
+    daily cap) are routine client-state signals, not server faults -- an
+    anonymous hit on `myAiSummaries`, or a user who's out of summaries
+    for the day, shouldn't spew ERROR logs or trip alerts. The global
+    ceiling still gets its own one-per-day WARN from
+    EntitlementsService. Every other error still logs exactly as before
+    -- an `ApiClientError` is a genuine upstream failure worth seeing."""
 
     def process_errors(self, errors, execution_context=None):
         loud = [
             e
             for e in errors
-            if not isinstance(getattr(e, "original_error", None), NotAuthenticatedError)
+            if not isinstance(
+                getattr(e, "original_error", None),
+                (NotAuthenticatedError, FeatureUnavailableError),
+            )
         ]
         if loud:
             super().process_errors(loud, execution_context)

@@ -10,6 +10,7 @@ from cd.server.schema import (
     ai_summary_service,
     bill_search_service,
     cd_api_service,
+    entitlements_service,
     geocoder_service,
     schema,
     users_service,
@@ -642,6 +643,15 @@ def _as_verified_user(monkeypatch, sub="cognito-sub-123"):
 
     monkeypatch.setattr(users_service, "upsert_user_from_authorization_header", fake_upsert)
 
+    # The summarizeVotingRecord mutation now calls entitlements_service.require()
+    # before generating -- which would hit real DB count queries. Stub it to a
+    # no-op so tests that exercise generation aren't coupled to the caps; the
+    # gate itself has its own tests below (which re-override this).
+    async def _ungated(user_id, feature):
+        return None
+
+    monkeypatch.setattr(entitlements_service, "require", _ungated)
+
 
 def test_summarize_voting_record_requires_authentication(client):
     # No Authorization header -> context user_id is None -> the resolver
@@ -844,3 +854,115 @@ def test_summarize_voting_record_clamps_a_negative_limit(client, monkeypatch):
     )
     assert response.status_code == 200
     assert seen["limit"] == 1  # clamped before BillSearchService.search()'s min(limit, 50)
+
+
+# --- features query / the entitlement gate on summarizeVotingRecord ---
+
+from cd.server.services.entitlements_service import (  # noqa: E402
+    AI_SUMMARY,
+    FeatureStatus,
+    FeatureUnavailableError,
+)
+
+_FEATURE_ENABLED = FeatureStatus(
+    name=AI_SUMMARY,
+    enabled=True,
+    reason=None,
+    daily_limit=10,
+    used_today=3,
+    resets_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+)
+_FEATURE_GATED = FeatureStatus(
+    name=AI_SUMMARY,
+    enabled=False,
+    reason="daily_limit_reached",
+    daily_limit=10,
+    used_today=10,
+    resets_at=datetime(2026, 9, 7, tzinfo=timezone.utc),
+)
+
+_FEATURES_QUERY = (
+    "{ features { name enabled reason dailyLimit usedToday resetsAt } }"
+)
+
+
+def test_features_requires_authentication(client):
+    response = client.post("/graphql", json={"query": _FEATURES_QUERY})
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "requires authentication" in response.json()["errors"][0]["message"]
+
+
+def test_features_maps_an_enabled_status(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+
+    async def fake_features(user_id):
+        return [_FEATURE_ENABLED]
+
+    monkeypatch.setattr(entitlements_service, "features", fake_features)
+
+    response = client.post(
+        "/graphql", json={"query": _FEATURES_QUERY}, headers={"Authorization": "Bearer a.b.c"}
+    )
+    assert response.json()["data"]["features"] == [
+        {
+            "name": "ai_summary",
+            "enabled": True,
+            "reason": None,
+            "dailyLimit": 10,
+            "usedToday": 3,
+            "resetsAt": "2026-09-07T00:00:00+00:00",
+        }
+    ]
+
+
+def test_features_maps_a_gated_status_with_its_reason(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+
+    async def fake_features(user_id):
+        return [_FEATURE_GATED]
+
+    monkeypatch.setattr(entitlements_service, "features", fake_features)
+
+    response = client.post(
+        "/graphql", json={"query": _FEATURES_QUERY}, headers={"Authorization": "Bearer a.b.c"}
+    )
+    feature = response.json()["data"]["features"][0]
+    assert feature["enabled"] is False
+    assert feature["reason"] == "daily_limit_reached"
+    assert feature["usedToday"] == 10
+
+
+def test_summarize_voting_record_is_gated_when_require_raises(client, monkeypatch, caplog):
+    import logging
+
+    _as_verified_user(monkeypatch)
+
+    async def fake_require(user_id, feature):
+        raise FeatureUnavailableError(feature, "daily_limit_reached")
+
+    monkeypatch.setattr(entitlements_service, "require", fake_require)
+
+    generated = []
+
+    async def fake_generate(*args):
+        generated.append(args)
+        return _AI_SUMMARY_RECORD
+
+    monkeypatch.setattr(ai_summary_service, "generate_voting_record_summary", fake_generate)
+
+    with caplog.at_level(logging.ERROR, logger="strawberry.execution"):
+        response = client.post(
+            "/graphql",
+            json={
+                "query": 'mutation { summarizeVotingRecord(bioguideId: "K1", q: "x") { id } }'
+            },
+            headers={"Authorization": "Bearer a.b.c"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "daily_limit_reached" in response.json()["errors"][0]["message"]
+    # gated before any generation, and not logged as a server error
+    assert generated == []
+    assert [r for r in caplog.records if r.name == "strawberry.execution"] == []

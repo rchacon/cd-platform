@@ -181,6 +181,13 @@ services:
       AWS_PROFILE: ${AWS_PROFILE:-}
       AWS_REGION: ${AWS_REGION:-us-west-2}
       BEDROCK_CHAT_MODEL_ID: ${BEDROCK_CHAT_MODEL_ID:-}
+      # Daily caps on summarizeVotingRecord (cd-platform#169) -- per
+      # caller and across all callers, on the UTC calendar day. Defaulted
+      # here so local behaves like prod; set either to 0 in .env to
+      # disable that cap while iterating on the feature. settings.py has
+      # the same defaults, so an unset var is fine too.
+      AI_SUMMARY_FREE_TIER_DAILY_LIMIT: ${AI_SUMMARY_FREE_TIER_DAILY_LIMIT:-10}
+      AI_SUMMARY_GLOBAL_DAILY_LIMIT: ${AI_SUMMARY_GLOBAL_DAILY_LIMIT:-100}
     # host.docker.internal doesn't resolve by default on Linux (unlike
     # Docker Desktop's Mac/Windows builds) -- this is Docker's own
     # documented workaround (Engine 20.10+), needed for

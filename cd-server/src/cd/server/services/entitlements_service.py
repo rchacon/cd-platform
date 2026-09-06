@@ -99,10 +99,18 @@ class EntitlementsService:
         # kind so another summary kind's rows can't eat the allowance. The
         # two have no data dependency -> one round-trip of latency, not
         # two (this runs on every `features` query and every gated call).
+        # return_exceptions=True so one failing count doesn't leave the
+        # other running as an orphan whose exception is never retrieved --
+        # same guard, same reason as generate_voting_record_summary()'s
+        # own gather.
         user_used, global_used = await asyncio.gather(
             self._ai.count_by_user_since(user_id, start, _AI_SUMMARY_KIND),
             self._ai.count_global_since(start, _AI_SUMMARY_KIND),
+            return_exceptions=True,
         )
+        for result in (user_used, global_used):
+            if isinstance(result, BaseException):
+                raise result
 
         reason: str | None = None
         if self._global > 0 and global_used >= self._global:
