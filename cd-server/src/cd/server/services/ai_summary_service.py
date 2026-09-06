@@ -164,11 +164,16 @@ class AiSummaryClient:
         )
         return [_record(row) for row in rows]
 
-    async def count_since(self, since: datetime, user_id: str | None = None) -> int:
+    async def count_since(
+        self, since: datetime, user_id: str | None = None, kind: str | None = None
+    ) -> int:
         """Rows created at or after `since`. `user_id` None -> across all
         callers (the global daily cap); given -> just that caller (the
-        per-user cap). Same `$2::text IS NULL OR ...` idiom as
-        fetch_history() -- the global path hits idx_ai_summaries_created_at
+        per-user cap). `kind` None -> every kind; given -> only that one
+        (the daily caps are scoped to one summary kind, so a future kind's
+        rows don't eat this one's allowance -- same reason fetch_history()
+        kind-scopes in SQL). Same `$N::text IS NULL OR ...` idiom
+        throughout. The global path hits idx_ai_summaries_created_at
         (0003), the per-user path idx_ai_summaries_user_created (0002)."""
         assert self._pool is not None, "AiSummaryClient.connect() was never called"
         return await self._pool.fetchval(
@@ -177,9 +182,11 @@ class AiSummaryClient:
             FROM ai_summaries
             WHERE created_at >= $1
               AND ($2::text IS NULL OR user_id = $2)
+              AND ($3::text IS NULL OR kind = $3)
             """,
             since,
             user_id,
+            kind,
         )
 
 
@@ -308,16 +315,19 @@ class AiSummaryService:
     ) -> list[AiSummaryRecord]:
         return await self._client.fetch_history(user_id, limit, kind)
 
-    async def count_by_user_since(self, user_id: str, since: datetime) -> int:
-        """How many summaries this caller has generated at/after `since`.
-        Backs EntitlementsService's per-user daily cap -- this layer picks
-        no window, just counts."""
-        return await self._client.count_since(since, user_id)
+    async def count_by_user_since(
+        self, user_id: str, since: datetime, kind: str | None = None
+    ) -> int:
+        """How many summaries this caller has generated at/after `since`
+        (optionally of one `kind`). Backs EntitlementsService's per-user
+        daily cap -- this layer picks no window, just counts."""
+        return await self._client.count_since(since, user_id, kind)
 
-    async def count_global_since(self, since: datetime) -> int:
-        """How many summaries all callers have generated at/after `since`.
-        Backs EntitlementsService's global daily cost ceiling."""
-        return await self._client.count_since(since)
+    async def count_global_since(self, since: datetime, kind: str | None = None) -> int:
+        """How many summaries all callers have generated at/after `since`
+        (optionally of one `kind`). Backs EntitlementsService's global
+        daily cost ceiling."""
+        return await self._client.count_since(since, None, kind)
 
     async def generate_voting_record_summary(
         self, user_id: str, bioguide_id: str, topic: str, limit: int = 10

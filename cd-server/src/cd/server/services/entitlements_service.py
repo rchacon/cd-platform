@@ -23,8 +23,12 @@ from cd.server.services.ai_summary_service import AiSummaryService
 
 logger = logging.getLogger(__name__)
 
-# The one feature slug this service knows today.
+# The one feature slug this service knows today, and the ai_summaries
+# `kind` it maps to -- the caps count only rows of this kind, so a future
+# summary kind (e.g. "bill_evolution", anticipated in migration 0002's
+# docstring) doesn't consume this feature's allowance.
 AI_SUMMARY = "ai_summary"
+_AI_SUMMARY_KIND = "voting_record"
 
 # reason slugs on a disabled FeatureStatus / FeatureUnavailableError --
 # the caller's own daily allowance is spent vs. the global ceiling is hit
@@ -81,9 +85,10 @@ class EntitlementsService:
     ) -> FeatureStatus:
         start, reset = _utc_day_bounds(now)
         # Both counts even when globally gated -- the UI still wants
-        # used_today to show "N of <limit> used".
-        user_used = await self._ai.count_by_user_since(user_id, start)
-        global_used = await self._ai.count_global_since(start)
+        # used_today to show "N of <limit> used". Scoped to this feature's
+        # kind so another summary kind's rows can't eat the allowance.
+        user_used = await self._ai.count_by_user_since(user_id, start, _AI_SUMMARY_KIND)
+        global_used = await self._ai.count_global_since(start, _AI_SUMMARY_KIND)
 
         reason: str | None = None
         if self._global > 0 and global_used >= self._global:

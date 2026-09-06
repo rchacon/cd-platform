@@ -25,12 +25,12 @@ class _FakeAiSummaryService:
         self._global_count = global_count
         self.calls: list[tuple] = []
 
-    async def count_by_user_since(self, user_id, since):
-        self.calls.append(("user", user_id, since))
+    async def count_by_user_since(self, user_id, since, kind=None):
+        self.calls.append(("user", user_id, since, kind))
         return self._user_count
 
-    async def count_global_since(self, since):
-        self.calls.append(("global", since))
+    async def count_global_since(self, since, kind=None):
+        self.calls.append(("global", since, kind))
         return self._global_count
 
 
@@ -49,7 +49,8 @@ def test_utc_day_bounds_are_this_utc_midnight_and_the_next():
 
 
 def test_status_enabled_when_under_both_limits():
-    status = asyncio.run(_service(user_count=3, global_count=40).ai_summary_status("u1", now=_NOW))
+    svc = _service(user_count=3, global_count=40)
+    status = asyncio.run(svc.ai_summary_status("u1", now=_NOW))
 
     assert status.name == AI_SUMMARY
     assert status.enabled is True
@@ -57,6 +58,14 @@ def test_status_enabled_when_under_both_limits():
     assert status.daily_limit == 10
     assert status.used_today == 3  # the per-user count, not the global one
     assert status.resets_at == _NEXT_DAY
+    # both counts are scoped to the voting_record kind and the UTC-day
+    # start (order-independent -- they run concurrently)
+    assert sorted(svc._ai.calls) == sorted(
+        [
+            ("user", "u1", _DAY_START, "voting_record"),
+            ("global", _DAY_START, "voting_record"),
+        ]
+    )
 
 
 @pytest.mark.parametrize("user_count", [10, 11, 999])

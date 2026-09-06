@@ -144,18 +144,20 @@ def test_fetch_history_returns_empty_list_for_a_user_with_no_history():
 _SINCE = datetime(2026, 9, 6, tzinfo=timezone.utc)
 
 
-def test_count_since_global_passes_null_user_id():
+def test_count_since_global_passes_null_user_id_and_kind():
     client = AiSummaryClient("postgresql://ignored")
     client._pool = _FakePool(fetchval_result=7)
 
     result = asyncio.run(client.count_since(_SINCE))
 
-    kind, query, args = client._pool.calls[0]
-    assert kind == "fetchval"
+    call, query, args = client._pool.calls[0]
+    assert call == "fetchval"
     assert "SELECT count(*)" in query
     assert "created_at >= $1" in query
     assert "($2::text IS NULL OR user_id = $2)" in query
-    assert args == (_SINCE, None)  # None -> the IS NULL branch -> counts every caller
+    assert "($3::text IS NULL OR kind = $3)" in query
+    # both None -> both IS NULL branches -> every caller, every kind
+    assert args == (_SINCE, None, None)
     assert result == 7
 
 
@@ -166,8 +168,18 @@ def test_count_since_per_user_passes_the_user_id():
     result = asyncio.run(client.count_since(_SINCE, "user-1"))
 
     _, _, args = client._pool.calls[0]
-    assert args == (_SINCE, "user-1")
+    assert args == (_SINCE, "user-1", None)
     assert result == 3
+
+
+def test_count_since_kind_scopes_the_count_in_sql():
+    client = AiSummaryClient("postgresql://ignored")
+    client._pool = _FakePool(fetchval_result=2)
+
+    asyncio.run(client.count_since(_SINCE, kind="voting_record"))
+
+    _, _, args = client._pool.calls[0]
+    assert args == (_SINCE, None, "voting_record")
 
 
 def test_fetch_history_mixes_summary_kinds_for_one_user():
@@ -243,8 +255,8 @@ class _FakeAiSummaryClient:
         self.history_calls.append((user_id, limit, kind))
         return self._history_result
 
-    async def count_since(self, since, user_id=None):
-        self.count_calls.append((since, user_id))
+    async def count_since(self, since, user_id=None, kind=None):
+        self.count_calls.append((since, user_id, kind))
         return self._count_result
 
 
@@ -291,13 +303,13 @@ def test_ai_summary_service_history_passes_kind_through_to_the_client():
     assert client.history_calls == [("user-1", 5, "voting_record")]
 
 
-def test_ai_summary_service_count_by_user_since_delegates_with_the_user_id():
+def test_ai_summary_service_count_by_user_since_delegates_with_user_id_and_kind():
     client = _FakeAiSummaryClient(count_result=4)
     service = AiSummaryService(client, None, None, None)
 
-    result = asyncio.run(service.count_by_user_since("user-1", _SINCE))
+    result = asyncio.run(service.count_by_user_since("user-1", _SINCE, "voting_record"))
 
-    assert client.count_calls == [(_SINCE, "user-1")]
+    assert client.count_calls == [(_SINCE, "user-1", "voting_record")]
     assert result == 4
 
 
@@ -305,9 +317,9 @@ def test_ai_summary_service_count_global_since_delegates_without_a_user_id():
     client = _FakeAiSummaryClient(count_result=42)
     service = AiSummaryService(client, None, None, None)
 
-    result = asyncio.run(service.count_global_since(_SINCE))
+    result = asyncio.run(service.count_global_since(_SINCE, "voting_record"))
 
-    assert client.count_calls == [(_SINCE, None)]
+    assert client.count_calls == [(_SINCE, None, "voting_record")]
     assert result == 42
 
 
