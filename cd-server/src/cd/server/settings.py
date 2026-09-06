@@ -1,5 +1,15 @@
 import os
 
+
+def _int_env(name: str, default: int) -> int:
+    # `... or str(default)` so an env var set to the empty string -- a
+    # task-def passing `NAME=` with no value, or docker-compose's
+    # ${VAR:-} -- falls back to the default rather than int("") raising
+    # at import and the container never booting. A genuinely non-numeric
+    # value still fails fast at import, which is right for a real typo.
+    return int(os.environ.get(name) or str(default))
+
+
 # "local" picks HttpApiClient (plain HTTP to a locally-running cd-api);
 # anything else picks LambdaApiClient (direct boto3 invoke of the real
 # deployed function -- no AWS credentials/function needed for local dev).
@@ -82,8 +92,6 @@ BEDROCK_CHAT_MODEL_ID = os.environ.get("BEDROCK_CHAT_MODEL_ID", "")
 # ceiling, since every generation is a real Bedrock spend). `0` (or
 # negative) disables that cap -- handy for local dev iterating on the
 # feature. Low defaults are a deliberate hard lid while the feature is
-# new; prod tunes these via the task-def env, same plain-read pattern as
-# BEDROCK_CHAT_MODEL_ID (sane defaults so make start-server / tests need
-# nothing set).
-AI_SUMMARY_FREE_TIER_DAILY_LIMIT = int(os.environ.get("AI_SUMMARY_FREE_TIER_DAILY_LIMIT", "10"))
-AI_SUMMARY_GLOBAL_DAILY_LIMIT = int(os.environ.get("AI_SUMMARY_GLOBAL_DAILY_LIMIT", "100"))
+# new; prod tunes these via the task-def env.
+AI_SUMMARY_FREE_TIER_DAILY_LIMIT = _int_env("AI_SUMMARY_FREE_TIER_DAILY_LIMIT", 10)
+AI_SUMMARY_GLOBAL_DAILY_LIMIT = _int_env("AI_SUMMARY_GLOBAL_DAILY_LIMIT", 100)
