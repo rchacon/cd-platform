@@ -15,6 +15,7 @@ server-side (never trusting the client to have hidden the button).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -86,9 +87,13 @@ class EntitlementsService:
         start, reset = _utc_day_bounds(now)
         # Both counts even when globally gated -- the UI still wants
         # used_today to show "N of <limit> used". Scoped to this feature's
-        # kind so another summary kind's rows can't eat the allowance.
-        user_used = await self._ai.count_by_user_since(user_id, start, _AI_SUMMARY_KIND)
-        global_used = await self._ai.count_global_since(start, _AI_SUMMARY_KIND)
+        # kind so another summary kind's rows can't eat the allowance. The
+        # two have no data dependency -> one round-trip of latency, not
+        # two (this runs on every `features` query and every gated call).
+        user_used, global_used = await asyncio.gather(
+            self._ai.count_by_user_since(user_id, start, _AI_SUMMARY_KIND),
+            self._ai.count_global_since(start, _AI_SUMMARY_KIND),
+        )
 
         reason: str | None = None
         if self._global > 0 and global_used >= self._global:
