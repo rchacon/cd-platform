@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from cd.server.app import app, get_graphql_context
 from cd.server.schema import (
+    ai_summary_service,
     bill_search_service,
     cd_api_service,
     geocoder_service,
@@ -61,6 +62,32 @@ def test_lifespan_closes_both_services_on_shutdown(monkeypatch):
     assert geocoder_service_closed is True
 
 
+def test_lifespan_connects_and_closes_ai_summary_service(monkeypatch):
+    # Same rationale as the users_service lifespan test below -- fully
+    # replace connect()/aclose() (both open/close a real asyncpg pool) and
+    # stub users_service's own pair too, since it runs first in lifespan.
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(users_service, "connect", _noop)
+    monkeypatch.setattr(users_service, "aclose", _noop)
+
+    calls = []
+
+    async def fake_connect():
+        calls.append("connect")
+
+    async def fake_aclose():
+        calls.append("aclose")
+
+    monkeypatch.setattr(ai_summary_service, "connect", fake_connect)
+    monkeypatch.setattr(ai_summary_service, "aclose", fake_aclose)
+
+    with TestClient(app):
+        assert calls == ["connect"]
+    assert calls == ["connect", "aclose"]
+
+
 def test_lifespan_connects_and_closes_users_service(monkeypatch):
     # Fully replaces connect()/aclose() rather than calling through to the
     # real implementation (unlike the spies above, which safely call
@@ -76,8 +103,15 @@ def test_lifespan_connects_and_closes_users_service(monkeypatch):
     async def fake_aclose():
         calls.append("aclose")
 
+    async def _noop():
+        pass
+
     monkeypatch.setattr(users_service, "connect", fake_connect)
     monkeypatch.setattr(users_service, "aclose", fake_aclose)
+    # ai_summary_service's connect()/aclose() also run in lifespan and open
+    # their own real asyncpg pool -- stub them out here too.
+    monkeypatch.setattr(ai_summary_service, "connect", _noop)
+    monkeypatch.setattr(ai_summary_service, "aclose", _noop)
 
     with TestClient(app):
         assert calls == ["connect"]
@@ -579,3 +613,234 @@ def test_search_bills_surfaces_cd_api_error_as_a_graphql_error(client, monkeypat
     assert response.status_code == 200
     assert response.json()["data"] is None
     assert "404" in response.json()["errors"][0]["message"]
+
+
+# --- summarizeVotingRecord / myAiSummaries (AI summaries, auth-gated) ---
+
+from datetime import datetime, timezone  # noqa: E402
+
+from cd.server.services.ai_summary_service import AiSummaryRecord  # noqa: E402
+
+_AI_SUMMARY_RECORD = AiSummaryRecord(
+    id=42,
+    kind="voting_record",
+    subject={
+        "bioguideId": "K000401",
+        "topic": "immigration",
+        "bills": [{"billKey": "119-hr-2616", "votes": []}],
+    },
+    prompt_template="You are a neutral, nonpartisan legislative-research assistant...",
+    summary="Voted NAY on 119-hr-2616...",
+    model_id="anthropic.claude-3-5-haiku",
+    created_at=datetime(2026, 5, 20, tzinfo=timezone.utc),
+)
+
+
+def _as_verified_user(monkeypatch, sub="cognito-sub-123"):
+    async def fake_upsert(header):
+        return sub
+
+    monkeypatch.setattr(users_service, "upsert_user_from_authorization_header", fake_upsert)
+
+
+def test_summarize_voting_record_requires_authentication(client):
+    # No Authorization header -> context user_id is None -> the resolver
+    # raises NotAuthenticatedError, surfaced as a GraphQL field error
+    # (this schema doesn't mask resolver messages). No monkeypatch needed:
+    # upsert_user_from_authorization_header(None) returns None without I/O.
+    response = client.post(
+        "/graphql",
+        json={
+            "query": (
+                'mutation { summarizeVotingRecord(bioguideId: "K000401", q: "immigration") '
+                "{ id } }"
+            )
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "requires authentication" in response.json()["errors"][0]["message"]
+
+
+def test_summarize_voting_record_generates_and_returns_a_summary(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+
+    seen = {}
+
+    async def fake_generate(user_id, bioguide_id, q, limit):
+        seen["args"] = (user_id, bioguide_id, q, limit)
+        return _AI_SUMMARY_RECORD
+
+    monkeypatch.setattr(ai_summary_service, "generate_voting_record_summary", fake_generate)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": (
+                'mutation { summarizeVotingRecord(bioguideId: "K000401", q: "immigration", '
+                "limit: 5) { id bioguideId query summary createdAt } }"
+            )
+        },
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["summarizeVotingRecord"] == {
+        "id": "42",  # strawberry.ID -> string, not the raw BIGSERIAL int
+        "bioguideId": "K000401",  # read out of the stored subject payload
+        "query": "immigration",
+        "summary": "Voted NAY on 119-hr-2616...",
+        "createdAt": "2026-05-20T00:00:00+00:00",
+    }
+    assert seen["args"] == ("cognito-sub-123", "K000401", "immigration", 5)
+
+
+def test_summarize_voting_record_surfaces_cd_api_404_as_a_graphql_error(client, monkeypatch):
+    from cd.server.services.cd_api_service import ApiClientError
+
+    _as_verified_user(monkeypatch)
+
+    async def fake_generate(user_id, bioguide_id, q, limit):
+        raise ApiClientError(404, "no current-Congress member")
+
+    monkeypatch.setattr(ai_summary_service, "generate_voting_record_summary", fake_generate)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": 'mutation { summarizeVotingRecord(bioguideId: "X000000", q: "x") { id } }'
+        },
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "404" in response.json()["errors"][0]["message"]
+
+
+def test_my_ai_summaries_requires_authentication(client):
+    response = client.post("/graphql", json={"query": "{ myAiSummaries { id } }"})
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "requires authentication" in response.json()["errors"][0]["message"]
+
+
+def test_not_authenticated_error_is_not_logged_as_a_server_error(client, caplog):
+    # A routine "not signed in" state must not produce an ERROR log +
+    # traceback (Strawberry's default process_errors would) -- it'd be
+    # steady alert noise once cd-webapp renders a History view for
+    # logged-out visitors.
+    import logging
+
+    with caplog.at_level(logging.ERROR, logger="strawberry.execution"):
+        response = client.post("/graphql", json={"query": "{ myAiSummaries { id } }"})
+
+    assert "requires authentication" in response.json()["errors"][0]["message"]
+    assert [r for r in caplog.records if r.name == "strawberry.execution"] == []
+
+
+def test_a_genuine_resolver_error_is_still_logged(client, caplog, monkeypatch):
+    # The process_errors override only silences NotAuthenticatedError --
+    # a real upstream failure still logs.
+    import logging
+
+    from cd.server.services.cd_api_service import ApiClientError
+
+    _as_verified_user(monkeypatch)
+
+    async def fake_generate(user_id, bioguide_id, q, limit):
+        raise ApiClientError(502, "cd-api unreachable")
+
+    monkeypatch.setattr(ai_summary_service, "generate_voting_record_summary", fake_generate)
+
+    with caplog.at_level(logging.ERROR, logger="strawberry.execution"):
+        client.post(
+            "/graphql",
+            json={
+                "query": 'mutation { summarizeVotingRecord(bioguideId: "K1", q: "x") { id } }'
+            },
+            headers={"Authorization": "Bearer a.b.c"},
+        )
+
+    assert [r for r in caplog.records if r.name == "strawberry.execution"] != []
+
+
+def test_my_ai_summaries_returns_only_the_callers_voting_record_summaries(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+
+    other_kind = AiSummaryRecord(
+        id=99,
+        kind="bill_evolution",
+        subject={"billKey": "119-hr-2616"},
+        prompt_template="...",
+        summary="A bill evolution summary...",
+        model_id="anthropic.claude-3-5-haiku",
+        created_at=datetime(2026, 5, 21, tzinfo=timezone.utc),
+    )
+    seen = {}
+
+    async def fake_history(user_id, limit, kind=None):
+        # Mimics the SQL `AND ($2 IS NULL OR kind = $2)` filter -- the
+        # resolver delegates the kind scoping to the service, not applied
+        # here after the fact (so LIMIT counts only returned rows).
+        seen["args"] = (user_id, limit, kind)
+        rows = [other_kind, _AI_SUMMARY_RECORD]
+        return [r for r in rows if kind is None or r.kind == kind]
+
+    monkeypatch.setattr(ai_summary_service, "history", fake_history)
+
+    response = client.post(
+        "/graphql",
+        json={"query": "{ myAiSummaries(limit: 5) { id bioguideId query } }"},
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["myAiSummaries"] == [
+        {"id": "42", "bioguideId": "K000401", "query": "immigration"}
+    ]
+    # the caller's verified sub, and kind scoped to voting_record in the query
+    assert seen["args"] == ("cognito-sub-123", 5, "voting_record")
+
+
+def test_my_ai_summaries_clamps_a_negative_limit(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+    seen = {}
+
+    async def fake_history(user_id, limit, kind=None):
+        seen["limit"] = limit
+        return []
+
+    monkeypatch.setattr(ai_summary_service, "history", fake_history)
+
+    response = client.post(
+        "/graphql",
+        json={"query": "{ myAiSummaries(limit: -1) { id } }"},
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {"myAiSummaries": []}
+    assert seen["limit"] == 1  # clamped before it reaches Postgres LIMIT
+
+
+def test_summarize_voting_record_clamps_a_negative_limit(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+    seen = {}
+
+    async def fake_generate(user_id, bioguide_id, q, limit):
+        seen["limit"] = limit
+        return _AI_SUMMARY_RECORD
+
+    monkeypatch.setattr(ai_summary_service, "generate_voting_record_summary", fake_generate)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": (
+                'mutation { summarizeVotingRecord(bioguideId: "K1", q: "x", limit: -5) '
+                "{ id } }"
+            )
+        },
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+    assert response.status_code == 200
+    assert seen["limit"] == 1  # clamped before BillSearchService.search()'s min(limit, 50)

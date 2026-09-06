@@ -105,12 +105,28 @@ def test_fetch_history_runs_expected_sql_and_returns_records():
     assert "prompt_template" in query
     assert "WHERE user_id = $1" in query
     assert "ORDER BY created_at DESC" in query
-    assert "LIMIT $2" in query
-    assert args == ("user-1", 20)
+    assert "LIMIT $3" in query
+    # kind defaults to None -> the ($2::text IS NULL OR kind = $2) branch
+    # is a no-op, every kind comes back.
+    assert args == ("user-1", None, 20)
     assert len(records) == 1
     assert records[0].kind == "voting_record"
     assert records[0].subject == _SUBJECT
     assert records[0].prompt_template == _PROMPT_TEMPLATE
+
+
+def test_fetch_history_filters_by_kind_in_sql_when_given():
+    # The kind filter is in the WHERE clause (so LIMIT counts only
+    # matching rows), not applied by the caller after the fetch.
+    client = AiSummaryClient("postgresql://ignored")
+    client._pool = _FakePool(fetch_result=[_ROW])
+
+    asyncio.run(client.fetch_history("user-1", 20, kind="voting_record"))
+
+    _, query, args = client._pool.calls[0]
+    assert "kind = $2" in query
+    assert "LIMIT $3" in query
+    assert args == ("user-1", "voting_record", 20)
 
 
 def test_fetch_history_returns_empty_list_for_a_user_with_no_history():
@@ -187,8 +203,8 @@ class _FakeAiSummaryClient:
     async def close(self) -> None:
         self.closed = True
 
-    async def fetch_history(self, user_id, limit):
-        self.history_calls.append((user_id, limit))
+    async def fetch_history(self, user_id, limit, kind=None):
+        self.history_calls.append((user_id, limit, kind))
         return self._history_result
 
 
@@ -213,7 +229,7 @@ def test_ai_summary_service_history_delegates_to_the_client():
 
     result = asyncio.run(service.history("user-1", limit=5))
 
-    assert client.history_calls == [("user-1", 5)]
+    assert client.history_calls == [("user-1", 5, None)]
     assert result == sentinel_records
 
 
@@ -223,7 +239,16 @@ def test_ai_summary_service_history_defaults_limit_to_20():
 
     asyncio.run(service.history("user-1"))
 
-    assert client.history_calls == [("user-1", 20)]
+    assert client.history_calls == [("user-1", 20, None)]
+
+
+def test_ai_summary_service_history_passes_kind_through_to_the_client():
+    client = _FakeAiSummaryClient()
+    service = AiSummaryService(client, None, None, None)
+
+    asyncio.run(service.history("user-1", limit=5, kind="voting_record"))
+
+    assert client.history_calls == [("user-1", 5, "voting_record")]
 
 
 def test_get_ai_summary_service_returns_a_wired_service(monkeypatch):
