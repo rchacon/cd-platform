@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from cd.server.services import entitlements_service
 from cd.server.services.entitlements_service import (
     AI_SUMMARY,
     REASON_DAILY_LIMIT,
@@ -12,6 +13,15 @@ from cd.server.services.entitlements_service import (
     FeatureUnavailableError,
     _utc_day_bounds,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_warning_dedupe():
+    # require()'s global-ceiling WARN dedupes on a module-level "last
+    # warned UTC date" -- clear it so tests don't leak that state.
+    entitlements_service._last_global_warning_date = None
+    yield
+    entitlements_service._last_global_warning_date = None
 
 # A fixed "now" so resets_at / the day window are deterministic.
 _NOW = datetime(2026, 9, 6, 14, 30, tzinfo=timezone.utc)
@@ -145,6 +155,23 @@ def test_require_does_not_warn_on_a_per_user_hit(caplog):
         with pytest.raises(FeatureUnavailableError):
             asyncio.run(_service(user_count=10).require("u1", AI_SUMMARY, now=_NOW))
     assert caplog.records == []
+
+
+def test_require_warn_logs_the_global_ceiling_only_once_per_utc_day(caplog):
+    svc = _service(global_count=100)
+    with caplog.at_level(logging.WARNING, logger="cd.server.services.entitlements_service"):
+        for _ in range(5):
+            with pytest.raises(FeatureUnavailableError):
+                asyncio.run(svc.require("u1", AI_SUMMARY, now=_NOW))
+        warns_today = len(caplog.records)
+
+        # a call dated to the next UTC day warns again
+        next_day = datetime(2026, 9, 7, 9, 0, tzinfo=timezone.utc)
+        with pytest.raises(FeatureUnavailableError):
+            asyncio.run(svc.require("u1", AI_SUMMARY, now=next_day))
+
+    assert warns_today == 1  # 5 gated calls, one WARN line
+    assert len(caplog.records) == 2  # + one for the new day
 
 
 def test_require_ignores_an_unknown_feature():

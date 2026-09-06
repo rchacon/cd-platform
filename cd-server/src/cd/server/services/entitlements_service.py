@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from cd.server.services.ai_summary_service import AiSummaryService
 
@@ -68,6 +68,15 @@ def _utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
     now = now or datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     return start, start + timedelta(days=1)
+
+
+# The UTC date this process last WARN-logged the global ceiling for --
+# once the ceiling is hit, every subsequent gated call for the rest of
+# the day would otherwise emit an identical line. In-process only (each
+# task logs it once/day, a handful of lines total), reset implicitly by
+# the date rolling over. Module-level rather than per-instance so it
+# still dedupes if the service is ever reconstructed.
+_last_global_warning_date: date | None = None
 
 
 class EntitlementsService:
@@ -127,12 +136,17 @@ class EntitlementsService:
             return
         if status.reason == REASON_GLOBAL:
             # An operational "we're spending at the ceiling" signal --
-            # worth seeing. A per-user cap hit is routine, stays silent
-            # (and schema._Schema.process_errors suppresses the resulting
-            # GraphQL error's ERROR log for both).
-            logger.warning(
-                "ai_summary globally gated for the rest of the UTC day "
-                "(global daily limit %d reached)",
-                self._global,
-            )
+            # worth seeing, but once per UTC day, not on every gated call
+            # for the rest of the day. A per-user cap hit is routine,
+            # stays silent (and schema._Schema.process_errors suppresses
+            # the resulting GraphQL error's ERROR log for both).
+            global _last_global_warning_date
+            today = _utc_day_bounds(now)[0].date()
+            if _last_global_warning_date != today:
+                _last_global_warning_date = today
+                logger.warning(
+                    "ai_summary globally gated for the rest of the UTC day "
+                    "(global daily limit %d reached)",
+                    self._global,
+                )
         raise FeatureUnavailableError(feature, status.reason)
