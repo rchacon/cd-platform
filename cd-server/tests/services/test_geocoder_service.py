@@ -9,6 +9,7 @@ from cd.server.services.geocoder_service import (
     GeocoderService,
     InvalidAddressError,
     NoAddressMatchError,
+    NoLocationMatchError,
     _extract_congressional_district,
 )
 
@@ -86,6 +87,10 @@ def test_no_address_match_error_is_an_invalid_address_error():
 
 def test_ambiguous_address_error_is_an_invalid_address_error():
     assert issubclass(AmbiguousAddressError, InvalidAddressError)
+
+
+def test_no_location_match_error_is_an_invalid_address_error():
+    assert issubclass(NoLocationMatchError, InvalidAddressError)
 
 
 # GeocoderService.get_district() -- mocked HTTP-level tests.
@@ -222,3 +227,97 @@ def test_geocoder_service_aclose_closes_underlying_client():
     assert service._client.is_closed is False
     asyncio.run(service.aclose())
     assert service._client.is_closed is True
+
+
+# GeocoderService.get_district_for_coords() -- the "use my location" path.
+# The Census coordinates endpoint returns `result.geographies` directly
+# (no `addressMatches` wrapper), with the 2-letter state in the "States"
+# layer's STUSAB field.
+
+
+def _coords_payload(state="CA", cd_field="CD119", district="11", layer="119th Congressional Districts"):
+    return {
+        "result": {
+            "geographies": {
+                "States": [{"STUSAB": state}],
+                layer: [{cd_field: district}],
+            }
+        }
+    }
+
+
+def test_get_district_for_coords_returns_state_and_district(monkeypatch):
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(_coords_payload()))
+    assert asyncio.run(
+        GeocoderService().get_district_for_coords(37.7749, -122.4194)
+    ) == ("CA", 11)
+
+
+def test_get_district_for_coords_sends_longitude_as_x_and_latitude_as_y(monkeypatch):
+    seen = {}
+
+    async def fake_get(self, url, params=None, timeout=None):
+        seen.update(params)
+        return httpx.Response(200, json=_coords_payload(), request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    asyncio.run(GeocoderService().get_district_for_coords(37.7749, -122.4194))
+    assert seen["x"] == -122.4194
+    assert seen["y"] == 37.7749
+
+
+@pytest.mark.parametrize("territory", ["DC", "PR", "GU", "VI", "AS", "MP"])
+def test_get_district_for_coords_normalises_delegate_code_to_at_large(monkeypatch, territory):
+    # Same 98 -> 0 normalisation get_district() applies -- the address and
+    # coordinate paths both hit the same Census "Congressional Districts"
+    # layer and the same delegate-jurisdiction quirk (cd-platform#72).
+    monkeypatch.setattr(
+        httpx.AsyncClient, "get", _fake_response(_coords_payload(state=territory, district="98"))
+    )
+    assert asyncio.run(
+        GeocoderService().get_district_for_coords(38.89, -77.03)
+    ) == (territory, 0)
+
+
+def test_get_district_for_coords_raises_no_location_match_for_empty_geographies(monkeypatch):
+    # A point in the ocean / outside the US: HTTP 200, every layer empty.
+    monkeypatch.setattr(
+        httpx.AsyncClient, "get", _fake_response({"result": {"geographies": {}}})
+    )
+    with pytest.raises(NoLocationMatchError):
+        asyncio.run(GeocoderService().get_district_for_coords(35.0, -140.0))
+
+
+def test_get_district_for_coords_raises_no_location_match_when_state_layer_empty(monkeypatch):
+    payload = {
+        "result": {
+            "geographies": {
+                "States": [],
+                "119th Congressional Districts": [{"CD119": "11"}],
+            }
+        }
+    }
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
+    with pytest.raises(NoLocationMatchError):
+        asyncio.run(GeocoderService().get_district_for_coords(0.0, 0.0))
+
+
+def test_get_district_for_coords_raises_geocoder_error_on_http_error_status(monkeypatch):
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response({}, status_code=503))
+    with pytest.raises(GeocoderError, match="503"):
+        asyncio.run(GeocoderService().get_district_for_coords(37.0, -122.0))
+
+
+def test_get_district_for_coords_raises_geocoder_error_on_connection_failure(monkeypatch):
+    async def fake_get(self, url, params=None, timeout=None):
+        raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    with pytest.raises(GeocoderError, match="Failed to reach"):
+        asyncio.run(GeocoderService().get_district_for_coords(37.0, -122.0))
+
+
+def test_get_district_for_coords_raises_geocoder_error_on_malformed_response(monkeypatch):
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response({"unexpected": "shape"}))
+    with pytest.raises(GeocoderError, match="unexpected response"):
+        asyncio.run(GeocoderService().get_district_for_coords(37.0, -122.0))
