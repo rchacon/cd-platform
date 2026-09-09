@@ -195,17 +195,35 @@ class GeocoderService:
             raise GeocoderError("Census geocoder returned an unexpected response")
 
         # A point in the ocean or outside the US comes back HTTP 200 with
-        # every geography layer empty -- not a geocoder fault, just nothing
-        # there. `_extract_congressional_district` already returns None for
-        # a missing/empty Congressional Districts layer; the States layer
-        # (STUSAB, the 2-letter abbreviation) is the coordinate path's
-        # equivalent of get_district's addressComponents.state.
+        # `geographies` an empty object -- verified against the live API
+        # for a mid-Pacific point and 0,0. That, and only that, is
+        # NoLocationMatchError: the coordinates parsed, there's just
+        # nothing there.
+        if not geographies:
+            raise NoLocationMatchError(
+                f"({latitude}, {longitude}) is not inside a U.S. congressional district"
+            )
+
+        # Past here the response resolved at least one geography layer, so
+        # a *missing* States or Congressional Districts layer is a
+        # malformed/partial response, not an offshore point -- a
+        # coordinate that resolves to a district is by definition in a
+        # state, and vice versa. get_district() classifies the equivalent
+        # gaps on the address path as GeocoderError; match that rather
+        # than telling an in-US caller their location isn't in a district.
+        # The States layer (STUSAB, the 2-letter abbreviation) is the
+        # coordinate path's equivalent of get_district's
+        # addressComponents.state.
         states = geographies.get("States") or []
         state = states[0].get("STUSAB") if states and states[0] else None
         district = _extract_congressional_district(geographies)
-        if state is None or district is None:
-            raise NoLocationMatchError(
-                f"({latitude}, {longitude}) is not inside a U.S. congressional district"
+        if state is None:
+            raise GeocoderError(
+                "Census geocoder response was missing a States geography"
+            )
+        if district is None:
+            raise GeocoderError(
+                "Census geocoder response was missing a Congressional Districts geography"
             )
 
         return state, normalize_district(state, int(district))

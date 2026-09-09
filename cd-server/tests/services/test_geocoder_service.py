@@ -306,7 +306,10 @@ def test_get_district_for_coords_raises_geocoder_error_for_non_object_geographie
         asyncio.run(GeocoderService().get_district_for_coords(35.0, -140.0))
 
 
-def test_get_district_for_coords_raises_no_location_match_when_state_layer_empty(monkeypatch):
+def test_get_district_for_coords_raises_geocoder_error_when_state_layer_empty(monkeypatch):
+    # District layer resolved but States didn't -- contradictory (a point
+    # in a congressional district is in a state), so a malformed response,
+    # not an offshore point.
     payload = {
         "result": {
             "geographies": {
@@ -316,8 +319,17 @@ def test_get_district_for_coords_raises_no_location_match_when_state_layer_empty
         }
     }
     monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
-    with pytest.raises(NoLocationMatchError):
+    with pytest.raises(GeocoderError, match="States geography"):
         asyncio.run(GeocoderService().get_district_for_coords(0.0, 0.0))
+
+
+def test_get_district_for_coords_raises_geocoder_error_when_district_layer_missing(monkeypatch):
+    # States resolved but no Congressional Districts layer -- likewise a
+    # malformed/partial response rather than a point outside the US.
+    payload = {"result": {"geographies": {"States": [{"STUSAB": "CA"}]}}}
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_response(payload))
+    with pytest.raises(GeocoderError, match="Congressional Districts geography"):
+        asyncio.run(GeocoderService().get_district_for_coords(37.0, -122.0))
 
 
 def test_get_district_for_coords_raises_geocoder_error_on_http_error_status(monkeypatch):

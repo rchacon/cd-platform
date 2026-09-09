@@ -232,9 +232,14 @@ Census geocoder's `geographies/coordinates` endpoint (`x`=longitude,
 `y`=latitude) instead of `onelineaddress`, and reads the state from that
 response's `States` layer (`STUSAB`) rather than `addressComponents`.
 A point outside every U.S. congressional district (offshore, another
-country) comes back HTTP 200 with empty geography layers and raises
-`NoLocationMatchError` (an `InvalidAddressError` -- an input problem, not
-a geocoder fault), surfaced as a GraphQL error like the rest. Needed
+country) comes back HTTP 200 with an empty `geographies` object and
+raises `NoLocationMatchError` (an `InvalidAddressError` -- an input
+problem, not a geocoder fault), surfaced as a GraphQL error like the
+rest. A response that *does* resolve some geography layers but is
+missing the `States` or `Congressional Districts` layer is a
+malformed/partial response, not an offshore point, and raises
+`GeocoderError` instead -- matching how `getDistrict` classifies the
+equivalent gaps on the address path. Needed
 server-side rather than called from the browser because the Census
 geocoder sends no CORS headers.
 
