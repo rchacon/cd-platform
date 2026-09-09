@@ -431,6 +431,56 @@ def test_get_district_surfaces_no_match_error(client, monkeypatch):
     assert "No address match found" in response.json()["errors"][0]["message"]
 
 
+def test_get_district_by_coords_returns_state_and_district(client, monkeypatch):
+    # The Census coordinate endpoint returns result.geographies directly,
+    # state in the "States" layer's STUSAB.
+    payload = {
+        "result": {
+            "geographies": {
+                "States": [{"STUSAB": "CA"}],
+                "119th Congressional Districts": [{"CD119": "11"}],
+            }
+        }
+    }
+
+    async def fake_get(self, url, params=None, timeout=None):
+        return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": "{ getDistrictByCoords(latitude: 37.7749, longitude: -122.4194) { state district } }"
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {"getDistrictByCoords": {"state": "CA", "district": 11}}
+
+
+def test_get_district_by_coords_surfaces_a_point_outside_any_district_as_an_error(
+    client, monkeypatch
+):
+    async def fake_get(self, url, params=None, timeout=None):
+        return httpx.Response(
+            200,
+            json={"result": {"geographies": {}}},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    response = client.post(
+        "/graphql",
+        json={
+            "query": "{ getDistrictByCoords(latitude: 35.0, longitude: -140.0) { state district } }"
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] is None
+    assert "not inside a U.S. congressional district" in response.json()["errors"][0]["message"]
+
+
 # --- getMember (cd-api GET /members/{id}, cd-webapp's detail page) ---
 
 _MEMBER_DETAIL_DOC = {

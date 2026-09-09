@@ -58,7 +58,12 @@ from `cd-lib`'s `apportionment.py` -- see below) and `getDistrict`
 (`services/geocoder_service.py`'s `GeocoderService`, resolving a
 free-text address via the Census Bureau's geocoding API) -- both ported
 from `cd-lookup`'s `StateNames.php`/`LookupDistrict.php`, same
-algorithms. See `cd-server/README.md`.
+algorithms. `getDistrictByCoords(latitude, longitude)` is a second
+`GeocoderService` entry point for cd-webapp's "use my location" button:
+same `District` shape and `98 -> 0` normalisation, but hits the Census
+geocoder's `geographies/coordinates` endpoint instead of
+`onelineaddress` -- server-side because that API sends no CORS headers.
+See `cd-server/README.md`.
 `cd-server` now has its own Postgres database, `cd_customers`, that no
 other component touches -- schema managed by Alembic migrations under
 `cd-server/migrations/` (same raw-SQL `op.execute()` idiom as `cd-etl`'s),

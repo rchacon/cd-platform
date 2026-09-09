@@ -26,6 +26,7 @@ The schema (`src/cd/server/schema.py`) currently exposes:
   version
   getStates { abbr name seats votingSeats }
   getDistrict(address: "1600 Pennsylvania Ave NW, Washington, DC") { state district }
+  getDistrictByCoords(latitude: 37.7749, longitude: -122.4194) { state district }
   getSenators(state: "CA") { bioguideId firstName lastName party }
   getRepresentatives(state: "CA", district: 12) { bioguideId firstName lastName role district }
   getMember(bioguideId: "K000401") { bioguideId firstName lastName role district state inOffice }
@@ -222,6 +223,25 @@ unexpected response shape) -- both surface as normal GraphQL field
 errors with a clear message, same "let the raised exception's message
 speak for itself" approach `ApiClientError` already uses above, not a
 structured/typed error result.
+
+`getDistrictByCoords(latitude, longitude)` is the "use my location"
+shortcut -- the browser's Geolocation API hands back a lat/lon fix, and
+this skips the address box entirely. Same `District` shape, same
+`GeocoderService`, same `98 -> 0` normalisation; it just hits the
+Census geocoder's `geographies/coordinates` endpoint (`x`=longitude,
+`y`=latitude) instead of `onelineaddress`, and reads the state from that
+response's `States` layer (`STUSAB`) rather than `addressComponents`.
+A point outside every U.S. congressional district (offshore, another
+country) comes back HTTP 200 with an empty `geographies` object and
+raises `NoLocationMatchError` (an `InvalidAddressError` -- an input
+problem, not a geocoder fault), surfaced as a GraphQL error like the
+rest. A response that *does* resolve some geography layers but is
+missing the `States` or `Congressional Districts` layer is a
+malformed/partial response, not an offshore point, and raises
+`GeocoderError` instead -- matching how `getDistrict` classifies the
+equivalent gaps on the address path. Needed
+server-side rather than called from the browser because the Census
+geocoder sends no CORS headers.
 
 `cd-server` now has its own Postgres database, `cd_customers`, that no
 other component touches -- schema managed by Alembic migrations under

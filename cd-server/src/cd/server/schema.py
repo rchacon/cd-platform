@@ -287,6 +287,22 @@ class Query:
         return District(state=state, district=district)
 
     @strawberry.field
+    async def get_district_by_coords(
+        self, latitude: float, longitude: float
+    ) -> District:
+        """Resolve a geolocation fix (latitude/longitude, e.g. from the
+        browser Geolocation API) to a state + congressional district --
+        the "use my location" shortcut past typing an address. Same
+        `District` shape and same failure style as `getDistrict`; a point
+        outside every U.S. congressional district (offshore, another
+        country) surfaces as a GraphQL error.
+        """
+        state, district = await geocoder_service.get_district_for_coords(
+            latitude, longitude
+        )
+        return District(state=state, district=district)
+
+    @strawberry.field
     async def get_representatives(self, state: str, district: int) -> list[Representative]:
         # cd_api_service already validates cd-api's response against the
         # shared Member model and returns real Member objects -- no JSON

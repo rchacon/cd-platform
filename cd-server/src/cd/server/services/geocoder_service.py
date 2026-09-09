@@ -4,6 +4,9 @@ import httpx
 from cd.lib.apportionment import normalize_district
 
 CENSUS_GEOCODER_ENDPOINT = "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress"
+CENSUS_GEOCODER_COORDS_ENDPOINT = (
+    "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"
+)
 
 # The rest of this stack represents a non-voting delegate seat (DC, PR,
 # GU, VI, AS, MP) as district 0. That's not a choice made here -- it comes
@@ -39,6 +42,13 @@ class NoAddressMatchError(InvalidAddressError):
 class AmbiguousAddressError(InvalidAddressError):
     """The address matched more than one candidate location; the caller
     should ask for a more specific address."""
+
+
+class NoLocationMatchError(InvalidAddressError):
+    """A lat/lon pair that doesn't fall within any U.S. congressional
+    district -- offshore, or outside the United States. The input parsed
+    fine, there's just nothing there, so it's an input problem
+    (InvalidAddressError), not a GeocoderError."""
 
 
 # Both the layer name and its district field embed the Congress number
@@ -132,6 +142,85 @@ class GeocoderService:
 
         if state is None:
             raise GeocoderError("Census geocoder response was missing addressComponents.state")
+        if district is None:
+            raise GeocoderError(
+                "Census geocoder response was missing a Congressional Districts geography"
+            )
+
+        return state, normalize_district(state, int(district))
+
+    async def get_district_for_coords(
+        self, latitude: float, longitude: float
+    ) -> tuple[str, int]:
+        """Resolve a lat/lon pair to (state abbreviation, district number)
+        via the Census Bureau's coordinate geocoding API -- the "use my
+        location" path, where there's no address to type. Same 98 -> 0
+        delegate normalisation and same failure style as get_district();
+        raises NoLocationMatchError when the point is outside every U.S.
+        congressional district, GeocoderError for a network/response-shape
+        failure."""
+        try:
+            response = await self._client.get(
+                CENSUS_GEOCODER_COORDS_ENDPOINT,
+                params={
+                    # The Census geocoder takes x=longitude, y=latitude.
+                    "x": longitude,
+                    "y": latitude,
+                    "benchmark": "Public_AR_Current",
+                    "vintage": "Current_Current",
+                    "format": "json",
+                },
+                timeout=10,
+            )
+        except httpx.HTTPError as e:
+            raise GeocoderError(f"Failed to reach the Census geocoder: {e}") from e
+
+        if response.is_error:
+            raise GeocoderError(f"Census geocoder returned HTTP {response.status_code}")
+
+        try:
+            geographies = response.json()["result"]["geographies"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise GeocoderError("Census geocoder returned an unexpected response") from e
+
+        # `geographies` should be an object. A JSON `null` still subscripts
+        # fine above (it's `result.geographies`, present but null), and any
+        # non-object value would turn the `.get()`/`.items()` calls below
+        # into an uncaught AttributeError -- so coerce `null` to `{}` (the
+        # same defence get_district() uses: `match.get("geographies") or
+        # {}`) and reject any other non-object shape as a response-shape
+        # failure.
+        geographies = geographies or {}
+        if not isinstance(geographies, dict):
+            raise GeocoderError("Census geocoder returned an unexpected response")
+
+        # A point in the ocean or outside the US comes back HTTP 200 with
+        # `geographies` an empty object -- verified against the live API
+        # for a mid-Pacific point and 0,0. That, and only that, is
+        # NoLocationMatchError: the coordinates parsed, there's just
+        # nothing there.
+        if not geographies:
+            raise NoLocationMatchError(
+                f"({latitude}, {longitude}) is not inside a U.S. congressional district"
+            )
+
+        # Past here the response resolved at least one geography layer, so
+        # a *missing* States or Congressional Districts layer is a
+        # malformed/partial response, not an offshore point -- a
+        # coordinate that resolves to a district is by definition in a
+        # state, and vice versa. get_district() classifies the equivalent
+        # gaps on the address path as GeocoderError; match that rather
+        # than telling an in-US caller their location isn't in a district.
+        # The States layer (STUSAB, the 2-letter abbreviation) is the
+        # coordinate path's equivalent of get_district's
+        # addressComponents.state.
+        states = geographies.get("States") or []
+        state = states[0].get("STUSAB") if states and states[0] else None
+        district = _extract_congressional_district(geographies)
+        if state is None:
+            raise GeocoderError(
+                "Census geocoder response was missing a States geography"
+            )
         if district is None:
             raise GeocoderError(
                 "Census geocoder response was missing a Congressional Districts geography"
