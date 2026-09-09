@@ -288,6 +288,24 @@ def test_get_district_for_coords_raises_no_location_match_for_empty_geographies(
         asyncio.run(GeocoderService().get_district_for_coords(35.0, -140.0))
 
 
+def test_get_district_for_coords_treats_null_geographies_as_no_location_match(monkeypatch):
+    # `result.geographies` present but JSON null -- subscripts fine, must
+    # not blow up on `.get()`/`.items()` with an uncaught AttributeError.
+    monkeypatch.setattr(
+        httpx.AsyncClient, "get", _fake_response({"result": {"geographies": None}})
+    )
+    with pytest.raises(NoLocationMatchError):
+        asyncio.run(GeocoderService().get_district_for_coords(35.0, -140.0))
+
+
+def test_get_district_for_coords_raises_geocoder_error_for_non_object_geographies(monkeypatch):
+    monkeypatch.setattr(
+        httpx.AsyncClient, "get", _fake_response({"result": {"geographies": "nope"}})
+    )
+    with pytest.raises(GeocoderError, match="unexpected response"):
+        asyncio.run(GeocoderService().get_district_for_coords(35.0, -140.0))
+
+
 def test_get_district_for_coords_raises_no_location_match_when_state_layer_empty(monkeypatch):
     payload = {
         "result": {

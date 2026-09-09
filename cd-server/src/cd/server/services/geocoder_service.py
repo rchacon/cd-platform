@@ -183,6 +183,17 @@ class GeocoderService:
         except (ValueError, KeyError, TypeError) as e:
             raise GeocoderError("Census geocoder returned an unexpected response") from e
 
+        # `geographies` should be an object. A JSON `null` still subscripts
+        # fine above (it's `result.geographies`, present but null), and any
+        # non-object value would turn the `.get()`/`.items()` calls below
+        # into an uncaught AttributeError -- so coerce `null` to `{}` (the
+        # same defence get_district() uses: `match.get("geographies") or
+        # {}`) and reject any other non-object shape as a response-shape
+        # failure.
+        geographies = geographies or {}
+        if not isinstance(geographies, dict):
+            raise GeocoderError("Census geocoder returned an unexpected response")
+
         # A point in the ocean or outside the US comes back HTTP 200 with
         # every geography layer empty -- not a geocoder fault, just nothing
         # there. `_extract_congressional_district` already returns None for
