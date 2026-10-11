@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from cd.etl import senate_votes_source as src
+from cd.etl.clients import senate_gov as src
 
 # Trimmed to the elements the parser reads; structure matches the real
 # senate.gov feed (verified live against the 119th Congress, session 1).
