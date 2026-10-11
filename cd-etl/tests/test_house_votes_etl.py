@@ -79,7 +79,7 @@ def test_resolve_amendment_bill_returns_bill_key_when_resolvable(monkeypatch):
         calls.append(url)
         return {"amendment": {"amendedBill": {"congress": 119, "type": "HR", "number": "3838"}}}
 
-    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
+    monkeypatch.setattr(etl.congress_gov, "api_get", fake_api_get)
 
     result = etl.resolve_amendment_bill(
         session=None, congress=119, amendment_type="HAMDT", amendment_number="97",
@@ -91,7 +91,7 @@ def test_resolve_amendment_bill_returns_bill_key_when_resolvable(monkeypatch):
 
 def test_resolve_amendment_bill_returns_none_when_unresolvable(monkeypatch):
     monkeypatch.setattr(
-        etl.congress_api, "api_get", lambda session, url, params=None: {"amendment": {}},
+        etl.congress_gov, "api_get", lambda session, url, params=None: {"amendment": {}},
     )
 
     result = etl.resolve_amendment_bill(
@@ -176,7 +176,7 @@ def test_resolve_bills_skips_vote_with_unresolvable_amendment(monkeypatch):
     fake_conn = _FakeConn()
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _FakeConnHook(fake_conn))
     monkeypatch.setattr(
-        etl.congress_api, "api_get", lambda session, url, params=None: {"amendment": {}},
+        etl.congress_gov, "api_get", lambda session, url, params=None: {"amendment": {}},
     )
 
     dag = etl.house_votes_etl()
@@ -202,7 +202,7 @@ def test_resolve_bills_skips_vote_when_amendment_bill_congress_mismatches(monkey
     fake_conn = _FakeConn()
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _FakeConnHook(fake_conn))
     monkeypatch.setattr(
-        etl.congress_api, "api_get",
+        etl.congress_gov, "api_get",
         lambda session, url, params=None: {
             "amendment": {"amendedBill": {"congress": 118, "type": "HR", "number": "3838"}}
         },
@@ -227,7 +227,7 @@ def test_extract_house_vote_summaries_covers_both_sessions(monkeypatch):
         calls.append(url)
         return [{"rollCallNumber": 1}]
 
-    monkeypatch.setattr(etl.congress_api, "paginate", fake_paginate)
+    monkeypatch.setattr(etl.congress_gov, "paginate", fake_paginate)
 
     dag = etl.house_votes_etl()
     extract_house_vote_summaries = dag.task_dict["extract_house_vote_summaries"].python_callable
@@ -249,7 +249,7 @@ def test_fetch_vote_details_skips_failed_fetch_without_failing_the_batch(monkeyp
             raise RuntimeError("simulated failure")
         return {"houseRollCallVote": {"voteQuestion": "On Passage"}}
 
-    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
+    monkeypatch.setattr(etl.congress_gov, "api_get", fake_api_get)
 
     dag = etl.house_votes_etl()
     fetch_vote_details = dag.task_dict["fetch_vote_details"].python_callable
@@ -346,7 +346,7 @@ def test_build_batch_rows_skips_vote_missing_from_fetched_by_key_without_failing
     # isolation, now at the pure _build_batch_rows layer so this
     # coverage doesn't need a live Postgres connection -- one vote's
     # failed/absent member-vote fetch (missing from fetched_by_key, same
-    # shape congress_api.fetch_concurrently leaves a failed id in) must
+    # shape congress_gov.fetch_concurrently leaves a failed id in) must
     # not discard the rest of the batch.
     resolved = [_resolved_vote(240), _resolved_vote(241)]
     vote_details = [_vote_detail(240), _vote_detail(241)]

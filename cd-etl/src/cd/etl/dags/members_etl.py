@@ -7,8 +7,9 @@ from typing import Any
 import yaml
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import congress_api, db
-from cd.etl.congress_models import (
+from cd.etl import db
+from cd.etl.clients import congress_gov
+from cd.etl.models.congress_gov import (
     CongressCurrent,
     CongressCurrentResponse,
     MemberDetail,
@@ -24,7 +25,7 @@ CONGRESS_CURRENT_CONGRESS_API = "https://api.congress.gov/v3/congress/current"
 # Not api.congress.gov -- a separate, public, unauthenticated source (see
 # _crosswalk_row's own comment for why this crosswalk can't come from
 # Congress.gov itself). Fetched directly with _API_SESSION.get(...), not
-# congress_api.api_get, since that helper hardcodes the Congress.gov API
+# congress_gov.api_get, since that helper hardcodes the Congress.gov API
 # key header and a format=json param, neither of which applies here (this
 # is YAML, not JSON).
 LEGISLATORS_CROSSWALK_URL = (
@@ -36,7 +37,7 @@ PAGE_LIMIT = 250
 DETAIL_FETCH_WORKERS = 10
 POSTGRES_CONN_ID = "congressional_postgres"
 
-_API_SESSION = congress_api.build_session(pool_maxsize=DETAIL_FETCH_WORKERS)
+_API_SESSION = congress_gov.build_session(pool_maxsize=DETAIL_FETCH_WORKERS)
 
 
 MEMBERS_UPSERT_SQL = """
@@ -376,7 +377,7 @@ def congress_members_etl():
 
     @task
     def sync_current_congress() -> int:
-        response = congress_api.api_get_model(
+        response = congress_gov.api_get_model(
             _API_SESSION, CONGRESS_CURRENT_CONGRESS_API, CongressCurrentResponse,
         )
         number, start_date, end_date = _derive_congress_dates(response.congress)
@@ -430,7 +431,7 @@ def congress_members_etl():
         # _members_needing_sync.
         summaries = [
             {"bioguideId": item["bioguideId"], "updateDate": item.get("updateDate")}
-            for item in congress_api.paginate(
+            for item in congress_gov.paginate(
                 _API_SESSION,
                 f"{CONGRESS_MEMBERS_API}congress/{congress}",
                 {"currentMember": "false"},
@@ -470,11 +471,11 @@ def congress_members_etl():
     @task
     def fetch_member_details(bioguide_ids: list[str]) -> list[dict[str, Any]]:
         def fetch_one(bioguide_id: str) -> dict[str, Any]:
-            return congress_api.api_get(
+            return congress_gov.api_get(
                 _API_SESSION, f"{CONGRESS_MEMBERS_API}{bioguide_id}",
             )["member"]
 
-        details = congress_api.fetch_concurrently(
+        details = congress_gov.fetch_concurrently(
             bioguide_ids, fetch_one, DETAIL_FETCH_WORKERS,
         )
 

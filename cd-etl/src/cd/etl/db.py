@@ -40,7 +40,7 @@ class IsolatedTransaction:
     refresh_one(), even though both do a similar isolate-and-continue
     dance -- sync_bill() commits multiple times internally rather than
     once at the end, and refresh_one() re-raises into
-    congress_api.fetch_concurrently()'s own per-item isolation instead of
+    congress_gov.fetch_concurrently()'s own per-item isolation instead of
     handling it itself, so neither actually fits this shape without a
     larger, separate refactor of their own control flow (tracked in
     rchacon/cd-platform#87).
