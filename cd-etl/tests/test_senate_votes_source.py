@@ -185,3 +185,40 @@ def test_parse_bill_reference_parses_combined_display_strings(text, expected):
 @pytest.mark.parametrize("text", ["PN 373", "S.Amdt. 2", "not a bill", "", None, "H.R."])
 def test_parse_bill_reference_returns_none_for_non_bills(text):
     assert src.parse_bill_reference(text) is None
+
+
+# --- fetch_* ---
+
+
+class _FakeResponse:
+    def __init__(self, content):
+        self.content = content
+
+    def raise_for_status(self):
+        pass
+
+
+class _RecordingSession:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return _FakeResponse(self.content)
+
+
+def test_fetch_vote_menu_sends_an_identifying_user_agent():
+    session = _RecordingSession(_MENU_XML)
+    src.fetch_vote_menu(session, 119, 1)
+    url, kwargs = session.calls[0]
+    assert url.endswith("vote_menu_119_1.xml")
+    assert kwargs["headers"]["User-Agent"].startswith("cd-platform-etl")
+
+
+def test_fetch_vote_detail_sends_an_identifying_user_agent():
+    session = _RecordingSession(_DETAIL_XML)
+    src.fetch_vote_detail(session, 119, 1, 648)
+    url, kwargs = session.calls[0]
+    assert url.endswith("vote_119_1_00648.xml")
+    assert kwargs["headers"]["User-Agent"].startswith("cd-platform-etl")

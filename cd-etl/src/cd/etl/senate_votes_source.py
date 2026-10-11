@@ -42,6 +42,13 @@ SENATE_VOTE_DETAIL_URL = (
     "vote{congress}{session}/vote_{congress}_{session}_{vote_number:05d}.xml"
 )
 
+# senate.gov sits behind an Akamai edge; identify ourselves rather than
+# send python-requests' default UA, which bot rules are likelier to block
+# (a 403, or worse a 200 HTML challenge page that fails XML parsing).
+_REQUEST_HEADERS = {
+    "User-Agent": "cd-platform-etl (+https://github.com/rchacon/cd-platform)",
+}
+
 # senate.gov spells a document type as a dotted display form; cd-etl's
 # `bill_type` enum (migration 0002) uses the bare code. Only the eight
 # bill types Congress.gov's /bill endpoint actually serves are mapped --
@@ -205,7 +212,9 @@ def fetch_vote_menu(
     session: requests.Session, congress: int, session_number: int
 ) -> list[SenateVoteMenuItem]:
     response = session.get(
-        SENATE_VOTE_MENU_URL.format(congress=congress, session=session_number), timeout=30
+        SENATE_VOTE_MENU_URL.format(congress=congress, session=session_number),
+        headers=_REQUEST_HEADERS,
+        timeout=30,
     )
     response.raise_for_status()
     return parse_vote_menu(response.content)
@@ -218,6 +227,7 @@ def fetch_vote_detail(
         SENATE_VOTE_DETAIL_URL.format(
             congress=congress, session=session_number, vote_number=vote_number
         ),
+        headers=_REQUEST_HEADERS,
         timeout=30,
     )
     response.raise_for_status()
