@@ -161,6 +161,21 @@ def test_parse_vote_detail_skips_member_rows_missing_lis_id_or_cast():
     assert casts == {"S428": "Yea", "S317": "Not Voting"}
 
 
+
+@pytest.mark.parametrize(
+    "element, replacement",
+    [
+        (b"<congress>119</congress>", b""),
+        (b"<session>1</session>", b"<session/>"),
+        (b"<vote_number>648</vote_number>", b"<vote_number>x</vote_number>"),
+    ],
+)
+def test_parse_vote_detail_names_the_bad_required_int_field(element, replacement):
+    tag = element.split(b">")[0][1:].decode()
+    with pytest.raises(ValueError, match=f"<{tag}>"):
+        src.parse_vote_detail(_DETAIL_XML.replace(element, replacement, 1))
+
+
 # --- bill_type_for ---
 
 

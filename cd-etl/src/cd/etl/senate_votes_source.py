@@ -157,6 +157,14 @@ def _text(element: ET.Element | None, path: str) -> str | None:
     return stripped or None
 
 
+def _required_int(element: ET.Element, path: str) -> int:
+    raw = _text(element, path)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"Senate vote detail has missing/non-integer <{path}>: {raw!r}") from None
+
+
 def parse_vote_menu(xml: str | bytes) -> list[SenateVoteMenuItem]:
     """Parse a `vote_menu_{congress}_{session}.xml` document into its
     vote list. A row whose `<vote_number>` can't be parsed is skipped
@@ -207,9 +215,9 @@ def parse_vote_detail(xml: str | bytes) -> SenateVoteDetail:
         member_votes.append(SenateMemberVote(lis_member_id=lis_member_id, vote_cast=vote_cast))
 
     return SenateVoteDetail(
-        congress=int(_text(root, "congress")),
-        session=int(_text(root, "session")),
-        vote_number=int(_text(root, "vote_number")),
+        congress=_required_int(root, "congress"),
+        session=_required_int(root, "session"),
+        vote_number=_required_int(root, "vote_number"),
         vote_date=_parse_vote_date(_text(root, "vote_date") or ""),
         question=_text(root, "question") or "",
         result=_text(root, "vote_result") or "",
