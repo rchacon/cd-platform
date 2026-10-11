@@ -181,13 +181,23 @@ def parse_vote_detail(xml: str | bytes) -> SenateVoteDetail:
     amendment = root.find("amendment")
 
     raw_doc_congress = _text(document, "document_congress")
-    member_votes = [
-        SenateMemberVote(
-            lis_member_id=_text(member, "lis_member_id") or "",
-            vote_cast=_text(member, "vote_cast") or "",
-        )
-        for member in root.findall("members/member")
-    ]
+    # A member row missing either field is skipped (logged) here, rather
+    # than coerced to "" and left to fail later as a misleading crosswalk
+    # miss or vote_cast KeyError in the DAG -- same skip-and-log precedent
+    # as parse_vote_menu's bad-row handling.
+    member_votes: list[SenateMemberVote] = []
+    for member in root.findall("members/member"):
+        lis_member_id = _text(member, "lis_member_id")
+        vote_cast = _text(member, "vote_cast")
+        if lis_member_id is None or vote_cast is None:
+            logger.warning(
+                "Skipping Senate vote %s member row with lis_member_id=%r vote_cast=%r",
+                _text(root, "vote_number"),
+                lis_member_id,
+                vote_cast,
+            )
+            continue
+        member_votes.append(SenateMemberVote(lis_member_id=lis_member_id, vote_cast=vote_cast))
 
     return SenateVoteDetail(
         congress=int(_text(root, "congress")),

@@ -140,6 +140,17 @@ def test_parse_vote_detail_leaves_blank_document_fields_none():
     assert detail.amendment.amendment_to_document_number == "H.R. 4"
 
 
+def test_parse_vote_detail_skips_member_rows_missing_lis_id_or_cast():
+    xml = _DETAIL_XML.replace(
+        b"</members>",
+        b"<member><vote_cast>Yea</vote_cast><lis_member_id/></member>"
+        b"<member><lis_member_id>S999</lis_member_id></member>"
+        b"</members>",
+    )
+    casts = {m.lis_member_id: m.vote_cast for m in src.parse_vote_detail(xml).member_votes}
+    assert casts == {"S428": "Yea", "S317": "Not Voting"}
+
+
 # --- bill_type_for ---
 
 
