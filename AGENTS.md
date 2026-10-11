@@ -19,9 +19,14 @@ members of the current Congress from api.congress.gov,
 `bills_common.py`; the on-demand bill resolution + the
 `roll_calls`/`roll_call_member_votes` upsert SQL it shares with a future
 `senate_votes_etl` live in `cd/etl/roll_calls_common.py`, mirroring
-`bills_common.py` -- and `cd/etl/senate_votes_source.py` reads senate.gov's
+`bills_common.py` -- and `cd/etl/clients/senate_gov.py` reads senate.gov's
 own roll-call XML feed, since api.congress.gov has no Senate vote endpoint;
-the `senate_votes_etl` DAG that consumes it isn't built yet),
+the `senate_votes_etl` DAG that consumes it isn't built yet). External
+sources follow one layout: `cd/etl/clients/<source>.py` (fetch/parse --
+`congress_gov`, `senate_gov`) and `cd/etl/models/<source>.py` (that
+source's Pydantic models), named after the system they're a client *of*,
+same rule as `cd-server`'s clients below; source-agnostic HTTP helpers
+(`build_session`, `fetch_concurrently`) live in `cd/etl/http.py`,
 and `cd-etl/src/cd/etl/dags/bills_etl.py` refreshes
 already-synced bills' `policy_area`/subjects/title/CRS summary on its own
 schedule (see that file's own DAG pipeline section below) -- all into a
@@ -315,7 +320,7 @@ refresh path, on its own `@daily` schedule:
    -- caps the recurring daily API/DB-write volume at the cost of up to
    that many days' staleness on a genuinely-still-active bill.
 3. `refresh_bills` — calls `bills_common.sync_bill()` for each known bill
-   via `congress_api.fetch_concurrently` (`REFRESH_BATCH_WORKERS`, 5 at
+   via `http.fetch_concurrently` (`REFRESH_BATCH_WORKERS`, 5 at
    once), each worker opening and closing its own connection rather than
    sharing one -- `sync_bill`'s cursor/commit calls aren't safe to run
    concurrently on a single psycopg2 connection, unlike the pure-HTTP
@@ -463,9 +468,9 @@ make test-server       # docker compose run --rm -e PGDATABASE=cd_customers_test
 `tests/test_upsert_sql.py` needs a live Postgres and skips itself if one
 isn't reachable; every other test is a pure unit test with no external
 dependencies. `tests/conftest.py` sets a placeholder `CONGRESS_API_KEY` so
-tests exercising `congress_api.py`'s `api_get()` directly against a fake
+tests exercising `clients/congress_gov.py`'s `api_get()` directly against a fake
 session don't need a real key -- `api_get()` reads it lazily on every call
-(`congress_api.py`'s own `_congress_api_key()`), not at import time, so
+(`clients/congress_gov.py`'s own `_congress_api_key()`), not at import time, so
 merely importing any DAG file (which every DAG does transitively) never
 requires this var at all (`cd-platform#79` -- this used to be an
 import-time read, which broke `dag-processor` parsing DAGs under

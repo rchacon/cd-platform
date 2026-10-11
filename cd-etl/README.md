@@ -6,12 +6,14 @@ into the schema defined in `migrations/versions/`.
 
 ## What it does
 
-`src/congress_api.py` (session/pagination/concurrent-fetch HTTP helpers --
-strictly interfacing with api.congress.gov itself, no DB code),
-`src/db.py` (shared Postgres helpers -- `IsolatedTransaction`,
-`get_current_congress`, `source_hash`), and `src/congress_models.py`
-(Pydantic models for the API's response shapes) are shared, DAG-agnostic
-modules every DAG below builds on.
+`src/cd/etl/clients/` (one module per external source, named after it --
+`congress_gov.py` for api.congress.gov's `api_get`/`paginate`,
+`senate_gov.py` for senate.gov's roll-call XML; fetch/parse only, no DB
+code), `src/cd/etl/models/` (each source's Pydantic response models, same
+per-source naming), `src/cd/etl/http.py` (source-agnostic
+`build_session`/`fetch_concurrently`), and `src/cd/etl/db.py` (shared
+Postgres helpers -- `IsolatedTransaction`, `get_current_congress`,
+`source_hash`) are shared, DAG-agnostic modules every DAG below builds on.
 
 ### `congress_members_etl` (`src/members_etl.py`)
 
