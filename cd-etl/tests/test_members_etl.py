@@ -322,7 +322,7 @@ def test_fetch_member_details_skips_failed_fetches_without_failing_the_batch(mon
             raise RuntimeError("simulated API failure")
         return {"member": {"bioguideId": bioguide_id}}
 
-    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
+    monkeypatch.setattr(etl.congress_gov, "api_get", fake_api_get)
 
     dag = etl.congress_members_etl()
     fetch_member_details = dag.task_dict["fetch_member_details"].python_callable
@@ -626,7 +626,7 @@ def test_api_session_reuses_connections_and_retries_transient_failures():
     # requests.Session() with no retry/backoff -- across ~500+
     # per-member detail calls that meant no connection reuse and a
     # single transient 5xx/timeout failing the whole task. Now built via
-    # congress_api.build_session(), shared by any future DAG.
+    # http.build_session(), shared by any future DAG.
     adapter = etl._API_SESSION.get_adapter("https://api.congress.gov")
 
     assert adapter.max_retries.total == 3

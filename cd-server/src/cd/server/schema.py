@@ -35,7 +35,7 @@ VERSION = read_version(Path(__file__).parent)
 GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 
 # One instance each, reused across requests -- same singleton-at-import-time
-# pattern cd-etl's congress_api.py already uses for its own HTTP session.
+# pattern cd-etl's DAGs already use for their shared HTTP session.
 # cd_api_service/geocoder_service/users_service all hold an open
 # connection pool, closed via app.py's lifespan on shutdown (see each
 # service's aclose()). users_service's pool can't actually be opened yet

@@ -4,9 +4,9 @@ import uuid
 import psycopg2
 import pytest
 
-# congress_api.py's api_get() reads this lazily on every call (not at
+# clients/congress_gov.py's api_get() reads this lazily on every call (not at
 # import time, cd-platform#79) -- still needed here since a couple of
-# test_congress_api.py's tests exercise api_get() directly against a
+# test_clients/congress_gov.py's tests exercise api_get() directly against a
 # fake session and never make real API calls, so a placeholder is fine.
 os.environ.setdefault("CONGRESS_API_KEY", "test-key")
 

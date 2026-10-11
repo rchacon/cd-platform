@@ -3,7 +3,7 @@ import importlib
 import pytest
 from pydantic import BaseModel
 
-from cd.etl import congress_api
+from cd.etl.clients import congress_gov
 
 
 class _FakeResponse:
@@ -33,20 +33,10 @@ class Widget(BaseModel):
     count: int
 
 
-def test_build_session_retries_transient_failures_get_only():
-    session = congress_api.build_session(pool_maxsize=5)
-    adapter = session.get_adapter("https://api.congress.gov")
-
-    assert adapter.max_retries.total == 3
-    assert adapter.max_retries.allowed_methods == frozenset(["GET"])
-    assert set(adapter.max_retries.status_forcelist) == {429, 500, 502, 503, 504}
-    assert adapter._pool_maxsize == 5
-
-
 def test_api_get_includes_format_alongside_caller_params():
     session = _FakeSession([{"ok": True}])
 
-    result = congress_api.api_get(session, "https://api.congress.gov/v3/thing", {"foo": "bar"})
+    result = congress_gov.api_get(session, "https://api.congress.gov/v3/thing", {"foo": "bar"})
 
     assert result == {"ok": True}
     call = session.calls[0]
@@ -61,10 +51,10 @@ def test_api_get_sends_the_api_key_as_a_header_not_a_query_param():
     # URL, so any failed-request log line leaked the key in plaintext.
     session = _FakeSession([{"ok": True}])
 
-    congress_api.api_get(session, "https://api.congress.gov/v3/thing")
+    congress_gov.api_get(session, "https://api.congress.gov/v3/thing")
 
     call = session.calls[0]
-    assert call["headers"] == {"X-Api-Key": congress_api._congress_api_key()}
+    assert call["headers"] == {"X-Api-Key": congress_gov._congress_api_key()}
     assert "api_key" not in call["params"]
     assert "api_key" not in (call["url"] or "")
 
@@ -77,19 +67,19 @@ def test_congress_api_key_is_read_lazily_not_at_import_time(monkeypatch):
     # re-executes the module body -- if the read were still at import
     # time, this would raise KeyError instead of succeeding.
     monkeypatch.delenv("CONGRESS_API_KEY", raising=False)
-    importlib.reload(congress_api)
+    importlib.reload(congress_gov)
 
     with pytest.raises(KeyError):
-        congress_api._congress_api_key()
+        congress_gov._congress_api_key()
 
     monkeypatch.setenv("CONGRESS_API_KEY", "test-key")
-    assert congress_api._congress_api_key() == "test-key"
+    assert congress_gov._congress_api_key() == "test-key"
 
 
 def test_api_get_model_validates_response_into_the_given_model():
     session = _FakeSession([{"name": "widget", "count": 3}])
 
-    result = congress_api.api_get_model(session, "https://api.congress.gov/v3/thing", Widget)
+    result = congress_gov.api_get_model(session, "https://api.congress.gov/v3/thing", Widget)
 
     assert result == Widget(name="widget", count=3)
 
@@ -99,7 +89,7 @@ def test_paginate_stops_on_short_page():
         {"items": [{"id": 1}, {"id": 2}]},
     ])
 
-    results = list(congress_api.paginate(
+    results = list(congress_gov.paginate(
         session, "https://api.congress.gov/v3/thing", {}, items_key="items", page_limit=3,
     ))
 
@@ -113,7 +103,7 @@ def test_paginate_advances_offset_across_full_pages():
         {"items": [{"id": 3}]},
     ])
 
-    results = list(congress_api.paginate(
+    results = list(congress_gov.paginate(
         session, "https://api.congress.gov/v3/thing", {}, items_key="items", page_limit=2,
     ))
 
@@ -125,20 +115,9 @@ def test_paginate_advances_offset_across_full_pages():
 def test_paginate_stops_on_empty_page():
     session = _FakeSession([{"items": []}])
 
-    results = list(congress_api.paginate(
+    results = list(congress_gov.paginate(
         session, "https://api.congress.gov/v3/thing", {}, items_key="items", page_limit=250,
     ))
 
     assert results == []
     assert len(session.calls) == 1
-
-
-def test_fetch_concurrently_skips_failures_without_failing_the_batch():
-    def fetch_one(id_):
-        if id_ == "bad":
-            raise RuntimeError("boom")
-        return id_.upper()
-
-    results = congress_api.fetch_concurrently(["good1", "bad", "good2"], fetch_one, max_workers=3)
-
-    assert sorted(results) == ["GOOD1", "GOOD2"]

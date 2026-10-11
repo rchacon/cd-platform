@@ -120,7 +120,7 @@ def _vote_detail(vote_number, session=1, vote_question="On Passage"):
 def _fake_members_api_get(member_votes_by_url_suffix):
     # sync_member_votes() fetches each vote's /members sub-resource itself
     # now (unlike the old load(), which received pre-fetched rows) --
-    # this stands in for congress_api.api_get, keyed by the URL's
+    # this stands in for congress_gov.api_get, keyed by the URL's
     # /{session}/{vote_number}/members suffix.
     def fake_api_get(session, url, params=None):
         for suffix, results in member_votes_by_url_suffix.items():
@@ -182,7 +182,7 @@ def test_get_or_sync_bill_is_cached_after_first_sync(pg_conn, test_bill_number, 
             }
         }
 
-    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
+    monkeypatch.setattr(etl.congress_gov, "api_get", fake_api_get)
     monkeypatch.setattr(etl.bedrock, "embed", lambda client, text: [0.1] * 1024)
 
     first_bill_id = etl.get_or_sync_bill(
@@ -320,7 +320,7 @@ def test_sync_member_votes_attributes_member_votes_to_the_correct_roll_call(
 
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
     monkeypatch.setattr(
-        etl.congress_api, "api_get",
+        etl.congress_gov, "api_get",
         _fake_members_api_get({
             f"/1/{vote_number_a}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Yea"}],
             f"/1/{vote_number_b}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Nay"}],
@@ -379,7 +379,7 @@ def test_sync_member_votes_batch_failure_does_not_block_other_batches(
     nonexistent_bill_id = 999_999_999  # violates roll_calls_bill_congress_fk
 
     monkeypatch.setattr(
-        etl.congress_api, "api_get",
+        etl.congress_gov, "api_get",
         _fake_members_api_get({
             f"/1/{good_vote_number_1}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Yea"}],
             f"/1/{good_vote_number_2}/members": [{"bioguideID": test_bioguide_id, "voteCast": "Nay"}],
@@ -453,7 +453,7 @@ def test_sync_member_votes_skips_vote_whose_member_fetch_failed(
         }}
 
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
-    monkeypatch.setattr(etl.congress_api, "api_get", fake_api_get)
+    monkeypatch.setattr(etl.congress_gov, "api_get", fake_api_get)
 
     dag = etl.house_votes_etl()
     sync_member_votes = dag.task_dict["sync_member_votes"].python_callable
@@ -498,7 +498,7 @@ def test_sync_member_votes_skips_db_write_for_batch_with_zero_valid_rows(
 
     monkeypatch.setattr(etl, "PostgresHook", lambda postgres_conn_id: _RealConnHook(pg_conn))
     monkeypatch.setattr(
-        etl.congress_api, "api_get",
+        etl.congress_gov, "api_get",
         _fake_members_api_get({f"/1/{vote_number}/members": []}),
     )
 

@@ -20,14 +20,15 @@ from datetime import date
 from typing import Any
 
 import requests
-from cd.etl import congress_api, db
-from cd.lib import bedrock
-from cd.etl.congress_models import (
+from cd.etl import db
+from cd.etl.clients import congress_gov
+from cd.etl.models.congress_gov import (
     BillDetailResponse,
     BillSubjectsResponse,
     BillSummariesResponse,
     BillSummaryItem,
 )
+from cd.lib import bedrock
 from psycopg2.extras import execute_values
 
 CONGRESS_BILL_API = "https://api.congress.gov/v3/bill/"
@@ -150,13 +151,13 @@ def sync_bill(
     bill_url = f"{CONGRESS_BILL_API}{congress}/{bill_type.lower()}/{bill_number}"
     with ThreadPoolExecutor(max_workers=3) as executor:
         detail_future = executor.submit(
-            congress_api.api_get_model, session, bill_url, BillDetailResponse,
+            congress_gov.api_get_model, session, bill_url, BillDetailResponse,
         )
         subjects_future = executor.submit(
-            congress_api.api_get_model, session, f"{bill_url}/subjects", BillSubjectsResponse,
+            congress_gov.api_get_model, session, f"{bill_url}/subjects", BillSubjectsResponse,
         )
         summaries_future = executor.submit(
-            congress_api.api_get_model, session, f"{bill_url}/summaries", BillSummariesResponse,
+            congress_gov.api_get_model, session, f"{bill_url}/summaries", BillSummariesResponse,
         )
         # detail/subjects are load-bearing (bill_id is a hard FK target
         # for roll_calls, via house_votes_etl's on-demand path) -- a

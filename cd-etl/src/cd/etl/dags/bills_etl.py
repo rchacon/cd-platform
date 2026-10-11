@@ -35,7 +35,7 @@ from typing import Any
 
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import bills_common, congress_api, db
+from cd.etl import bills_common, db, http
 from cd.lib import bedrock
 
 POSTGRES_CONN_ID = "congressional_postgres"
@@ -57,7 +57,7 @@ REFRESH_MIN_INTERVAL_DAYS = 7
 # once.
 REFRESH_BATCH_WORKERS = 5
 
-_API_SESSION = congress_api.build_session(pool_maxsize=REFRESH_BATCH_WORKERS * 3)
+_API_SESSION = http.build_session(pool_maxsize=REFRESH_BATCH_WORKERS * 3)
 _BEDROCK_CLIENT = bedrock.build_bedrock_client()
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def bills_etl():
 
     @task
     def refresh_bills(known_bills: list[dict[str, Any]], congress: int) -> None:
-        # Concurrent via congress_api.fetch_concurrently, unlike
+        # Concurrent via http.fetch_concurrently, unlike
         # house_votes_etl's resolve_bills (which stays sequential because
         # two votes in the same batch there can race to insert the *same*
         # not-yet-existing bill). Neither race applies here -- every row
@@ -131,7 +131,7 @@ def bills_etl():
             finally:
                 conn.close()
 
-        refreshed = congress_api.fetch_concurrently(
+        refreshed = http.fetch_concurrently(
             known_bills, refresh_one, max_workers=REFRESH_BATCH_WORKERS,
         )
         logger.info(

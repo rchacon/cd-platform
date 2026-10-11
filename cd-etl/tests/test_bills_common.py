@@ -4,7 +4,7 @@ import pytest
 from psycopg2.extras import execute_values
 
 from cd.etl import bills_common
-from cd.etl.congress_models import BillSummaryItem
+from cd.etl.models.congress_gov import BillSummaryItem
 from conftest import random_number
 
 # The 119th Congress is seeded by migration 0001, so bill fixtures below
@@ -153,7 +153,7 @@ def test_sync_bill_stores_title_policy_area_subjects_and_latest_crs_summary(
     pg_conn, test_bill_number, monkeypatch,
 ):
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get(
             "Dream Act", "Immigration", ["Immigration status and procedures"],
             [("2025-01-01", "Introduced summary"), ("2025-06-01", "Latest summary")],
@@ -180,7 +180,7 @@ def test_sync_bill_refreshes_an_already_synced_bill_when_source_data_changed(
     # bills_etl now calls on a schedule -- a changed policy_area/subject
     # list on a bill already in the table must actually get picked up.
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("Original Title", "Health", ["Health"], [("2025-01-01", "Original summary")]),
     )
     first_bill_id = bills_common.sync_bill(
@@ -191,7 +191,7 @@ def test_sync_bill_refreshes_an_already_synced_bill_when_source_data_changed(
 
     time.sleep(0.01)
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get(
             "Reclassified Title", "Immigration", ["Immigration status and procedures"],
             [("2025-01-01", "Original summary"), ("2025-06-01", "Updated summary")],
@@ -231,7 +231,7 @@ def test_sync_bill_degrades_gracefully_when_summaries_fetch_fails(
             }
         }
 
-    monkeypatch.setattr(bills_common.congress_api, "api_get", fake_api_get)
+    monkeypatch.setattr(bills_common.congress_gov, "api_get", fake_api_get)
 
     bill_id = bills_common.sync_bill(
         session=None, conn=pg_conn, congress=CONGRESS, bill_type="HR", bill_number=test_bill_number,
@@ -251,7 +251,7 @@ def test_sync_bill_preserves_prior_subjects_when_subjects_response_is_empty(
     # Regression test: an empty/degraded /subjects response on a refresh
     # must not wipe a bill's real, previously-synced subjects.
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("A Title", "Health", ["Health", "Insurance"], []),
     )
     bill_id = bills_common.sync_bill(
@@ -261,7 +261,7 @@ def test_sync_bill_preserves_prior_subjects_when_subjects_response_is_empty(
     assert _get_bill_subjects(pg_conn, bill_id) == ["Health", "Insurance"]
 
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("A Title", "Health", [], []),
     )
     bills_common.sync_bill(
@@ -279,7 +279,7 @@ def test_sync_bill_preserves_prior_values_when_refresh_returns_nulls(
     # come back null (a degraded fetch, not a real upstream change) must
     # not blank out a previously-synced bill's real values.
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("A Title", "Health", ["Health"], [("2025-01-01", "A summary")]),
     )
     bill_id = bills_common.sync_bill(
@@ -288,7 +288,7 @@ def test_sync_bill_preserves_prior_values_when_refresh_returns_nulls(
     )
 
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get(None, None, ["Health"], []),
     )
     bills_common.sync_bill(
@@ -321,7 +321,7 @@ def _count_vocab_term(pg_conn, kind, term):
 
 def test_sync_bill_embeds_a_new_bill(pg_conn, test_bill_number, monkeypatch):
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("Dream Act", "Immigration", [], [("2025-01-01", "A summary")]),
     )
 
@@ -346,7 +346,7 @@ def test_sync_bill_does_not_reembed_the_bill_when_content_is_unchanged(
         lambda client, text: (embed_calls.append(text), [0.1] * 1024)[1],
     )
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("A Title", "Health", [], [("2025-01-01", "A summary")]),
     )
 
@@ -371,7 +371,7 @@ def test_sync_bill_reembeds_when_content_changes(pg_conn, test_bill_number, monk
         lambda client, text: (embed_calls.append(text), [0.1] * 1024)[1],
     )
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("Original Title", "Health", [], [("2025-01-01", "Original summary")]),
     )
     bills_common.sync_bill(
@@ -381,7 +381,7 @@ def test_sync_bill_reembeds_when_content_changes(pg_conn, test_bill_number, monk
     assert len(embed_calls) == 1
 
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("Reclassified Title", "Immigration", [], [("2025-01-01", "Original summary")]),
     )
     bills_common.sync_bill(
@@ -405,7 +405,7 @@ def test_sync_bill_degrades_gracefully_when_bedrock_embed_fails(
         lambda client, text: (_ for _ in ()).throw(RuntimeError("simulated Bedrock failure")),
     )
     monkeypatch.setattr(
-        bills_common.congress_api, "api_get",
+        bills_common.congress_gov, "api_get",
         _fake_api_get("A Title", "Health", [], [("2025-01-01", "A summary")]),
     )
 
@@ -437,7 +437,7 @@ def test_sync_bill_embeds_a_shared_policy_area_exactly_once_across_two_bills(
 
     try:
         monkeypatch.setattr(
-            bills_common.congress_api, "api_get",
+            bills_common.congress_gov, "api_get",
             _fake_api_get("Bill A", term, [], []),
         )
         bills_common.sync_bill(
@@ -445,7 +445,7 @@ def test_sync_bill_embeds_a_shared_policy_area_exactly_once_across_two_bills(
             bedrock_client=None,
         )
         monkeypatch.setattr(
-            bills_common.congress_api, "api_get",
+            bills_common.congress_gov, "api_get",
             _fake_api_get("Bill B", term, [], []),
         )
         bills_common.sync_bill(

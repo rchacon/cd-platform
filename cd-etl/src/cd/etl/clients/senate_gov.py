@@ -13,7 +13,7 @@ static XML, no API key required (rchacon/cd-platform#8):
   - a per-vote *detail* document with the `<document>` block (the bill
     the vote is on) and every senator's cast keyed by `<lis_member_id>`.
 
-This module is the source adapter only -- fetch + parse into models, plus
+This module is the client only -- fetch + parse into `models.senate_gov`, plus
 the pure helpers that interpret senate.gov's display-form bill strings
 ("S.J.Res." etc.) against cd-etl's `bill_type` enum. Deciding *which*
 votes to keep (bill-referencing only, matching house_votes_etl's scope --
@@ -29,10 +29,16 @@ from datetime import date, datetime
 from xml.etree import ElementTree as ET
 
 import requests
+from cd.etl.models.senate_gov import (
+    SenateMemberVote,
+    SenateVoteAmendment,
+    SenateVoteDetail,
+    SenateVoteDocument,
+    SenateVoteMenuItem,
+)
 # Parsing goes through defusedxml (rejects entity-expansion/external-entity
 # payloads in network-fetched XML); stdlib ET stays for the Element type.
 from defusedxml import ElementTree as SafeET
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -74,46 +80,6 @@ _VOTE_DATE_FORMATS = ("%B %d, %Y, %I:%M %p", "%B %d, %Y")
 
 # "H.R. 4" / "S.J.Res. 82" -> ("H.R.", "4") / ("S.J.Res.", "82").
 _BILL_REFERENCE_RE = re.compile(r"^\s*([A-Za-z.]+)\s*(\d+)\s*$")
-
-
-class SenateVoteMenuItem(BaseModel):
-    vote_number: int
-    # None for an en-bloc vote (a single roll call covering several
-    # matters, each with its own <issue>) -- those are always nomination
-    # groups in practice, so the DAG drops a null-issue item anyway.
-    issue: str | None = None
-
-
-class SenateVoteDocument(BaseModel):
-    # All optional: an amendment or procedural vote can leave every field
-    # blank. document_number is a string (Congress.gov bill numbers are
-    # ints, but keep the raw form and let the DAG int() it).
-    document_type: str | None = None
-    document_number: str | None = None
-    document_congress: int | None = None
-
-
-class SenateVoteAmendment(BaseModel):
-    # senate.gov gives the amended bill as one display string
-    # ("H.R. 4"), not a type/number pair -- see parse_bill_reference().
-    amendment_to_document_number: str | None = None
-
-
-class SenateMemberVote(BaseModel):
-    lis_member_id: str
-    vote_cast: str  # "Yea" / "Nay" / "Present" / "Not Voting"
-
-
-class SenateVoteDetail(BaseModel):
-    congress: int
-    session: int
-    vote_number: int
-    vote_date: date
-    question: str  # "On Passage of the Bill", "On the Motion", ...
-    result: str  # "Bill Passed", "Motion Agreed to", ...
-    document: SenateVoteDocument
-    amendment: SenateVoteAmendment
-    member_votes: list[SenateMemberVote]
 
 
 def bill_type_for(display_form: str | None) -> str | None:
