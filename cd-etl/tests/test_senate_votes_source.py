@@ -107,6 +107,16 @@ def test_parse_vote_menu_skips_row_with_unparseable_vote_number():
     assert numbers == [648, 659, 655]  # the "bogus" row is dropped
 
 
+def test_parse_vote_menu_returns_empty_for_a_session_with_no_votes_yet():
+    xml = b"<vote_summary><congress>119</congress><votes/></vote_summary>"
+    assert src.parse_vote_menu(xml) == []
+
+
+def test_parse_vote_menu_raises_when_votes_container_is_missing():
+    with pytest.raises(ValueError, match="no <votes> element"):
+        src.parse_vote_menu(b"<error><message>Not found</message></error>")
+
+
 # --- parse_vote_detail ---
 
 

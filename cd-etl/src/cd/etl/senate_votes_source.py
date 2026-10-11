@@ -162,8 +162,15 @@ def parse_vote_menu(xml: str | bytes) -> list[SenateVoteMenuItem]:
     vote list. A row whose `<vote_number>` can't be parsed is skipped
     (logged), not fatal -- the menu is a ~1300-row bulk list."""
     root = ET.fromstring(xml)
+    # An absent <votes> container means the document isn't the menu we
+    # expect (renamed/wrapped structure, an XML error page) -- raise so the
+    # DAG run fails visibly instead of "succeeding" with zero votes. An
+    # *empty* <votes/> (a session with no votes yet) is still a valid [].
+    votes = root.find("votes")
+    if votes is None:
+        raise ValueError(f"Senate vote menu has no <votes> element (root <{root.tag}>)")
     items: list[SenateVoteMenuItem] = []
-    for vote in root.findall("votes/vote"):
+    for vote in votes.findall("vote"):
         raw_number = _text(vote, "vote_number")
         try:
             number = int(raw_number)
