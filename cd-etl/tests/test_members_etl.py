@@ -626,7 +626,7 @@ def test_api_session_reuses_connections_and_retries_transient_failures():
     # requests.Session() with no retry/backoff -- across ~500+
     # per-member detail calls that meant no connection reuse and a
     # single transient 5xx/timeout failing the whole task. Now built via
-    # congress_gov.build_session(), shared by any future DAG.
+    # http.build_session(), shared by any future DAG.
     adapter = etl._API_SESSION.get_adapter("https://api.congress.gov")
 
     assert adapter.max_retries.total == 3

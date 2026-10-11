@@ -35,7 +35,7 @@ from typing import Any
 import requests
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import db
+from cd.etl import db, http
 from cd.etl.clients import congress_gov
 from cd.etl.models.congress_gov import (
     AmendmentResponse,
@@ -74,7 +74,7 @@ POSTGRES_CONN_ID = "congressional_postgres"
 # across more batches.
 VOTE_BATCH_SIZE = 50
 
-_API_SESSION = congress_gov.build_session(pool_maxsize=MEMBER_VOTES_FETCH_WORKERS)
+_API_SESSION = http.build_session(pool_maxsize=MEMBER_VOTES_FETCH_WORKERS)
 _BEDROCK_CLIENT = bedrock.build_bedrock_client()
 
 # VOTE_CAST_MAP, ROLL_CALLS_UPSERT_SQL, ROLL_CALL_MEMBER_VOTES_UPSERT_SQL
@@ -332,7 +332,7 @@ def house_votes_etl():
         # resolving bill_id means real DB reads/writes interleaved with
         # API calls per vote, since it's a foreign-key precondition, not
         # source data reachable by pure transformation. Processed
-        # sequentially (not via congress_gov.fetch_concurrently) because
+        # sequentially (not via http.fetch_concurrently) because
         # two votes in this same batch can reference the same
         # not-yet-synced bill -- sequential processing lets the second
         # get_or_sync_bill call see the first's already-committed row via
@@ -415,7 +415,7 @@ def house_votes_etl():
         # dependency on bill resolution, unlike get_or_sync_bill's own
         # calls, so it doesn't need resolve_bills's sequential-per-vote
         # treatment and can run fully concurrently via
-        # congress_gov.fetch_concurrently instead, same as
+        # http.fetch_concurrently instead, same as
         # sync_member_votes's own per-batch member-vote fetch.
         def fetch_one(key: tuple[int, int]) -> dict[str, Any]:
             session_number, roll_call_number = key
@@ -431,7 +431,7 @@ def house_votes_etl():
             }
 
         keys = [(v["session"], v["roll_call_number"]) for v in resolved_votes]
-        results = congress_gov.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
+        results = http.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
 
         logger.info(
             "Fetched vote question detail for %d of %d votes", len(results), len(resolved_votes),
@@ -509,7 +509,7 @@ def house_votes_etl():
         for raw_batch in batched(resolved_votes, VOTE_BATCH_SIZE):
             batch = list(raw_batch)
             keys = [(v["session"], v["roll_call_number"]) for v in batch]
-            fetched = congress_gov.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
+            fetched = http.fetch_concurrently(keys, fetch_one, MEMBER_VOTES_FETCH_WORKERS)
             fetched_by_key = {(f["session"], f["roll_call_number"]): f["votes"] for f in fetched}
 
             roll_call_rows, casts_by_key, skip_counts = _build_batch_rows(

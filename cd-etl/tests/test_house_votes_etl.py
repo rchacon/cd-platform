@@ -346,7 +346,7 @@ def test_build_batch_rows_skips_vote_missing_from_fetched_by_key_without_failing
     # isolation, now at the pure _build_batch_rows layer so this
     # coverage doesn't need a live Postgres connection -- one vote's
     # failed/absent member-vote fetch (missing from fetched_by_key, same
-    # shape congress_gov.fetch_concurrently leaves a failed id in) must
+    # shape http.fetch_concurrently leaves a failed id in) must
     # not discard the rest of the batch.
     resolved = [_resolved_vote(240), _resolved_vote(241)]
     vote_details = [_vote_detail(240), _vote_detail(241)]

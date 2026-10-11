@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
-from cd.etl import db
+from cd.etl import db, http
 from cd.etl.clients import congress_gov
 from cd.etl.models.congress_gov import (
     CongressCurrent,
@@ -37,7 +37,7 @@ PAGE_LIMIT = 250
 DETAIL_FETCH_WORKERS = 10
 POSTGRES_CONN_ID = "congressional_postgres"
 
-_API_SESSION = congress_gov.build_session(pool_maxsize=DETAIL_FETCH_WORKERS)
+_API_SESSION = http.build_session(pool_maxsize=DETAIL_FETCH_WORKERS)
 
 
 MEMBERS_UPSERT_SQL = """
@@ -475,7 +475,7 @@ def congress_members_etl():
                 _API_SESSION, f"{CONGRESS_MEMBERS_API}{bioguide_id}",
             )["member"]
 
-        details = congress_gov.fetch_concurrently(
+        details = http.fetch_concurrently(
             bioguide_ids, fetch_one, DETAIL_FETCH_WORKERS,
         )
 
