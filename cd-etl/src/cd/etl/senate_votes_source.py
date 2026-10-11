@@ -14,7 +14,7 @@ the pure helpers that interpret senate.gov's display-form bill strings
 ("S.J.Res." etc.) against cd-etl's `bill_type` enum. Deciding *which*
 votes to keep (bill-referencing only, matching house_votes_etl's scope --
 nominations and treaties are dropped) and the LIS -> bioguide crosswalk
-live in the DAG (senate_votes_etl).
+will live in the forthcoming senate_votes_etl DAG (not built yet).
 """
 
 from __future__ import annotations
