@@ -5,7 +5,11 @@ api.congress.gov has no Senate roll-call vote endpoint at all (only
 static XML, no API key required (rchacon/cd-platform#8):
 
   - a per-session *menu* listing every vote's number + `<issue>` string
-    (e.g. "S. 1071", "PN373"), used to pre-filter before fetching detail;
+    (e.g. "S. 1071", "PN373"), used to pre-filter before fetching detail.
+    An amendment/motion-to-table vote's `<issue>` is the *underlying*
+    bill ("H.R. 5371" for "Collins Amdt. No. 3937"), never "S.Amdt. N"
+    (verified against the full 119th/1 menu: zero S.Amdt. issues), so
+    bill-only pre-filtering keeps amendment votes on bills;
   - a per-vote *detail* document with the `<document>` block (the bill
     the vote is on) and every senator's cast keyed by `<lis_member_id>`.
 
