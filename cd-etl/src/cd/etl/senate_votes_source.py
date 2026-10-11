@@ -29,6 +29,9 @@ from datetime import date, datetime
 from xml.etree import ElementTree as ET
 
 import requests
+# Parsing goes through defusedxml (rejects entity-expansion/external-entity
+# payloads in network-fetched XML); stdlib ET stays for the Element type.
+from defusedxml import ElementTree as SafeET
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -169,7 +172,7 @@ def parse_vote_menu(xml: str | bytes) -> list[SenateVoteMenuItem]:
     """Parse a `vote_menu_{congress}_{session}.xml` document into its
     vote list. A row whose `<vote_number>` can't be parsed is skipped
     (logged), not fatal -- the menu is a ~1300-row bulk list."""
-    root = ET.fromstring(xml)
+    root = SafeET.fromstring(xml)
     # An absent <votes> container means the document isn't the menu we
     # expect (renamed/wrapped structure, an XML error page) -- raise so the
     # DAG run fails visibly instead of "succeeding" with zero votes. An
@@ -191,7 +194,7 @@ def parse_vote_menu(xml: str | bytes) -> list[SenateVoteMenuItem]:
 
 def parse_vote_detail(xml: str | bytes) -> SenateVoteDetail:
     """Parse a per-vote `vote_{congress}_{session}_{nnnnn}.xml` document."""
-    root = ET.fromstring(xml)
+    root = SafeET.fromstring(xml)
     document = root.find("document")
     amendment = root.find("amendment")
 

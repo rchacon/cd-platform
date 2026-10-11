@@ -117,6 +117,16 @@ def test_parse_vote_menu_raises_when_votes_container_is_missing():
         src.parse_vote_menu(b"<error><message>Not found</message></error>")
 
 
+def test_parse_vote_menu_rejects_entity_expansion_payloads():
+    from defusedxml import EntitiesForbidden
+
+    xml = b"""<?xml version="1.0"?>
+<!DOCTYPE lol [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;&lol;">]>
+<vote_summary><votes>&lol2;</votes></vote_summary>"""
+    with pytest.raises(EntitiesForbidden):
+        src.parse_vote_menu(xml)
+
+
 # --- parse_vote_detail ---
 
 
