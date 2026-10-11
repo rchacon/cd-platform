@@ -11,6 +11,7 @@ dependencies = [
     # boto3 is a transitive dep via cd-lib (cd.lib.bedrock) -- cd-etl's
     # own code imports nothing from boto directly since bedrock moved.
     "cd-lib",
+    "defusedxml>=0.7.1",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.9",
     "pyyaml>=6.0.3",
