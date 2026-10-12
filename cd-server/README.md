@@ -10,6 +10,13 @@ the schema in `src/cd/server/schema.py`) plus two plain REST endpoints:
 `GET /health` (used by CI and, eventually, an ECS/ALB target group) and
 `GET /version`.
 
+It also serves cd-api's REST API, the one `cd-lookup` consumes. That code
+lives in its own `cd.api` package (`src/cd/api/`, a sibling of
+`src/cd/server/`) and is mounted at `/v1` as a FastAPI sub-application
+behind `src/cd/server/origin_guard.py`. See `API.md` for its endpoints, its
+database settings (`CD_API_PG*`) and how API Gateway's key check is kept
+from being bypassed via this service's own hostname (`CD_API_ORIGIN_SECRET`).
+
 `app.py` also registers `CORSMiddleware`, restricted to `POST` (all
 GraphQL queries/mutations go over POST) and to the `Authorization`/
 `Content-Type` request headers, with `allow_credentials=False` (no
@@ -409,19 +416,12 @@ throttles its own side.
 
 ### Calling cd-api locally
 
-`HttpApiClient`'s default target is `http://host.docker.internal:8001`
-(overridable via `CD_API_BASE_URL`) -- reachable from cd-server's own
-container via the `extra_hosts` entry in `../docker-compose.yml` (Linux
-doesn't resolve `host.docker.internal` by default the way Docker
-Desktop does). Port 8001, not cd-api's own README default of 8000 --
-that's cd-server's own published port, so running cd-api on 8000 too
-would collide with it. Start `cd-api` yourself first, bound to all
-interfaces (uvicorn's own default, `127.0.0.1`, isn't reachable from
-inside a container):
-
-```bash
-cd ../cd-api && uv run uvicorn cd.api.app:app --app-dir src --host 0.0.0.0 --port 8001
-```
+`HttpApiClient`'s local default target is `http://localhost:8000/v1`
+(overridable via `CD_API_BASE_URL`): cd-api's REST API is mounted in this
+same process, so local dev calls back into itself and needs nothing else
+running. Production still invokes the Lambda (`CD_API_FUNCTION_NAME`) until
+the cutover. Retiring `CdApiService` in favour of direct calls into `cd.api`
+is a follow-up.
 
 ## Prerequisites
 
@@ -441,7 +441,11 @@ make start-server
 
 Open `http://localhost:8000/graphql` for the GraphiQL IDE,
 `http://localhost:8000/health` for the health check, or `curl
-http://localhost:8000/version` for a quick version check.
+http://localhost:8000/version` for a quick version check. cd-api's REST
+API is at `http://localhost:8000/v1/...`, e.g. `curl
+'http://localhost:8000/v1/members?filter[state]=GA'`. Its data comes
+from cd-etl's `congressional_app` database (see `../cd-etl/README.md`, or
+load `local_seed.sql` per the root `AGENTS.md`).
 `cd-server/src` and `cd-lib/src` are both bind-mounted, so edits to
 either show up without rebuilding. `tests/` is bind-mounted too, so
 `make test-server` picks up local test edits without a rebuild.
@@ -451,6 +455,10 @@ either show up without rebuilding. `tests/` is bind-mounted too, so
 ```bash
 make test-server
 ```
+
+`tests/api/` holds cd-api's tests, which need cd-etl's schema in a
+`congressional_app_test` database: run `make test-etl` from the repo root
+at least once first (CI applies those migrations itself). See `API.md`.
 
 `docker/Dockerfile` is multi-stage: `production` (what actually ships) has
 no test dependencies at all, while `development` (what `make
@@ -470,7 +478,7 @@ version doesn't match `pyproject.toml`'s own `version`; an optional local
 `pre-push` git hook runs the same check before the tag is even pushed
 (`git config core.hooksPath .githooks`, see the root `CLAUDE.md`).
 
-Deployed as a container (not a Lambda zip like `cd-api`) since `cd-server`
-is expected to hold long-lived state and connections once it gets its own
-database -- the intended production target is an ECS service backed by
-EC2, provisioned in `cd-infra`.
+Deployed as a container since `cd-server` holds long-lived state and
+connections -- an ECS service backed by EC2, provisioned in `cd-infra`.
+A `cd-server-v*` release also ships cd-api's `/v1` code (`cd.api`). The
+retired `cd-api-v*` Lambda releases no longer apply.
