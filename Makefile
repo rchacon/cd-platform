@@ -12,4 +12,4 @@ start-server:
 	docker compose up --build cd-server
 
 test-server:
-	CD_SERVER_GRAPHIQL_ENABLED=false docker compose run --rm -e PGDATABASE=cd_customers_test cd-server uv run pytest tests/$(TEST)
+	CD_SERVER_GRAPHIQL_ENABLED=false docker compose run --rm -e PGDATABASE=cd_customers_test -e CD_API_PGDATABASE=congressional_app_test cd-server uv run pytest tests/$(TEST)

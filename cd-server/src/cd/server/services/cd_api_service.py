@@ -69,7 +69,7 @@ class LambdaApiClient(ApiClient):
     """Calls cd-api's real Lambda function directly via boto3, bypassing
     API Gateway entirely -- no network hop, and no X-Api-Key needed
     (cd-api's own code never checks that header; only API Gateway does,
-    see cd-api/src/cd/api/app.py's own DESCRIPTION). Dogfoods cd-api's
+    see cd/api/app.py's own DESCRIPTION). Dogfoods cd-api's
     actual FastAPI app as much as possible by building a synthetic
     API-Gateway-shaped event and invoking the same Mangum handler entry
     point real requests go through, rather than reaching around it to
@@ -135,7 +135,7 @@ class LambdaApiClient(ApiClient):
 
 
 def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
-    # Minimal shape mirrors cd-api/tests/test_app.py's own
+    # Minimal shape mirrors tests/api/test_app.py's own
     # _api_gateway_event helper, verified against Mangum's actual event
     # parsing (mangum.handlers.api_gateway.APIGateway) rather than
     # guessed: `resource`+`requestContext` are what Mangum's own type

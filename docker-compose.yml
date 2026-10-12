@@ -153,6 +153,11 @@ services:
       # uses for its own service.
       PGHOST: postgres
       PGDATABASE: cd_customers
+      # cd.api (cd-api's REST API, mounted at /v1) reads cd-etl's
+      # congressional_app database under its own CD_API_-prefixed
+      # variables, since PG* above already belongs to cd_customers. Every
+      # other default in cd/api/db.py matches this Postgres container.
+      CD_API_PGHOST: postgres
       # All three empty by default -- unset disables JWT verification
       # entirely (see settings.py/services/users_service.py) rather than
       # failing startup, so `make start-server` keeps working with zero
@@ -188,15 +193,6 @@ services:
       # the same defaults, so an unset var is fine too.
       AI_SUMMARY_FREE_TIER_DAILY_LIMIT: ${AI_SUMMARY_FREE_TIER_DAILY_LIMIT:-10}
       AI_SUMMARY_GLOBAL_DAILY_LIMIT: ${AI_SUMMARY_GLOBAL_DAILY_LIMIT:-100}
-    # host.docker.internal doesn't resolve by default on Linux (unlike
-    # Docker Desktop's Mac/Windows builds) -- this is Docker's own
-    # documented workaround (Engine 20.10+), needed for
-    # settings.CD_API_BASE_URL's default to reach cd-api's own
-    # `uv run uvicorn` dev server running on the host, not in
-    # docker-compose (it has no Dockerfile). Confirmed empirically:
-    # without this, the hostname doesn't resolve at all.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:

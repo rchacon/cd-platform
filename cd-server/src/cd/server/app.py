@@ -4,7 +4,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from strawberry.fastapi import GraphQLRouter
 
+from cd.api import db as api_db
+from cd.api.app import app as api_app
 from cd.server import settings
+from cd.server.origin_guard import OriginGuard
 from cd.server.schema import (
     GRAPHIQL_ENABLED,
     VERSION,
@@ -37,6 +40,9 @@ async def lifespan(app: FastAPI):
     await geocoder_service.aclose()
     await users_service.aclose()
     await ai_summary_service.aclose()
+    # cd.api's psycopg2 pool opens lazily on its first query, so it only
+    # needs closing here.
+    api_db.close_pool()
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)
@@ -95,6 +101,17 @@ app.include_router(
         context_getter=get_graphql_context,
     ),
     prefix="/graphql",
+)
+
+# cd-api's REST API (cd/api/), mounted as its own sub-application rather
+# than merged in as routers: it keeps its own exception handlers (JSON:API /
+# problem+json errors on /v1, Strawberry's own on /graphql) and its own
+# OpenAPI document (/v1/openapi.json, cd-api's routes only). API Gateway
+# enforces X-Api-Key in front of /v1 -- this app never checks it, but
+# OriginGuard rejects any /v1 request that didn't come through API Gateway.
+app.mount(
+    "/v1",
+    OriginGuard(api_app, settings.CD_API_ORIGIN_SECRET, settings.ENVIRONMENT),
 )
 
 
