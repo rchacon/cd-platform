@@ -96,3 +96,39 @@ jobs:
             --cluster cd-platform-cd-server \
             --service cd-platform-cd-server \
             --force-new-deployment
+
+      # update-service returns as soon as the new deployment is *started*.
+      # Wait for the rolling deploy to finish (only the new task left in
+      # service) so the check below hits the image this run just shipped,
+      # not the old one. Polls up to ~10 min (15s x 40); DescribeServices
+      # is already on cd-platform-cd-server-deploy.
+      - name: Wait for the service to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster cd-platform-cd-server \
+            --services cd-platform-cd-server
+
+      # /v1 (cd-api's REST API, cd.api) must only be reachable through API
+      # Gateway, which enforces X-Api-Key and adds the X-Origin-Verify secret
+      # OriginGuard checks. A request straight to cd-server's own hostname
+      # carries no such header, so it must get OriginGuard's 403 -- anything
+      # else (a 200 especially) means /v1 is being served without an API key.
+      # Checks the problem+json body too, so a 403 from something other than
+      # OriginGuard doesn't pass by accident. Retried for ~2 min: the ALB can
+      # still route to the draining old task (30s deregistration delay) just
+      # after the service reports stable.
+      - name: Verify /v1 is not reachable directly on server.civicdog.com
+        run: |
+          URL=https://server.civicdog.com/v1/version
+          for i in $(seq 1 12); do
+            CODE=$(curl -s -o body.json -w '%{http_code}' "$URL" || true)
+            if [ "$CODE" = "403" ] && jq -e '.status == 403' body.json >/dev/null 2>&1; then
+              echo "ok: $URL -> 403 (OriginGuard)"
+              exit 0
+            fi
+            echo "attempt $i: $URL -> $CODE, retrying"
+            sleep 10
+          done
+          echo "::error::$URL returned $CODE, expected OriginGuard's 403 -- /v1 may be reachable without an API key"
+          cat body.json || true
+          exit 1
