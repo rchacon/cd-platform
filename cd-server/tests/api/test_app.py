@@ -269,7 +269,7 @@ def _mounted_client() -> TestClient:
     # actually served in. The TestClient(app) tests above call cd.api's app
     # directly, so they'd never catch a bug in how it behaves under the
     # mount (e.g. the /v1 prefix leaking into request.url.path, which
-    # _JSONAPI_PATH_RE matches against).
+    # jsonapi.is_jsonapi_path matches against).
     from cd.server.app import app as server_app
 
     return TestClient(server_app)
@@ -330,7 +330,7 @@ def test_mounted_v1_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document(
 
 def test_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document():
     # A typo'd path under /members/<id>/... has no route -> Starlette 404.
-    # app.py's _JSONAPI_PATH_RE covers the whole namespace, so it comes
+    # jsonapi.is_jsonapi_path covers the whole namespace, so it comes
     # back as a JSON:API error document, not problem+json.
     client = TestClient(app)
     response = client.get("/members/K000001/votez")
@@ -342,7 +342,7 @@ def test_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document():
 
 def test_bills_405_is_a_jsonapi_error_document():
     # POST /bills never reaches JsonApiRoute (routing-layer 405) --
-    # _JSONAPI_PATH_RE covers the /bills namespace so app.py formats it.
+    # jsonapi.is_jsonapi_path covers the /bills namespace so app.py formats it.
     client = TestClient(app)
     response = client.post("/bills")
 
@@ -488,7 +488,7 @@ def test_get_members_rejects_an_unsupported_query_param(seeded_state):
 
 def test_disallowed_method_on_members_is_a_jsonapi_error():
     # POST /members -- a routing-layer 405, never reaches JsonApiRoute;
-    # _JSONAPI_PATH_RE covers the whole /members namespace now, so app.py
+    # jsonapi.is_jsonapi_path covers the whole /members namespace now, so app.py
     # formats it as JSON:API, not problem+json.
     client = TestClient(app)
     response = client.post("/members")

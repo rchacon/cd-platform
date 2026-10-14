@@ -19,6 +19,7 @@ import logging
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from cd.api import jsonapi
 from cd.api.problem import problem_response
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,13 @@ class OriginGuard:
         if scope["type"] != "http" or not self.enforce or self._verified(scope):
             await self.app(scope, receive, send)
             return
-        response = problem_response(status=403, detail="Forbidden.")
+        # Same error-shape split cd.api's own handlers make, so a JSON:API
+        # client parsing errors[] on a non-2xx gets a clean 403, not a
+        # problem+json body its contract says it never receives.
+        if jsonapi.is_jsonapi_path(scope):
+            response = jsonapi.error_response(403, "Forbidden.")
+        else:
+            response = problem_response(status=403, detail="Forbidden.")
         await response(scope, receive, send)
 
     def _verified(self, scope: Scope) -> bool:

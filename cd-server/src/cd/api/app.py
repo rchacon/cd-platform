@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from starlette._utils import get_route_path
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from cd.api import jsonapi
@@ -65,17 +63,6 @@ def _openapi() -> dict:
 app.openapi = _openapi
 
 
-# The JSON:API routes (routes/members.py's jsonapi_router + routes/bills.py).
-# A JsonApiRoute handles errors from *within* its own handler, so what
-# reaches the app-level handlers below on these paths is only the
-# routing-layer 404 (unmatched) / 405 (bad method) -- which must still
-# come back as JSON:API, not problem+json. Matches the whole `/members`
-# and `/bills` namespaces, not just the exact route shapes, so a
-# near-miss like `/members/K000401/votez` still gets a JSON:API 404
-# rather than problem+json.
-_JSONAPI_PATH_RE = re.compile(r"^/(?:members(?:/|$)|bills(?:/|$))")
-
-
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
 # Starlette's own router raises the base class directly for unmatched
 # routes (404) and disallowed methods (405), which a handler registered
@@ -86,12 +73,7 @@ _JSONAPI_PATH_RE = re.compile(r"^/(?:members(?:/|$)|bills(?:/|$))")
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
-    # Mounted under cd-server at /v1, request.url.path is the full
-    # "/v1/members" and the mount prefix sits in root_path. get_route_path
-    # is the same root_path strip Starlette's own router matches against,
-    # so this check and routing can't disagree about which path it is.
-    # Private to Starlette, but a rename fails loudly at import.
-    if _JSONAPI_PATH_RE.match(get_route_path(request.scope)):
+    if jsonapi.is_jsonapi_path(request.scope):
         return JSONResponse(
             jsonapi.error_document(exc.status_code, exc.detail),
             status_code=exc.status_code,

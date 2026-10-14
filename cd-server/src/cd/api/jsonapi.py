@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http
 import logging
+import re
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -9,7 +10,9 @@ from fastapi import Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from starlette._utils import get_route_path
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Scope
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,31 @@ logger = logging.getLogger(__name__)
 # problem+json -- they don't claim JSON:API.
 
 MEDIA_TYPE = "application/vnd.api+json"
+
+# The JSON:API routes (routes/members.py's jsonapi_router + routes/bills.py).
+# A JsonApiRoute handles errors from *within* its own handler, so what
+# reaches app.py's app-level handlers on these paths is only the
+# routing-layer 404 (unmatched) / 405 (bad method) -- which must still
+# come back as JSON:API, not problem+json. Matches the whole `/members`
+# and `/bills` namespaces, not just the exact route shapes, so a
+# near-miss like `/members/K000401/votez` still gets a JSON:API 404
+# rather than problem+json. cd-server's OriginGuard (in front of this whole
+# app) uses the same check for its 403.
+_JSONAPI_PATH_RE = re.compile(r"^/(?:members(?:/|$)|bills(?:/|$))")
+
+
+def is_jsonapi_path(scope: Scope) -> bool:
+    """Whether a request falls under the JSON:API namespaces, so an error
+    raised outside a JsonApiRoute (app.py's handlers, cd-server's
+    OriginGuard) still comes back as a JSON:API error document.
+
+    Mounted under cd-server at /v1, scope["path"] is the full
+    "/v1/members" and the mount prefix sits in root_path. get_route_path
+    is the same root_path strip Starlette's own router matches against,
+    so this check and routing can't disagree about which path it is.
+    Private to Starlette, but a rename fails loudly at import.
+    """
+    return bool(_JSONAPI_PATH_RE.match(get_route_path(scope)))
 
 
 class JsonApiResponse(JSONResponse):
