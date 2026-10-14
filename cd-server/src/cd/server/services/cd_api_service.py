@@ -39,14 +39,19 @@ class ApiClient(ABC):
 
 
 class HttpApiClient(ApiClient):
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, origin_secret: str = ""):
         self.base_url = base_url
+        # Locally this calls back into cd-server's own /v1, which
+        # OriginGuard protects. A configured CD_API_ORIGIN_SECRET is
+        # enforced even in local dev, so send it the way API Gateway would
+        # -- otherwise setting it locally 403s every member/bill resolver.
+        headers = {"X-Origin-Verify": origin_secret} if origin_secret else {}
         # One client, reused across every get() call rather than opening
         # a fresh connection per request -- httpx's own docs recommend
         # against a new client per call for exactly this reason
         # (connection-pool/TCP-handshake overhead). Closed via aclose(),
         # called from app.py's lifespan on shutdown.
-        self._client = httpx.AsyncClient()
+        self._client = httpx.AsyncClient(headers=headers)
 
     async def get(self, path: str, query: dict[str, str]) -> dict:
         try:
@@ -292,7 +297,9 @@ class CdApiService:
 
 def get_cd_api_service() -> CdApiService:
     if settings.ENVIRONMENT == "local":
-        return CdApiService(HttpApiClient(settings.CD_API_BASE_URL))
+        return CdApiService(
+            HttpApiClient(settings.CD_API_BASE_URL, settings.CD_API_ORIGIN_SECRET)
+        )
     if not settings.CD_API_FUNCTION_NAME:
         # Called at import time (schema.py's module-level cd_api_service =
         # get_cd_api_service()), so a misconfigured non-local deploy fails
