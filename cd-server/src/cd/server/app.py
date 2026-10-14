@@ -115,8 +115,14 @@ app.mount(
 )
 
 
+# async def, not a plain def: FastAPI runs sync endpoints on AnyIO's shared
+# threadpool (40 tokens), the same one cd.api's sync /v1 routes use. A
+# burst of slow /v1 requests holding every token would otherwise queue the
+# ALB's health check behind them until it times out and ECS replaces a
+# task that's actually fine. Neither of these does any blocking work, so
+# they run directly on the event loop instead.
 @app.get("/health")
-def health() -> dict:
+async def health() -> dict:
     return {"status": "ok"}
 
 
@@ -124,5 +130,5 @@ def health() -> dict:
 # the GraphQL `version` query, so a version check doesn't need a GraphQL
 # client/curl -X POST just to confirm what's running.
 @app.get("/version")
-def version() -> dict:
+async def version() -> dict:
     return {"version": VERSION}
