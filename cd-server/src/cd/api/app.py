@@ -6,6 +6,7 @@ import re
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette._utils import get_route_path
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from cd.api import jsonapi
@@ -75,17 +76,6 @@ app.openapi = _openapi
 _JSONAPI_PATH_RE = re.compile(r"^/(?:members(?:/|$)|bills(?:/|$))")
 
 
-def _route_path(request: Request) -> str:
-    # Mounted under cd-server at /v1, Starlette leaves the full "/v1/members"
-    # in request.url.path and puts the mount prefix in root_path, so strip
-    # it to match _JSONAPI_PATH_RE against this app's own route paths.
-    path = request.url.path
-    root_path = request.scope.get("root_path", "")
-    if root_path and path.startswith(root_path):
-        return path[len(root_path):] or "/"
-    return path
-
-
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
 # Starlette's own router raises the base class directly for unmatched
 # routes (404) and disallowed methods (405), which a handler registered
@@ -96,7 +86,12 @@ def _route_path(request: Request) -> str:
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
-    if _JSONAPI_PATH_RE.match(_route_path(request)):
+    # Mounted under cd-server at /v1, request.url.path is the full
+    # "/v1/members" and the mount prefix sits in root_path. get_route_path
+    # is the same root_path strip Starlette's own router matches against,
+    # so this check and routing can't disagree about which path it is.
+    # Private to Starlette, but a rename fails loudly at import.
+    if _JSONAPI_PATH_RE.match(get_route_path(request.scope)):
         return JSONResponse(
             jsonapi.error_document(exc.status_code, exc.detail),
             status_code=exc.status_code,
