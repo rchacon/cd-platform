@@ -1,3 +1,5 @@
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +20,26 @@ from cd.server.schema import (
     users_service,
 )
 from cd.server.services.users_service import InvalidTokenError
+
+logger = logging.getLogger(__name__)
+
+
+def warn_if_cd_api_db_unconfigured(environment: str, environ=os.environ) -> None:
+    # cd.api.db falls back to localhost when CD_API_PGHOST is unset, which
+    # only makes sense in local dev. Elsewhere every /v1 query would fail
+    # while /health stays green, so say so at startup. A warning, not a
+    # RuntimeError like get_cd_api_service()'s: production doesn't set the
+    # CD_API_PG* vars until cd-infra#76, and raising would crash-loop the
+    # next release before then. Once cd.api's pool opens at startup
+    # (cd-platform#180), an unreachable database fails the boot anyway.
+    if environment != "local" and not environ.get("CD_API_PGHOST"):
+        logger.warning(
+            "CD_API_PGHOST is unset outside local dev -- every /v1 query will "
+            "fail until the CD_API_PG* variables are configured"
+        )
+
+
+warn_if_cd_api_db_unconfigured(settings.ENVIRONMENT)
 
 
 @asynccontextmanager
