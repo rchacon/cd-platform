@@ -1,10 +1,15 @@
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from strawberry.fastapi import GraphQLRouter
 
+from cd.api import db as api_db
+from cd.api.app import app as api_app
 from cd.server import settings
+from cd.server.origin_guard import OriginGuard
 from cd.server.schema import (
     GRAPHIQL_ENABLED,
     VERSION,
@@ -15,6 +20,26 @@ from cd.server.schema import (
     users_service,
 )
 from cd.server.services.users_service import InvalidTokenError
+
+logger = logging.getLogger(__name__)
+
+
+def warn_if_cd_api_db_unconfigured(environment: str, environ=os.environ) -> None:
+    # cd.api.db falls back to localhost when CD_API_PGHOST is unset, which
+    # only makes sense in local dev. Elsewhere every /v1 query would fail
+    # while /health stays green, so say so at startup. A warning, not a
+    # RuntimeError like get_cd_api_service()'s: production doesn't set the
+    # CD_API_PG* vars until cd-infra#76, and raising would crash-loop the
+    # next release before then. Once cd.api's pool opens at startup
+    # (cd-platform#180), an unreachable database fails the boot anyway.
+    if environment != "local" and not environ.get("CD_API_PGHOST"):
+        logger.warning(
+            "CD_API_PGHOST is unset outside local dev -- every /v1 query will "
+            "fail until the CD_API_PG* variables are configured"
+        )
+
+
+warn_if_cd_api_db_unconfigured(settings.ENVIRONMENT)
 
 
 @asynccontextmanager
@@ -37,6 +62,9 @@ async def lifespan(app: FastAPI):
     await geocoder_service.aclose()
     await users_service.aclose()
     await ai_summary_service.aclose()
+    # cd.api's psycopg2 pool opens lazily on its first query, so it only
+    # needs closing here.
+    api_db.close_pool()
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)
@@ -97,9 +125,26 @@ app.include_router(
     prefix="/graphql",
 )
 
+# cd-api's REST API (cd/api/), mounted as its own sub-application rather
+# than merged in as routers: it keeps its own exception handlers (JSON:API /
+# problem+json errors on /v1, Strawberry's own on /graphql) and its own
+# OpenAPI document (/v1/openapi.json, cd-api's routes only). API Gateway
+# enforces X-Api-Key in front of /v1 -- this app never checks it, but
+# OriginGuard rejects any /v1 request that didn't come through API Gateway.
+app.mount(
+    "/v1",
+    OriginGuard(api_app, settings.CD_API_ORIGIN_SECRET, settings.ENVIRONMENT),
+)
 
+
+# async def, not a plain def: FastAPI runs sync endpoints on AnyIO's shared
+# threadpool (40 tokens), the same one cd.api's sync /v1 routes use. A
+# burst of slow /v1 requests holding every token would otherwise queue the
+# ALB's health check behind them until it times out and ECS replaces a
+# task that's actually fine. Neither of these does any blocking work, so
+# they run directly on the event loop instead.
 @app.get("/health")
-def health() -> dict:
+async def health() -> dict:
     return {"status": "ok"}
 
 
@@ -107,5 +152,5 @@ def health() -> dict:
 # the GraphQL `version` query, so a version check doesn't need a GraphQL
 # client/curl -X POST just to confirm what's running.
 @app.get("/version")
-def version() -> dict:
+async def version() -> dict:
     return {"version": VERSION}

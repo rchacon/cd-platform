@@ -1,24 +1,79 @@
 from __future__ import annotations
 
 import os
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
+# CD_API_-prefixed, not the plain libpq PG* names: this package now runs
+# inside cd-server, whose own settings.py already owns PGHOST/PGDATABASE/...
+# for its cd_customers database. This one reads congressional_app (cd-etl's
+# schema) under its own credentials, so the two can't share variables.
 PG_DSN = {
-    "host": os.environ.get("PGHOST", "localhost"),
-    "port": os.environ.get("PGPORT", "5432"),
-    "dbname": os.environ.get("PGDATABASE", "congressional_app"),
-    "user": os.environ.get("PGUSER", "postgres"),
-    "password": os.environ.get("PGPASSWORD", "postgres"),
+    "host": os.environ.get("CD_API_PGHOST", "localhost"),
+    "port": os.environ.get("CD_API_PGPORT", "5432"),
+    "dbname": os.environ.get("CD_API_PGDATABASE", "congressional_app"),
+    "user": os.environ.get("CD_API_PGUSER", "postgres"),
+    "password": os.environ.get("CD_API_PGPASSWORD", "postgres"),
 }
 
+# FastAPI runs these sync routes on its threadpool, so a long-running
+# process needs a pool here -- the RDS Proxy that pooled for Lambda's
+# connection-per-invocation model goes away once this runs in cd-server.
+# minconn == maxconn on purpose: psycopg2's pool only keeps `minconn` idle
+# connections and *closes* any other connection handed back, so a lower
+# minconn would quietly reconnect on most requests. ThreadedConnectionPool
+# also raises PoolError rather than waiting when every connection is
+# checked out, so _slots makes a caller block for one instead of failing a
+# request under a burst.
+POOL_SIZE = int(os.environ.get("CD_API_PG_POOL_SIZE") or "5")
 
-def get_connection() -> psycopg2.extensions.connection:
-    # TODO: opens a plain connection per call -- fine locally, but Lambda's
-    # concurrency model can exhaust RDS's max_connections in production.
-    # Front this with RDS Proxy (or a pooler) once running on AWS (see #4).
-    return psycopg2.connect(cursor_factory=psycopg2.extras.RealDictCursor, **PG_DSN)
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_pool_lock = threading.Lock()
+_slots = threading.BoundedSemaphore(POOL_SIZE)
+
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    # Created lazily on first query rather than at import, so importing the
+    # app (tests, the OpenAPI export) never needs a reachable database.
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = psycopg2.pool.ThreadedConnectionPool(
+                POOL_SIZE,
+                POOL_SIZE,
+                cursor_factory=psycopg2.extras.RealDictCursor,
+                **PG_DSN,
+            )
+        return _pool
+
+
+@contextmanager
+def _connection() -> Iterator[psycopg2.extensions.connection]:
+    with _slots:
+        pool = _get_pool()
+        conn = pool.getconn()
+        try:
+            yield conn
+        finally:
+            # putconn() itself rolls back the transaction psycopg2 opened on
+            # the first execute (so a pooled connection never sits
+            # idle-in-transaction) and discards one whose server
+            # connection was lost.
+            pool.putconn(conn)
+
+
+def close_pool() -> None:
+    # Called from cd-server's lifespan shutdown.
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.closeall()
+            _pool = None
 
 
 def fetch_members(
@@ -47,8 +102,7 @@ def fetch_members(
         clauses.append("chamber = %(chamber)s")
     if district is not None:
         clauses.append("district = %(district)s")
-    conn = get_connection()
-    try:
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -59,8 +113,6 @@ def fetch_members(
                 {"state": state, "chamber": chamber, "district": district},
             )
             return list(cur.fetchall())
-    finally:
-        conn.close()
 
 
 def fetch_member(bioguide_id: str) -> dict | None:
@@ -77,8 +129,7 @@ def fetch_member(bioguide_id: str) -> dict | None:
     # DESC` breaks the tie in the window before Congress.gov reports an
     # endYear for the vacated seat (both rows end_year IS NULL); the PK
     # is a final deterministic tiebreaker.
-    conn = get_connection()
-    try:
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -90,8 +141,6 @@ def fetch_member(bioguide_id: str) -> dict | None:
                 {"bioguide_id": bioguide_id},
             )
             return cur.fetchone()
-    finally:
-        conn.close()
 
 
 def _to_pgvector_literal(embedding: list[float]) -> str:
@@ -106,8 +155,7 @@ def fetch_closest_vocab_term(embedding: list[float]) -> dict | None:
     # No index on vocab_term_embeddings (see migration 0005) -- a brute
     # force scan is exact and fast enough at this table's expected scale
     # (a few hundred distinct terms).
-    conn = get_connection()
-    try:
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -119,13 +167,10 @@ def fetch_closest_vocab_term(embedding: list[float]) -> dict | None:
                 {"embedding": _to_pgvector_literal(embedding)},
             )
             return cur.fetchone()
-    finally:
-        conn.close()
 
 
 def fetch_bills_by_policy_area(term: str, limit: int) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -138,13 +183,10 @@ def fetch_bills_by_policy_area(term: str, limit: int) -> list[dict]:
                 {"term": term, "limit": limit},
             )
             return list(cur.fetchall())
-    finally:
-        conn.close()
 
 
 def fetch_bills_by_subject(term: str, limit: int) -> list[dict]:
-    conn = get_connection()
-    try:
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -158,8 +200,6 @@ def fetch_bills_by_subject(term: str, limit: int) -> list[dict]:
                 {"term": term, "limit": limit},
             )
             return list(cur.fetchall())
-    finally:
-        conn.close()
 
 
 def fetch_bills_by_similarity(
@@ -171,8 +211,7 @@ def fetch_bills_by_similarity(
     # a query with no genuine match in a small local corpus still
     # returned `limit` bills, all filler). Filtered in SQL rather than
     # in Python so an empty result short-circuits the query itself.
-    conn = get_connection()
-    try:
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -199,8 +238,6 @@ def fetch_bills_by_similarity(
                 },
             )
             return list(cur.fetchall())
-    finally:
-        conn.close()
 
 
 def fetch_member_votes(bioguide_id: str, bill_keys: list[str]) -> list[dict] | None:
@@ -214,8 +251,7 @@ def fetch_member_votes(bioguide_id: str, bill_keys: list[str]) -> list[dict] | N
     # Returns None when the bioguide id has no current-Congress term at
     # all -- the route's 404, the same rule as GET /members/{bioguide_id}.
     # Checked in this same connection rather than via a separate
-    # fetch_member() round trip (this path already opens an unpooled
-    # connection per call -- see get_connection's TODO).
+    # fetch_member() round trip, saving a pool checkout per request.
     #
     # Both joins are LEFT so a requested bill that exists but has no roll
     # call this member voted on still comes back -- one row with NULL
@@ -230,8 +266,7 @@ def fetch_member_votes(bioguide_id: str, bill_keys: list[str]) -> list[dict] | N
     # can have both a procedural motion and final passage on different
     # dates); cross-bill ordering is irrelevant -- the route regroups by
     # the caller's requested order.
-    conn = get_connection()
-    try:
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM current_members WHERE bioguide_id = %(bioguide_id)s LIMIT 1",
@@ -256,5 +291,3 @@ def fetch_member_votes(bioguide_id: str, bill_keys: list[str]) -> list[dict] | N
                 {"bioguide_id": bioguide_id, "bill_keys": bill_keys},
             )
             return list(cur.fetchall())
-    finally:
-        conn.close()

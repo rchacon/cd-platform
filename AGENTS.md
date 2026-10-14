@@ -30,10 +30,16 @@ same rule as `cd-server`'s clients below; source-agnostic HTTP helpers
 and `cd-etl/src/cd/etl/dags/bills_etl.py` refreshes
 already-synced bills' `policy_area`/subjects/title/CRS summary on its own
 schedule (see that file's own DAG pipeline section below) -- all into a
-Postgres schema managed by Alembic migrations (`cd-etl/migrations/`). `cd-api`
-is a FastAPI app (`cd-api/src/cd/api/app.py`) that exposes the
+Postgres schema managed by Alembic migrations (`cd-etl/migrations/`). cd-api
+is a FastAPI app (`cd-server/src/cd/api/app.py`) that exposes the
 `current_members` view over HTTP for `cd-lookup` to consume, replacing its
-current GovTrack HTML scrape -- see `cd-api/README.md`. `cd-server` is a
+current GovTrack HTML scrape -- see `cd-server/API.md`. It used to be its
+own `cd-api/` component (a Lambda behind API Gateway); it now lives inside
+cd-server as the `cd.api` package (a sibling of `cd.server` under
+`cd-server/src/cd/`), mounted at `/v1` as a FastAPI sub-application. API
+Gateway still fronts `/v1` for its `X-Api-Key`/usage plan, and
+`cd-server/src/cd/server/origin_guard.py` rejects `/v1` requests that didn't
+come through it (`CD_API_ORIGIN_SECRET`). `cd-server` is a
 FastAPI + GraphQL (Strawberry) app (`cd-server/src/cd/server/app.py`) that
 will back `cd-webapp`, a separate React repo -- besides a `version` query
 and plain REST `/health`/`/version` endpoints (the latter mirroring
@@ -106,8 +112,8 @@ other environment fails fast at import instead, same precedent as
 `cd-webapp` doesn't yet attach an `Authorization` header to any of its
 GraphQL calls, so nothing upserts in practice until that's wired up
 there, separately. `cd-server` will still get its own API-key/billing
-management down the line -- not built yet. Unlike `cd-api`'s Lambda-zip
-deploy, `cd-server` is containerized from day one (see below), since it's
+management down the line -- not built yet. Unlike cd-api's former
+Lambda-zip deploy, `cd-server` was containerized from day one (see below), since it's
 expected to hold long-lived state/connections once its own database
 lands; the intended production target is an ECS service backed by EC2,
 provisioned in `cd-infra`.
@@ -121,8 +127,8 @@ independent `pyproject.toml`/`uv.lock`): `version.py`'s `read_version()`
 JSON:API `attributes` payloads `MemberDetail`/`RollCallVote`/`Bill` --
 and `jsonapi.py`'s generic `Resource`/`Document`/`CollectionDocument`
 wrappers (`cd-api`'s own `VersionResponse`/`ProblemDetail`/
-`ValidationProblemDetail` deliberately stayed in `cd-api/src/cd/api/models.py`,
-since `cd-server` never touches them -- `cd-lib` is for code that's
+`ValidationProblemDetail` deliberately stayed in `cd-server/src/cd/api/models.py`,
+since `cd.server` never touches them -- `cd-lib` is for code that's
 actually shared, not a dumping ground for every model cd-api happens to
 have; see `cd-lib/README.md`), `bedrock.py`'s `build_bedrock_client()`/
 `embed()` (Titan Text Embeddings V2 -- shared by `cd-api`'s
@@ -131,7 +137,7 @@ what first made `cd-etl` depend on `cd-lib`), and `apportionment.py`'s
 `SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` (the data) plus
 `normalize_district()`. cd-api's `max_valid_district`/`is_valid_district`
 validation built on that table sits in
-`cd-api/src/cd/api/routes/members.py` (its only caller -- a future
+`cd-server/src/cd/api/routes/members.py` (its only caller -- a future
 `validation/` package if more request-validation accrues), but
 `normalize_district()` (Census FIPS nonvoting-delegate code `98` -> the
 at-large `0`, scoped to `NON_VOTING_TERRITORIES`) stays in `cd-lib`
@@ -140,14 +146,14 @@ and `cd-api`'s `GET /members` `filter[district]`, both so a caller that
 geocodes for itself (`cd-lookup`) needn't translate the code
 (cd-platform#72). `cd-server`'s `getStates` needed the same seat
 counts/voting status cd-api already validates `district` against, hence
-the data move. All three services --
-`cd-api`, `cd-etl`, `cd-server` -- now depend on `cd-lib`.
+the data move. Both services -- `cd-etl` and `cd-server` (which now
+includes cd-api's `cd.api` package) -- depend on `cd-lib`.
 Whether to use `editable = true` on the
 `[tool.uv.sources]` entry is a real, load-bearing choice, not a style
 preference: `cd-server` and `cd-etl` use it (fine -- both live entirely
 inside a container whose filesystem is stable between build and run),
-`cd-api` deliberately does not (its Lambda zip build has no persistent
-source tree at runtime -- `editable = true` was confirmed empirically to
+the retired Lambda-zip `cd-api` deliberately did not (its zip build had
+no persistent source tree at runtime -- `editable = true` was confirmed empirically to
 produce only a dangling `.pth` file pointing at the build machine's own
 absolute path, not real copied files, silently breaking the deployed
 zip). See `cd-lib/README.md`'s "Consuming it" section for the full
@@ -431,15 +437,14 @@ individual findings separately later.
 
 ## Commands
 
-Run from the repo root unless noted otherwise. `cd-api/` has its own
-independent, non-Docker command set (`uv sync`, `uv run uvicorn`,
-`uv run pytest`) run from `cd-api/` instead -- see `cd-api/README.md`.
-`cd-server/` needs Docker only, same as `cd-etl` -- see `cd-server/README.md`.
+Run from the repo root unless noted otherwise. `cd-server/` (including
+cd-api's `/v1` REST API) needs Docker only, same as `cd-etl` -- see
+`cd-server/README.md` and `cd-server/API.md`.
 
 ```bash
 # One-time setup
 cp .env.sample .env   # fill in CONGRESS_API_KEY
-git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/cd-api-v*/
+git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/
                                       # cd-server-v* tag/pyproject.toml version
                                       # mismatch before CI does. Repoints ALL
                                       # git hooks to .githooks, so skip this if
@@ -482,10 +487,12 @@ sibling of `congressional_app` and `airflow_metadata` in the same Postgres
 container, created by `cd-etl/docker/init-test-db.sh`) rather than the
 real dev database -- isolates tests from real dev-seeded data and from
 `make start-etl`'s long-running service, so the two no longer race each
-other's migrations (`cd-platform#16`). `cd-api`'s tests share this same
-database (see `cd-api/README.md`) -- its schema is only ever applied by
-`cd-etl`'s side, so `cd-api`'s tests need `make test-etl` to have run at
-least once first.
+other's migrations (`cd-platform#16`). cd-api's tests
+(`cd-server/tests/api/`, run by `make test-server` with
+`CD_API_PGDATABASE=congressional_app_test`) share this same database --
+its schema is only ever applied by `cd-etl`'s side, so they need `make
+test-etl` to have run at least once first (CI applies the migrations
+itself).
 
 `make test-server` follows the identical pattern for its own database: a
 dedicated `cd_customers_test` (a sibling of `cd_customers` in the same
@@ -522,10 +529,8 @@ and wait for it to exit `0` before force-redeploying all 4 decomposed
 Airflow ECS services (`scheduler`/`triggerer`/`dag-processor`/
 `api-server`) so they pick up the new image -- a failed migration stops
 the workflow before any service is redeployed against a stale schema.
-`.github/workflows/cd-api-tests.yml` runs an analogous (non-Docker) pipeline
-for `cd-api/`.
 `.github/workflows/cd-server-tests.yml`/`cd-server-deploy.yml` mirror
 `cd-etl`'s own two workflows exactly (Docker/GHCR, `cd-server-v*` tags,
 `scripts/check-tag-version.sh`), since `cd-server` follows `cd-etl`'s
-container-deploy model rather than `cd-api`'s Lambda-zip one -- see the
+container-deploy model rather than the retired Lambda-zip one cd-api used -- see the
 Architecture section above for why.

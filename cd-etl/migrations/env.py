@@ -16,7 +16,7 @@ target_metadata = None
 
 def _db_url() -> str:
     # Same PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD convention as
-    # tests/test_upsert_sql.py's PG_DSN and cd-api/src/db.py's PG_DSN.
+    # tests/test_upsert_sql.py's PG_DSN and cd-server/src/cd/api/db.py's PG_DSN.
     user = os.environ.get("PGUSER", "postgres")
     password = os.environ.get("PGPASSWORD", "postgres")
     host = os.environ.get("PGHOST", "localhost")

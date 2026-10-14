@@ -630,3 +630,44 @@ def test_fetch_member_votes_returns_votes_oldest_first(pg_conn):
             cur.execute("DELETE FROM bills WHERE bill_id = %s", (bill_id,))
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
         pg_conn.commit()
+
+
+
+def test_pool_reuses_one_backend_connection_across_queries(pg_conn):
+    # psycopg2's pool closes any returned connection beyond `minconn`, so a
+    # misconfigured pool "works" while reconnecting on every request. Two
+    # sequential queries must land on the same Postgres backend.
+    db.close_pool()
+    try:
+        pids = set()
+        for _ in range(2):
+            with db._connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT pg_backend_pid() AS pid")
+                pids.add(cur.fetchone()["pid"])
+        assert len(pids) == 1
+    finally:
+        db.close_pool()
+
+
+def test_pooled_connection_goes_back_without_an_open_transaction(pg_conn):
+    # psycopg2 opens a transaction on the first execute, even for a plain
+    # SELECT -- it must be ended before the connection is reused, or every
+    # pooled connection would sit idle-in-transaction holding a snapshot.
+    import psycopg2.extensions
+
+    db.close_pool()
+    try:
+        db.fetch_member("Z999999")
+        with db._connection() as conn:
+            assert conn.status == psycopg2.extensions.STATUS_READY
+    finally:
+        db.close_pool()
+
+
+def test_close_pool_lets_the_next_query_reopen_it(pg_conn):
+    db.close_pool()
+    db.fetch_member("Z999999")
+    db.close_pool()
+    assert db._pool is None
+    assert db.fetch_member("Z999999") is None
+    db.close_pool()

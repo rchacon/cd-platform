@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from mangum import Mangum
-from mangum.adapter import DEFAULT_TEXT_MIME_TYPES
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from cd.api import jsonapi
 from cd.api.openapi import build_openapi
-from cd.api.problem import MEDIA_TYPE, problem_response
+from cd.api.problem import problem_response
 from cd.api.routes import bills, members, version
 from cd.api.routes.version import read_version
 
@@ -45,8 +42,8 @@ endpoints (`GET /members`, `GET /members/{bioguide_id}`, \
 ever a bespoke `{"error": "..."}` shape.\
 """
 
-# Matches api_gateway_base_path below -- API Gateway's custom domain
-# fronts requests at this exact path, so it's what every documented
+# cd-server mounts this app at /v1 (cd/server/app.py), and API Gateway's
+# custom domain fronts it at this exact path, so it's what every documented
 # example/client call should actually be made against.
 PRODUCTION_SERVER_URL = "https://api.civicdog.com/v1"
 
@@ -66,17 +63,6 @@ def _openapi() -> dict:
 app.openapi = _openapi
 
 
-# The JSON:API routes (routes/members.py's jsonapi_router + routes/bills.py).
-# A JsonApiRoute handles errors from *within* its own handler, so what
-# reaches the app-level handlers below on these paths is only the
-# routing-layer 404 (unmatched) / 405 (bad method) -- which must still
-# come back as JSON:API, not problem+json. Matches the whole `/members`
-# and `/bills` namespaces, not just the exact route shapes, so a
-# near-miss like `/members/K000401/votez` still gets a JSON:API 404
-# rather than problem+json.
-_JSONAPI_PATH_RE = re.compile(r"^/(?:members(?:/|$)|bills(?:/|$))")
-
-
 # Registered on Starlette's base HTTPException, not FastAPI's subclass:
 # Starlette's own router raises the base class directly for unmatched
 # routes (404) and disallowed methods (405), which a handler registered
@@ -87,7 +73,7 @@ _JSONAPI_PATH_RE = re.compile(r"^/(?:members(?:/|$)|bills(?:/|$))")
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
-    if _JSONAPI_PATH_RE.match(request.url.path):
+    if jsonapi.is_jsonapi_path(request.scope):
         return JSONResponse(
             jsonapi.error_document(exc.status_code, exc.detail),
             status_code=exc.status_code,
@@ -111,7 +97,7 @@ async def validation_exception_handler(
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     # The client only ever sees the generic detail below -- this is the
     # only place a DB failure, timeout, etc. leaves a trace at all
-    # (CloudWatch on Lambda, stderr locally), since nothing upstream logs.
+    # (CloudWatch in production, stderr locally), since nothing upstream logs.
     logger.exception("Unhandled exception for %s %s", request.method, request.url.path)
     return problem_response(status=500, detail="An unexpected error occurred.")
 
@@ -119,23 +105,3 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 app.include_router(version.router)
 app.include_router(members.jsonapi_router)
 app.include_router(bills.router)
-
-
-# API Gateway's custom-domain base_path_mapping ("v1") is used to select
-# which API/stage a request routes to, but AWS does not strip it from the
-# path forwarded to the Lambda integration -- confirmed empirically against
-# api.civicdog.com/v1 (cd-infra#19), which 404'd since FastAPI's routes are
-# plain /members, not /v1/members. api_gateway_base_path tells Mangum to
-# strip it itself before routing to the ASGI app.
-#
-# text_mime_types adds problem+json AND JSON:API's application/vnd.api+json
-# on top of Mangum's own defaults -- without it, Mangum doesn't recognize
-# those content types as text, base64-encodes the response body, and sets
-# isBase64Encoded=true. API Gateway only decodes that back for content
-# types in its own binaryMediaTypes config (cd-infra), which lists
-# neither, so clients received raw base64 instead of JSON (cd-platform#38).
-handler = Mangum(
-    app,
-    api_gateway_base_path="/v1",
-    text_mime_types=[*DEFAULT_TEXT_MIME_TYPES, MEDIA_TYPE, jsonapi.MEDIA_TYPE],
-)
