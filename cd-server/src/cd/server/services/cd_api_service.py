@@ -308,4 +308,8 @@ def get_cd_api_service() -> CdApiService:
         raise RuntimeError(
             'CD_API_FUNCTION_NAME must be set when CD_SERVER_ENVIRONMENT is not "local".'
         )
+    # The Lambda runs the last cd-api-v* build, frozen since its source
+    # moved into cd.api: changes to cd/api/ ship to /v1 but not to these
+    # resolvers in production. Until cd-platform#179 points CdApiService at
+    # cd.api directly, a change resolvers depend on needs #179 first.
     return CdApiService(LambdaApiClient(settings.CD_API_FUNCTION_NAME))
