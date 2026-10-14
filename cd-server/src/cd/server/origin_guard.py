@@ -18,6 +18,7 @@ import hmac
 import logging
 
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.websockets import WebSocketClose
 
 from cd.api import jsonapi
 from cd.api.problem import problem_response
@@ -40,8 +41,20 @@ class OriginGuard:
             )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not self.enforce or self._verified(scope):
+        # Only lifespan passes through unchecked. Websockets are guarded
+        # too, even though cd.api serves none today, so adding one later
+        # can't quietly expose it keyless on server.<domain>.
+        if (
+            scope["type"] not in ("http", "websocket")
+            or not self.enforce
+            or self._verified(scope)
+        ):
             await self.app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            # 1008 = policy violation. Closing before accept makes the
+            # server answer the handshake with a 403.
+            await WebSocketClose(code=1008)(scope, receive, send)
             return
         # Same error-shape split cd.api's own handlers make, so a JSON:API
         # client parsing errors[] on a non-2xx gets a clean 403, not a

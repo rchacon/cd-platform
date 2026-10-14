@@ -1,4 +1,5 @@
 import pytest
+from starlette.websockets import WebSocket, WebSocketDisconnect
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -11,6 +12,12 @@ def _client(secret: str, environment: str) -> TestClient:
     @inner.get("/thing")
     def thing() -> dict:
         return {"ok": True}
+
+    @inner.websocket("/socket")
+    async def socket(websocket: WebSocket) -> None:
+        await websocket.accept()
+        await websocket.send_text("hello")
+        await websocket.close()
 
     outer = FastAPI()
     outer.mount("/v1", OriginGuard(inner, secret, environment))
@@ -72,3 +79,18 @@ def test_a_rejected_mount_prefix_lookalike_stays_problem_json():
 
     assert response.status_code == 403
     assert response.headers["content-type"].startswith("application/problem+json")
+
+
+def test_a_websocket_without_the_origin_header_is_rejected():
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with _client("s3cret", "production").websocket_connect("/v1/socket"):
+            pass
+
+    assert exc_info.value.code == 1008
+
+
+def test_a_websocket_with_the_origin_header_is_let_through():
+    with _client("s3cret", "production").websocket_connect(
+        "/v1/socket", headers={"X-Origin-Verify": "s3cret"}
+    ) as websocket:
+        assert websocket.receive_text() == "hello"
