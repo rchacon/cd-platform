@@ -444,7 +444,7 @@ cd-api's `/v1` REST API) needs Docker only, same as `cd-etl` -- see
 ```bash
 # One-time setup
 cp .env.sample .env   # fill in CONGRESS_API_KEY
-git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/cd-api-v*/
+git config core.hooksPath .githooks  # optional: catches a cd-etl-v*/
                                       # cd-server-v* tag/pyproject.toml version
                                       # mismatch before CI does. Repoints ALL
                                       # git hooks to .githooks, so skip this if

@@ -246,6 +246,6 @@ yet. CI applies cd-etl's migrations there before `make test-server`.
 Released with cd-server (`cd-server-v*` tags, see `README.md`). The OpenAPI
 spec that `cd-website`'s docs viewer reads from a public S3 bucket
 (`cd-platform-openapi-spec-<account-id>`, cd-infra#18) used to be published
-by the Lambda-era `cd-api-deploy.yml`. Moving that step into cd-server's
+by the Lambda-era `cd-api-deploy.yml` (now deleted, along with `cd-api/`). Moving that step into cd-server's
 deploy workflow is a follow-up. Until then the published spec stays at its
 last cd-api release.
