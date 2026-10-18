@@ -20,9 +20,9 @@ from datetime import datetime
 from typing import Any
 
 import asyncpg
+from cd.lib.sql import named
 
 from cd.server import settings
-from cd.server.sql import named
 from cd.server.services.bedrock_chat_service import BedrockChatClient, get_bedrock_chat_client
 from cd.server.services.bill_search_service import BillResult, BillSearchService
 from cd.server.services.cd_api_service import CdApiService

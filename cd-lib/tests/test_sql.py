@@ -1,6 +1,6 @@
 import pytest
 
-from cd.server.sql import named
+from cd.lib.sql import named
 
 
 def test_names_become_positional_in_first_seen_order():

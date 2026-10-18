@@ -121,6 +121,19 @@ caller can bound the call's worst case (cd-api passes one: its Lambda's
 defaults). `cd-lib` gains `boto3` as a dependency here -- every consumer
 already had it.
 
+`src/cd/lib/sql.py` -- `named(query, params)` rewrites `:name`
+placeholders to asyncpg's positional `$n` and returns `(query, *args)`
+to splat into `fetch`/`fetchrow`/`execute` (cd-platform#166). Shared by
+`cd-server`'s two asyncpg consumers: `cd.server`'s `cd_customers`
+services and, once it moves off psycopg2 (cd-platform#180), `cd.api`'s
+`congressional_app` queries. It lives here rather than in `cd.server`
+so `cd.api` never has to import from `cd.server`. Pure Python, no
+`asyncpg` dependency of its own. SQL it can't rewrite safely (any `$`
+outside a literal, `E'...'` strings, nested or unterminated comments)
+raises `ValueError` instead of being rewritten wrong -- see the module
+docstring. `cd-etl` doesn't use it: psycopg2 supports `%(name)s`
+natively.
+
 `cd-server`'s GraphQL `Representative` and `Senator` types are both
 derived from the same `Member` via
 `strawberry.experimental.pydantic.type` -- also carries each field's

@@ -133,7 +133,10 @@ actually shared, not a dumping ground for every model cd-api happens to
 have; see `cd-lib/README.md`), `bedrock.py`'s `build_bedrock_client()`/
 `embed()` (Titan Text Embeddings V2 -- shared by `cd-api`'s
 `GET /bills` and `cd-etl`'s `bills_common.sync_bill`; the move is
-what first made `cd-etl` depend on `cd-lib`), and `apportionment.py`'s
+what first made `cd-etl` depend on `cd-lib`), `sql.py`'s `named()` (a
+`:name` -> `$n` placeholder shim for asyncpg, shared by `cd.server` and
+`cd.api` so the latter never imports from the former), and
+`apportionment.py`'s
 `SEATS_PER_STATE`/`NON_VOTING_TERRITORIES` (the data) plus
 `normalize_district()`. cd-api's `max_valid_district`/`is_valid_district`
 validation built on that table sits in
