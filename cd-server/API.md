@@ -1,9 +1,22 @@
-# CD-API
+# cd-api (REST API, `/v1`)
 
 REST API that `cd-lookup` (the WordPress plugin) consumes for representative
 lookups, replacing its current GovTrack HTML scrape. Exposes the
 `current_members` view (defined in
 `../cd-etl/migrations/versions/0001_initial_schema.py`) over HTTP as JSON.
+
+This used to be its own `cd-api/` component deployed as a Lambda behind API
+Gateway. It now lives in cd-server as the `cd.api` package
+(`src/cd/api/`, a sibling of `src/cd/server/`), and cd-server mounts its
+FastAPI app at `/v1` as a sub-application (`src/cd/server/app.py`). It keeps
+its own exception handlers and its own OpenAPI document
+(`/v1/openapi.json`), and its imports are still `from cd.api...`. API
+Gateway still fronts it at `https://api.civicdog.com/v1`, enforcing the
+`X-Api-Key` and usage plan before forwarding to cd-server.
+`src/cd/server/origin_guard.py` rejects any `/v1` request that didn't come
+through API Gateway, identified by a shared `X-Origin-Verify` secret
+(`CD_API_ORIGIN_SECRET`). Without it, cd-server's own hostname would serve
+`/v1` with no key at all. Paths below are relative to `/v1`.
 
 ## What it does
 
@@ -71,25 +84,23 @@ follows [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem
 Details for HTTP APIs", `application/problem+json`), handled by
 `src/cd/api/problem.py`'s `problem_response`.
 
-`src/cd/api/db.py` queries `current_members` directly with `psycopg2` -- no
-connection pooling yet, that's an open question for AWS deployment (see
-issue #4). `src/cd/api/transform.py` holds the pure row -> JSON-shape
+`src/cd/api/db.py` queries `current_members` with `psycopg2` through a
+`ThreadedConnectionPool` (`CD_API_PG_POOL_SIZE`, default 5), opened lazily
+on the first query and closed in cd-server's lifespan shutdown. It reads
+its own `CD_API_PGHOST`/`CD_API_PGPORT`/`CD_API_PGDATABASE`/`CD_API_PGUSER`/
+`CD_API_PGPASSWORD`, not the plain `PG*` names, which cd-server's
+`settings.py` already uses for its `cd_customers` database. `src/cd/api/transform.py` holds the pure row -> JSON-shape
 functions. `../cd-lib/src/cd/lib/models.py` holds the Pydantic models
 documenting those same request/response shapes (`response_model=`/
 `responses=` on each route in `src/cd/api/app.py`), so the OpenAPI spec
 exported on release (see Releasing below) actually reflects what the API
 returns, including error bodies -- shared with `cd-server` via `cd-lib`
-(see `../cd-lib/README.md`) rather than living only in `cd-api`.
+(see `../cd-lib/README.md`).
 
-`handler = Mangum(app)` in `app.py` is what an AWS Lambda config points to
-(as the dotted path `cd.api.app.handler` -- see Releasing below for why the
-`cd.api` package structure has to be preserved, not flattened, in the
-deploy zip); it's untouched for local development.
-
-`GET /version` returns `{"version": ...}`, read from a `VERSION` file next
-to `app.py` -- only present in a deployed Lambda zip (written by
-`cd-api-deploy.yml`, see Releasing below), so it always reads `"dev"`
-locally.
+`GET /version` returns `{"version": ...}`, read from cd-server's own
+`src/cd/server/VERSION` file: this package ships in cd-server's image, so it
+reports cd-server's version. cd-server's Dockerfile writes that file at
+build time, so it always reads `"dev"` locally.
 
 ### JSON:API endpoints
 
@@ -211,101 +222,30 @@ no offset/cursor pagination yet. The old `q` / `bioguide_id` / `limit`
 params are gone; `JsonApiRoute` `400`s any undeclared query parameter. A
 Bedrock failure is `503` (JSON:API error document, retryable).
 
-## Prerequisites
+## Running and testing
 
-- [uv](https://docs.astral.sh/uv/)
-- Docker (for the Postgres container defined in `../docker-compose.yml`)
-
-## Setup
-
-1. Start Postgres and apply the schema (owned by `cd-etl`, see
-   `../cd-etl/README.md`):
-
-   ```bash
-   cd .. && docker compose up -d postgres
-   cd cd-etl && uv run alembic upgrade head && cd ../cd-api
-   ```
-
-2. Install dependencies:
-
-   ```bash
-   uv sync
-   ```
-
-3. Run it:
-
-   ```bash
-   uv run uvicorn cd.api.app:app --reload --app-dir src
-   ```
-
-   Then, e.g.:
-
-   ```bash
-   curl 'http://localhost:8000/members?filter[state]=GA&filter[district]=5'
-   ```
-
-## Testing
+Part of cd-server: `make start-server` serves it at
+`http://localhost:8000/v1/...`, and `make test-server` runs its tests
+(`tests/api/`) alongside cd-server's own. See `README.md`.
 
 ```bash
-uv run pytest tests/
+curl 'http://localhost:8000/v1/members?filter[state]=GA&filter[district]=5'
 ```
 
-`tests/test_transform.py` is pure unit tests with no dependencies.
-`tests/test_app.py` seeds real rows and exercises the endpoint end to end
-against Postgres, and skips itself if `docker compose up -d postgres` hasn't
-been run.
-
-Tests target a dedicated `congressional_app_test` database (`cd-platform#16`),
-not the real dev database -- `tests/conftest.py` sets this before
-`cd.api.db`/`cd.api.app` are first imported, so both the fixture's own
-seeding and the app code under test (via `TestClient`) consistently hit the
-same isolated database. That database's schema is owned by `cd-etl` (see
-`../cd-etl/README.md`), so run
-`make test-etl` from the repo root at least once first -- otherwise these
-tests fail with "relation does not exist" rather than skipping, since the
-database itself already exists (just without the schema yet).
+`tests/api/test_transform.py` is pure unit tests with no dependencies.
+`tests/api/test_app.py` and `tests/api/test_db.py` seed real rows in a
+dedicated `congressional_app_test` database (`cd-platform#16`; `make
+test-server` passes `CD_API_PGDATABASE=congressional_app_test`). That
+database's schema is owned by cd-etl, so run `make test-etl` from the repo
+root at least once first. Otherwise these tests fail with "relation does not
+exist" rather than skipping, because the database exists but has no schema
+yet. CI applies cd-etl's migrations there before `make test-server`.
 
 ## Releasing
 
-Pushing a tag matching `cd-api-v*` (e.g. `cd-api-v0.1.0`) triggers
-`.github/workflows/cd-api-deploy.yml`, which builds a Lambda zip package
-(production dependencies via `uv export`, cross-installed for Lambda's
-x86_64/Python 3.12 runtime, at the zip root; `src/cd/` copied in alongside
-them, preserving its `cd/api/` structure rather than flattening it -- see
-`cd-infra#12`: Lambda's runtime only puts the zip root on `sys.path`, so
-`app.py`'s own absolute imports, e.g. `from cd.api.db import ...`, need the
-`cd` package to sit directly there) and ships it directly to the
-`cd-platform-cd-api` Lambda function via `aws lambda update-function-code`.
-The build also writes a `VERSION` file (the tag with its `cd-api-v` prefix
-stripped, e.g. `0.1.0`) into `package/cd/api/` (alongside `app.py`, since
-`GET /version` reads it via `Path(__file__).parent`) -- the simplest way to
-confirm what's actually live behind Lambda's mutable `$LATEST`, without
-needing Lambda's own PublishVersion/alias machinery.
-
-`cd-infra`'s Terraform configures the Lambda's `handler` as
-`cd.api.app.handler`, matching this workflow's package structure.
-
-Authenticates via GitHub OIDC to a scoped IAM role
-(`cd-platform-cd-api-deploy`, provisioned in
-`cd-infra`'s `terraform/cd-api/`) -- no static AWS credentials stored in
-this repo. Environment variables (DB connection info) are owned by
-Terraform, not this workflow. As with `cd-etl`, the workflow's first step
-(`../scripts/check-tag-version.sh`) hard-fails the deploy if the tag's
-version doesn't match `pyproject.toml`'s own `version`; an optional local
-`pre-push` git hook runs the same check before the tag is even pushed
-(`git config core.hooksPath .githooks`, see the root `CLAUDE.md`).
-
-The workflow also exports `app.openapi()` to `openapi.json` (reusing the
-same installed `package/` dependencies -- no second dependency install,
-done right after the package-import sanity check, before the Lambda
-deploy) and, once the Lambda deploy succeeds, publishes it via `aws s3 cp`
-to a public S3 bucket (`cd-platform-openapi-spec-<account-id>`, provisioned in
-`cd-infra`#18, name supplied via the `OPENAPI_SPEC_BUCKET` repo variable) at
-a fixed `openapi.json` key, with `Content-Type: application/json` and
-`Cache-Control: no-cache`. This exists because API Gateway requires an API
-key on every route including `/openapi.json`, so the live spec can't be
-fetched client-side by the `cd-website` docs viewer (`cd-website`#1) -- the
-public S3 copy sidesteps that. `app.py`'s `FastAPI(title="cd-api",
-version=...)` reuses the same `VERSION`-file convention as `GET /version`,
-so the exported spec's `info.version` reflects the actual deployed tag
-rather than FastAPI's default placeholder.
+Released with cd-server (`cd-server-v*` tags, see `README.md`). The OpenAPI
+spec that `cd-website`'s docs viewer reads from a public S3 bucket
+(`cd-platform-openapi-spec-<account-id>`, cd-infra#18) used to be published
+by the Lambda-era `cd-api-deploy.yml` (now deleted, along with `cd-api/`). Moving that step into cd-server's
+deploy workflow is a follow-up. Until then the published spec stays at its
+last cd-api release.

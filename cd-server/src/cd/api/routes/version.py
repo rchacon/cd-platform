@@ -7,10 +7,12 @@ from fastapi import APIRouter
 from cd.api.models import VersionResponse
 from cd.api.openapi import error_response
 
-# cd-api-deploy.yml writes this into the Lambda zip (the pushed tag with
-# its `cd-api-v` prefix stripped, alongside app.py); absent in local dev
-# and tests, where read_version() falls back to "dev".
-VERSION_FILE = Path(__file__).parent.parent / "VERSION"
+# cd-server's own VERSION file (cd/server/VERSION), not one of cd.api's:
+# this package ships inside cd-server's image now, so it reports the version
+# of the deployable unit. cd-server's Dockerfile writes it at build time
+# (the pushed tag with its `cd-server-v` prefix stripped); absent in local
+# dev and tests, where read_version() falls back to "dev".
+VERSION_FILE = Path(__file__).parent.parent.parent / "server" / "VERSION"
 
 router = APIRouter(tags=["system"])
 

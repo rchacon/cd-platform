@@ -1,5 +1,4 @@
 import datetime
-import json
 import uuid
 
 import pytest
@@ -8,7 +7,7 @@ from psycopg2.extras import Json
 
 from cd.lib import bedrock
 from cd.api import db
-from cd.api.app import app, handler
+from cd.api.app import app
 from conftest import random_number
 
 STATE = "ZZ"
@@ -244,8 +243,8 @@ def test_openapi_documents_405_for_disallowed_method():
 
 def test_get_version_returns_dev_when_version_file_absent(monkeypatch, tmp_path):
     # cd-platform#29: local dev/CI never has a VERSION file -- only the
-    # deploy workflow writes one into the Lambda zip -- so this is the
-    # default a developer actually sees.
+    # production image build writes one -- so this is the default a
+    # developer actually sees.
     monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
     client = TestClient(app)
     response = client.get("/version")
@@ -265,97 +264,73 @@ def test_get_version_returns_file_contents_when_present(monkeypatch, tmp_path):
     assert response.json() == {"version": "0.1.0"}
 
 
-def _api_gateway_event(path: str) -> dict:
-    return {
-        "resource": "/{proxy+}",
-        "path": path,
-        "httpMethod": "GET",
-        "headers": {},
-        "multiValueQueryStringParameters": {},
-        "requestContext": {"identity": {"sourceIp": "127.0.0.1"}},
-        "body": None,
-        "isBase64Encoded": False,
-    }
+def _mounted_client() -> TestClient:
+    # cd-server's real app, with this one mounted at /v1 -- the shape it's
+    # actually served in. The TestClient(app) tests above call cd.api's app
+    # directly, so they'd never catch a bug in how it behaves under the
+    # mount (e.g. the /v1 prefix leaking into request.url.path, which
+    # jsonapi.is_jsonapi_path matches against).
+    from cd.server.app import app as server_app
+
+    return TestClient(server_app)
 
 
-def test_handler_strips_v1_base_path(monkeypatch, tmp_path):
-    # Regression test for cd-infra#19: api.civicdog.com's custom-domain
-    # base_path_mapping ("v1") is used by API Gateway to select which
-    # API/stage a request routes to, but is NOT stripped from the path
-    # forwarded to the Lambda -- confirmed empirically against the real
-    # domain, which 404'd before api_gateway_base_path was added to the
-    # Mangum() call below. A TestClient-based test against `app` directly
-    # (like the two above) would never catch this class of bug, since it
-    # never goes through Mangum's event handling at all.
+def test_mounted_v1_version_is_served(monkeypatch, tmp_path):
     monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
-    response = handler(_api_gateway_event("/v1/version"), None)
+    response = _mounted_client().get("/v1/version")
 
-    assert response["statusCode"] == 200
-    assert response["body"] == '{"version":"dev"}'
+    assert response.status_code == 200
+    assert response.json() == {"version": "dev"}
 
 
-def test_handler_leaves_unprefixed_path_unchanged(monkeypatch, tmp_path):
-    # The existing execute-api URL never had a /v1 segment (its stage
-    # segment is excluded from event["path"] entirely by API Gateway
-    # itself) -- api_gateway_base_path must not affect that request shape.
+def test_version_file_is_cd_servers_own():
+    # cd.api ships inside cd-server's image and reports its version --
+    # cd-server's Dockerfile only ever writes cd/server/VERSION.
+    from cd.api.routes import version
+
+    assert version.VERSION_FILE.parent.name == "server"
+    assert version.VERSION_FILE.parent.parent.name == "cd"
+
+
+def test_mounted_v1_non_jsonapi_405_is_problem_json(monkeypatch, tmp_path):
     monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
-    response = handler(_api_gateway_event("/version"), None)
+    response = _mounted_client().post("/v1/version")
 
-    assert response["statusCode"] == 200
-    assert response["body"] == '{"version":"dev"}'
-
-
-def test_handler_returns_decoded_problem_json_not_base64(monkeypatch, tmp_path):
-    # Regression test for cd-platform#38: Mangum's default text_mime_types
-    # doesn't include application/problem+json, so every error response
-    # was base64-encoded with isBase64Encoded=true, and API Gateway (no
-    # matching binaryMediaTypes entry) forwarded the raw base64 string to
-    # clients untouched instead of decoding it. Exercised via /version,
-    # the one endpoint still on problem+json (GET /members moved to
-    # JSON:API in cd-platform#104 PR B -- see the vnd.api+json test below).
-    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
-    event = _api_gateway_event("/v1/version")
-    event["httpMethod"] = "POST"  # 405 -> problem+json
-    response = handler(event, None)
-
-    assert response["statusCode"] == 405
-    assert response["isBase64Encoded"] is False
-    body = json.loads(response["body"])
-    assert body["type"] == "about:blank"
-    assert body["status"] == 405
+    assert response.status_code == 405
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["status"] == 405
 
 
-def test_handler_returns_decoded_vnd_api_json_not_base64(monkeypatch, tmp_path):
-    # cd-platform#38 again, for the JSON:API media type: application/vnd.api+json
-    # must also be in Mangum's text_mime_types or every JSON:API response
-    # (success and error) comes back base64-encoded with isBase64Encoded=true.
-    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
+def test_mounted_v1_jsonapi_422_is_a_jsonapi_error_document():
     # no filter[bill] -> 422 from the JSON:API route
-    response = handler(_api_gateway_event("/v1/members/K000001/votes"), None)
+    response = _mounted_client().get("/v1/members/K000001/votes")
 
-    assert response["statusCode"] == 422
-    assert response["isBase64Encoded"] is False
-    body = json.loads(response["body"])
-    assert body["errors"][0]["status"] == "422"
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/vnd.api+json")
+    assert response.json()["errors"][0]["status"] == "422"
 
 
-def test_handler_jsonapi_path_405_is_a_jsonapi_error_document(monkeypatch, tmp_path):
+def test_mounted_v1_jsonapi_path_405_is_a_jsonapi_error_document():
     # A routing-layer 405 (wrong method) never reaches JsonApiRoute -- app.py
-    # must still format it as JSON:API for a JSON:API path.
-    monkeypatch.setattr("cd.api.routes.version.VERSION_FILE", tmp_path / "VERSION")
-    event = _api_gateway_event("/v1/members/K000001/votes")
-    event["httpMethod"] = "POST"
-    response = handler(event, None)
+    # must still format it as JSON:API for a JSON:API path, with the /v1
+    # mount prefix stripped before matching.
+    response = _mounted_client().post("/v1/members/K000001/votes")
 
-    assert response["statusCode"] == 405
-    assert "application/vnd.api+json" in response["headers"]["content-type"]
-    body = json.loads(response["body"])
-    assert body["errors"][0]["status"] == "405"
+    assert response.status_code == 405
+    assert response.headers["content-type"].startswith("application/vnd.api+json")
+    assert response.json()["errors"][0]["status"] == "405"
+
+
+def test_mounted_v1_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document():
+    response = _mounted_client().get("/v1/members/K000001/votez")
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/vnd.api+json")
 
 
 def test_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document():
     # A typo'd path under /members/<id>/... has no route -> Starlette 404.
-    # app.py's _JSONAPI_PATH_RE covers the whole namespace, so it comes
+    # jsonapi.is_jsonapi_path covers the whole namespace, so it comes
     # back as a JSON:API error document, not problem+json.
     client = TestClient(app)
     response = client.get("/members/K000001/votez")
@@ -367,7 +342,7 @@ def test_jsonapi_namespace_near_miss_404_is_a_jsonapi_error_document():
 
 def test_bills_405_is_a_jsonapi_error_document():
     # POST /bills never reaches JsonApiRoute (routing-layer 405) --
-    # _JSONAPI_PATH_RE covers the /bills namespace so app.py formats it.
+    # jsonapi.is_jsonapi_path covers the /bills namespace so app.py formats it.
     client = TestClient(app)
     response = client.post("/bills")
 
@@ -513,7 +488,7 @@ def test_get_members_rejects_an_unsupported_query_param(seeded_state):
 
 def test_disallowed_method_on_members_is_a_jsonapi_error():
     # POST /members -- a routing-layer 405, never reaches JsonApiRoute;
-    # _JSONAPI_PATH_RE covers the whole /members namespace now, so app.py
+    # jsonapi.is_jsonapi_path covers the whole /members namespace now, so app.py
     # formats it as JSON:API, not problem+json.
     client = TestClient(app)
     response = client.post("/members")

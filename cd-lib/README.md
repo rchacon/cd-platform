@@ -25,7 +25,7 @@ own flattened shape and the only reason it stays a separate model.
 that body and model are both gone as of cd-platform#104 PR B /
 cd-api-v0.3.8.) `cd-api`'s own `VersionResponse`/`ProblemDetail`/
 `ValidationProblemDetail` deliberately stayed in
-`cd-api/src/cd/api/models.py` -- `cd-server` never touches them, and
+`cd-server/src/cd/api/models.py` -- `cd.server` never touches them, and
 `cd-lib` is for code that's actually shared, not everywhere cd-api's
 own models happen to live.
 
@@ -97,7 +97,7 @@ seat) and `NON_VOTING_TERRITORIES` (which of those keys are a non-voting
 Delegate/Resident Commissioner seat rather than a full voting
 Representative). Moved here from `cd-api/src/cd/api/apportionment.py` (only the data --
 `max_valid_district`/`is_valid_district`, built on the table, live in
-`cd-api/src/cd/api/routes/members.py`, that endpoint being their only
+`cd-server/src/cd/api/routes/members.py`, that endpoint being their only
 caller) once `cd-server`'s `getStates` GraphQL field needed the same
 seat counts and voting status cd-api was already using to validate
 `district` query params, rather than a second hand-transcribed copy.
@@ -190,10 +190,10 @@ directory, `COPY`'d into the image at a matching path -- see
 `cd-server/docker/Dockerfile` and `cd-etl/docker/Dockerfile`) works
 fine, and additionally means editing
 `cd-lib` locally shows up immediately via the bind mount, no rebuild
-needed. `cd-api` deliberately does **not** use `editable = true`: its
-deploy path (`uv export` + `uv pip install --target package`, see
-`cd-api/README.md`'s Releasing section) produces a zip that's the *only*
-thing that ships to Lambda -- there is no persistent source tree
+needed. The retired Lambda-zip `cd-api` deliberately did **not** use
+`editable = true` (its code now ships inside cd-server's container): its
+deploy path (`uv export` + `uv pip install --target package`) produced a
+zip that was the *only* thing that shipped to Lambda -- there was no persistent source tree
 alongside it at runtime the way a container has. Confirmed empirically:
 with `editable = true`, `uv pip install --target` produced only a
 dangling `.pth` file pointing at this dev machine's own absolute

@@ -15,15 +15,11 @@ def _int_env(name: str, default: int) -> int:
 # deployed function -- no AWS credentials/function needed for local dev).
 ENVIRONMENT = os.environ.get("CD_SERVER_ENVIRONMENT", "local")
 
-# cd-api's own README runs it via `uv run uvicorn ... --app-dir src` on
-# the host, not in docker-compose (it has no Dockerfile) -- reachable
-# from cd-server's own container via host.docker.internal (see that
-# service's extra_hosts in docker-compose.yml), but only if cd-api is
-# started with --host 0.0.0.0, not uvicorn's 127.0.0.1-only default.
-# Port 8001, not cd-api's own README default of 8000 -- that's cd-server's
-# own published port (docker-compose.yml), so running cd-api on 8000 too
-# collides with it.
-CD_API_BASE_URL = os.environ.get("CD_API_BASE_URL", "http://host.docker.internal:8001")
+# Local dev only (production uses CD_API_FUNCTION_NAME's Lambda): cd-api's
+# REST API is now mounted inside this same process at /v1 (cd/api/), so
+# HttpApiClient just calls back into it over localhost. Interim -- direct
+# in-process calls replace this HTTP hop once CdApiService is retired.
+CD_API_BASE_URL = os.environ.get("CD_API_BASE_URL", "http://localhost:8000/v1")
 
 CD_API_FUNCTION_NAME = os.environ.get("CD_API_FUNCTION_NAME", "")
 
@@ -69,6 +65,12 @@ COGNITO_CLIENT_IDS = [
     for client_id in os.environ.get("COGNITO_CLIENT_IDS", "").split(",")
     if client_id.strip()
 ]
+
+# Shared secret API Gateway adds (as X-Origin-Verify) to every request it
+# forwards to /v1 -- the only thing distinguishing a key-checked request
+# from one sent straight to this service's own hostname, which would skip
+# API Gateway's X-Api-Key check entirely. See cd/server/origin_guard.py.
+CD_API_ORIGIN_SECRET = os.environ.get("CD_API_ORIGIN_SECRET", "")
 
 # Anthropic Claude via Bedrock's Converse API (services/bedrock_chat_service.py),
 # for summarizeVotingRecord. A cross-region inference profile id (the

@@ -55,6 +55,24 @@ def test_http_api_client_returns_json_on_success(monkeypatch):
     assert asyncio.run(client.get("/version", {})) == {"version": "1.2.3"}
 
 
+def test_http_api_client_sends_the_origin_secret_when_set():
+    # Locally /v1 sits behind OriginGuard, which enforces a configured
+    # secret even in local dev.
+    client = HttpApiClient("http://localhost:8000/v1", "s3cret")
+    try:
+        assert client._client.headers["X-Origin-Verify"] == "s3cret"
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_http_api_client_omits_the_origin_header_without_a_secret():
+    client = HttpApiClient("http://localhost:8000/v1")
+    try:
+        assert "X-Origin-Verify" not in client._client.headers
+    finally:
+        asyncio.run(client.aclose())
+
+
 def test_http_api_client_passes_query_params(monkeypatch):
     captured = {}
 
