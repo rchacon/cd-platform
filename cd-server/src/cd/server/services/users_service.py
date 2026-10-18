@@ -5,6 +5,7 @@ import jwt
 from jwt import PyJWKClient, PyJWKClientConnectionError, PyJWTError
 
 from cd.server import settings
+from cd.server.sql import named
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +42,15 @@ class UsersClient:
     async def upsert_user(self, id: str, email: str) -> None:
         assert self._pool is not None, "UsersClient.connect() was never called"
         await self._pool.execute(
-            """
-            INSERT INTO users (id, email, created_at, last_seen)
-            VALUES ($1, $2, now(), now())
-            ON CONFLICT (id) DO UPDATE
-                SET email = EXCLUDED.email, last_seen = now()
-            """,
-            id,
-            email,
+            *named(
+                """
+                INSERT INTO users (id, email, created_at, last_seen)
+                VALUES (:id, :email, now(), now())
+                ON CONFLICT (id) DO UPDATE
+                    SET email = EXCLUDED.email, last_seen = now()
+                """,
+                {"id": id, "email": email},
+            )
         )
 
 
