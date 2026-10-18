@@ -22,6 +22,7 @@ from typing import Any
 import asyncpg
 
 from cd.server import settings
+from cd.server.sql import named
 from cd.server.services.bedrock_chat_service import BedrockChatClient, get_bedrock_chat_client
 from cd.server.services.bill_search_service import BillResult, BillSearchService
 from cd.server.services.cd_api_service import CdApiService
@@ -110,24 +111,28 @@ class AiSummaryClient:
         # full bills+votes JSON snapshot (see the migration's own
         # docstring), not worth a round-trip re-select/re-decode of data
         # this call just wrote verbatim.
+        # subject is bound directly as a Python object -- the pool's jsonb
+        # codec (see _register_codecs) encodes it; Postgres infers
+        # :subject's type as jsonb from the target column, no explicit
+        # cast needed.
         row = await self._pool.fetchrow(
-            """
-            INSERT INTO ai_summaries (
-                user_id, kind, subject, prompt_template, summary, model_id
+            *named(
+                """
+                INSERT INTO ai_summaries (
+                    user_id, kind, subject, prompt_template, summary, model_id
+                )
+                VALUES (:user_id, :kind, :subject, :prompt_template, :summary, :model_id)
+                RETURNING ai_summary_id, created_at
+                """,
+                {
+                    "user_id": user_id,
+                    "kind": kind,
+                    "subject": subject,
+                    "prompt_template": prompt_template,
+                    "summary": summary,
+                    "model_id": model_id,
+                },
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING ai_summary_id, created_at
-            """,
-            user_id,
-            kind,
-            # Bound directly as a Python object -- the pool's jsonb codec
-            # (see _register_codecs) encodes it; Postgres infers $3's
-            # type as jsonb from the target column, no explicit cast
-            # needed.
-            subject,
-            prompt_template,
-            summary,
-            model_id,
         )
         return AiSummaryRecord(
             id=row["ai_summary_id"],
@@ -147,20 +152,20 @@ class AiSummaryClient:
         # fetch -- otherwise LIMIT counts rows of every kind, and a
         # kind-scoped caller (myAiSummaries) silently gets back fewer than
         # `limit` once a second kind is ever stored, with no way to page
-        # to the rest. $2::text so asyncpg can type the parameter in the
-        # `IS NULL` branch (nothing else constrains it there).
+        # to the rest. :kind::text so asyncpg can type the parameter in
+        # the `IS NULL` branch (nothing else constrains it there).
         rows = await self._pool.fetch(
-            """
-            SELECT ai_summary_id, kind, subject, prompt_template, summary, model_id, created_at
-            FROM ai_summaries
-            WHERE user_id = $1
-              AND ($2::text IS NULL OR kind = $2)
-            ORDER BY created_at DESC
-            LIMIT $3
-            """,
-            user_id,
-            kind,
-            limit,
+            *named(
+                """
+                SELECT ai_summary_id, kind, subject, prompt_template, summary, model_id, created_at
+                FROM ai_summaries
+                WHERE user_id = :user_id
+                  AND (:kind::text IS NULL OR kind = :kind)
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """,
+                {"user_id": user_id, "kind": kind, "limit": limit},
+            )
         )
         return [_record(row) for row in rows]
 
@@ -172,21 +177,21 @@ class AiSummaryClient:
         per-user cap). `kind` None -> every kind; given -> only that one
         (the daily caps are scoped to one summary kind, so a future kind's
         rows don't eat this one's allowance -- same reason fetch_history()
-        kind-scopes in SQL). Same `$N::text IS NULL OR ...` idiom
+        kind-scopes in SQL). Same `:name::text IS NULL OR ...` idiom
         throughout. The global path hits idx_ai_summaries_created_at
         (0003), the per-user path idx_ai_summaries_user_created (0002)."""
         assert self._pool is not None, "AiSummaryClient.connect() was never called"
         return await self._pool.fetchval(
-            """
-            SELECT count(*)
-            FROM ai_summaries
-            WHERE created_at >= $1
-              AND ($2::text IS NULL OR user_id = $2)
-              AND ($3::text IS NULL OR kind = $3)
-            """,
-            since,
-            user_id,
-            kind,
+            *named(
+                """
+                SELECT count(*)
+                FROM ai_summaries
+                WHERE created_at >= :since
+                  AND (:user_id::text IS NULL OR user_id = :user_id)
+                  AND (:kind::text IS NULL OR kind = :kind)
+                """,
+                {"since": since, "user_id": user_id, "kind": kind},
+            )
         )
 
 
