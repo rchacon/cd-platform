@@ -696,3 +696,16 @@ async def test_close_then_connect_reopens_the_pool():
 
     await db.connect()
     assert await db.fetch_member("Z999999") is None
+
+
+async def test_connect_survives_an_unreachable_database(monkeypatch, caplog):
+    # An unreachable congressional_app must not fail cd-server's boot (that
+    # would take GraphQL and /health down too) -- only warn, then fail /v1.
+    await db.close()
+    monkeypatch.setitem(db.PG_DSN, "port", "1")  # nothing listens on port 1
+
+    await db.connect()
+
+    assert "can't reach its database" in caplog.text
+    with pytest.raises(OSError):
+        await db.fetch_member("Z999999")

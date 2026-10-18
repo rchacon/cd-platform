@@ -26,13 +26,12 @@ logger = logging.getLogger(__name__)
 
 def warn_if_cd_api_db_unconfigured(environment: str, environ=os.environ) -> None:
     # cd.api.db falls back to localhost when CD_API_PGHOST is unset, which
-    # only makes sense in local dev. The lifespan opens cd.api's pool at
-    # startup, so elsewhere the boot then fails on a connection error to
-    # localhost -- this logs the actual cause first.
+    # only makes sense in local dev. Elsewhere every /v1 request then fails
+    # on a connection error to localhost -- this logs the actual cause.
     if environment != "local" and not environ.get("CD_API_PGHOST"):
         logger.warning(
             "CD_API_PGHOST is unset outside local dev -- cd.api's database "
-            "pool will try localhost, so startup fails until the CD_API_PG* "
+            "pool will try localhost, so /v1 fails until the CD_API_PG* "
             "variables are configured"
         )
 

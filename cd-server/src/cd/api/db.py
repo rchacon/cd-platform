@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 import asyncpg
 from cd.lib.sql import named
+
+logger = logging.getLogger(__name__)
 
 # CD_API_-prefixed, not the plain libpq PG* names: this package now runs
 # inside cd-server, whose own settings.py already owns PGHOST/PGDATABASE/...
@@ -18,9 +21,10 @@ PG_DSN = {
     "password": os.environ.get("CD_API_PGPASSWORD", "postgres"),
 }
 
-# min_size == max_size: every connection is opened up front at startup, so
-# a misconfigured or unreachable database fails the boot instead of the
-# first /v1 request. asyncpg's acquire() waits for a free connection rather
+# min_size=0: the pool opens no connections at startup, so an unreachable
+# congressional_app fails /v1 requests rather than cd-server's boot (which
+# would take GraphQL and /health down with it). connect() probes it once
+# and logs a warning instead. asyncpg's acquire() waits for a free connection rather
 # than raising, so a burst queues instead of failing.
 POOL_SIZE = int(os.environ.get("CD_API_PG_POOL_SIZE") or "5")
 # Bounds each connection attempt, so an unreachable host (a security-group
@@ -33,8 +37,10 @@ CONNECT_TIMEOUT_SECONDS = 10
 # indefinitely.
 ACQUIRE_TIMEOUT_SECONDS = 10
 COMMAND_TIMEOUT_SECONDS = 15
-# Recycles connections idle longer than this, so one silently cut by an
-# RDS failover or an idle reaper is replaced rather than handed out dead.
+# Closes connections idle longer than this; with min_size=0 they're only
+# reopened on demand. This bounds how long a connection sits unused, but it
+# doesn't detect one a failover has already cut -- that still fails the
+# request that gets it.
 MAX_INACTIVE_CONNECTION_LIFETIME_SECONDS = 300
 
 _pool: asyncpg.Pool | None = None
@@ -47,13 +53,22 @@ async def connect() -> None:
     # loop that serves requests -- never lazily or at import.
     global _pool
     _pool = await asyncpg.create_pool(
-        min_size=POOL_SIZE,
+        min_size=0,
         max_size=POOL_SIZE,
         timeout=CONNECT_TIMEOUT_SECONDS,
         command_timeout=COMMAND_TIMEOUT_SECONDS,
         max_inactive_connection_lifetime=MAX_INACTIVE_CONNECTION_LIFETIME_SECONDS,
         **PG_DSN,
     )
+    try:
+        async with _pool.acquire(timeout=CONNECT_TIMEOUT_SECONDS) as conn:
+            await conn.execute("SELECT 1")
+    except Exception:
+        logger.warning(
+            "cd.api can't reach its database at startup -- /v1 requests will "
+            "fail until it's reachable",
+            exc_info=True,
+        )
 
 
 async def close() -> None:

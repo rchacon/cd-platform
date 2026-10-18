@@ -89,9 +89,9 @@ an asyncpg pool (`CD_API_PG_POOL_SIZE`, default 5), and the routes are
 `async def`. The pool is opened at startup by cd-server's lifespan and
 closed at shutdown; Starlette never runs a mounted app's own lifespan, so
 cd.api's lifespan only runs when the app is served on its own (its tests).
-Opening every connection at startup means cd-server fails to boot when
-`congressional_app` is unreachable, rather than failing the first `/v1`
-request. Queries use `:name` placeholders through `cd-lib`'s
+The pool opens no connections up front (`min_size=0`), so an unreachable
+`congressional_app` fails `/v1` requests (500) rather than cd-server's
+boot; startup probes it once and logs a warning if it can't connect. Queries use `:name` placeholders through `cd-lib`'s
 `cd.lib.sql.named()`. `GET /bills`' Titan embed (boto3, no async API)
 runs on the threadpool via `run_in_threadpool`. It reads
 its own `CD_API_PGHOST`/`CD_API_PGPORT`/`CD_API_PGDATABASE`/`CD_API_PGUSER`/
