@@ -3,9 +3,9 @@ import logging
 import asyncpg
 import jwt
 from jwt import PyJWKClient, PyJWKClientConnectionError, PyJWTError
+from cd.lib.sql import named
 
 from cd.server import settings
-from cd.server.sql import named
 
 logger = logging.getLogger(__name__)
 
