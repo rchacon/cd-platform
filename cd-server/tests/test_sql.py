@@ -38,8 +38,22 @@ def test_colons_inside_literals_identifiers_and_comments_are_left_alone(query):
     assert named(query, {}) == (query,)
 
 
-def test_existing_positional_placeholders_pass_through():
-    assert named("SELECT $1", {}) == ("SELECT $1",)
+@pytest.mark.parametrize(
+    "query",
+    [
+        # Would come out as "SELECT $1, $1" -- both slots bound to :a.
+        "SELECT $1, :a",
+        "SELECT $$ :a $$",
+        "SELECT $tag$ :a $tag$",
+    ],
+)
+def test_a_dollar_outside_literals_raises(query):
+    with pytest.raises(ValueError, match="unsupported SQL"):
+        named(query, {"a": 1})
+
+
+def test_a_dollar_inside_a_literal_is_fine():
+    assert named("SELECT '$1', :a", {"a": 1}) == ("SELECT '$1', $1", 1)
 
 
 def test_rewrite_is_deterministic():
