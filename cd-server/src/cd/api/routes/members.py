@@ -113,7 +113,7 @@ _STATE_QUERY = dict(min_length=2, max_length=2, pattern="^[A-Za-z]{2}$")
         500: jsonapi_error_response("An unexpected error occurred."),
     },
 )
-def get_members(
+async def get_members(
     state_filter: str | None = Query(
         None,
         alias="filter[state]",
@@ -195,7 +195,7 @@ def get_members(
             ),
         )
 
-    rows = fetch_members(state, chamber=chamber, district=district)
+    rows = await fetch_members(state, chamber=chamber, district=district)
     # Empty is a real answer for a known state (vacant district, a
     # chamber with no seated member) -- 200 with `data: []`. Only a
     # state absent from the apportionment table (`seats is None`) that
@@ -243,7 +243,7 @@ def get_members(
         500: jsonapi_error_response("An unexpected error occurred."),
     },
 )
-def get_member(bioguide_id: str) -> dict:
+async def get_member(bioguide_id: str) -> dict:
     """Look up a single member of the current Congress by bioguide id.
 
     Serves both sitting members and those who left the current Congress
@@ -256,7 +256,7 @@ def get_member(bioguide_id: str) -> dict:
     `state` and `in_office` carried on top of the `GET /members` field
     set. The bioguide id lives on the resource, not in `attributes`.
     """
-    row = fetch_member(bioguide_id)
+    row = await fetch_member(bioguide_id)
     if row is None:
         raise HTTPException(
             status_code=404, detail=f"No current-Congress member with bioguide_id {bioguide_id}"
@@ -296,7 +296,7 @@ def get_member(bioguide_id: str) -> dict:
         500: jsonapi_error_response("An unexpected error occurred."),
     },
 )
-def get_member_votes(
+async def get_member_votes(
     bioguide_id: str,
     bill_filter: str = Query(
         ...,
@@ -369,7 +369,7 @@ def get_member_votes(
     # fetch_member_votes returns None (rather than []) when the id has no
     # current-Congress term -- the 404, checked in the same DB connection
     # as the votes query rather than a separate fetch_member() round trip.
-    rows = fetch_member_votes(bioguide_id, keys)
+    rows = await fetch_member_votes(bioguide_id, keys)
     if rows is None:
         raise HTTPException(
             status_code=404,

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from cd.api import jsonapi
+from cd.api import db, jsonapi
 from cd.api.openapi import build_openapi
 from cd.api.problem import problem_response
 from cd.api.routes import bills, members, version
@@ -48,7 +49,18 @@ ever a bespoke `{"error": "..."}` shape.\
 PRODUCTION_SERVER_URL = "https://api.civicdog.com/v1"
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Only runs when this app is served on its own (its tests). Starlette
+    # never runs a mounted sub-app's lifespan, so under cd-server at /v1
+    # cd-server's own lifespan opens and closes this pool instead.
+    await db.connect()
+    yield
+    await db.close()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="cd-api",
     version=read_version(),
     description=DESCRIPTION,

@@ -1,9 +1,14 @@
 import datetime
 import uuid
 
+import pytest
 from conftest import random_number
 
 from cd.api import db
+
+# cd.api.db is async (asyncpg). anyio's pytest plugin runs each test and
+# its fixtures on one event loop -- the loop the pool below is bound to.
+pytestmark = pytest.mark.anyio
 
 CONGRESS = 119
 
@@ -11,6 +16,16 @@ CONGRESS = 119
 # current year as "still in office", so a "departed" fixture year must
 # track the wall clock.
 LAST_YEAR = datetime.date.today().year - 1
+
+
+@pytest.fixture(autouse=True)
+async def pool(pg_conn):
+    # Opened per test because an asyncpg pool belongs to the event loop
+    # that created it. Depends on pg_conn so every test here skips cleanly
+    # when Postgres isn't reachable.
+    await db.connect()
+    yield
+    await db.close()
 
 
 def _bill_number() -> int:
@@ -146,14 +161,14 @@ def _insert_vocab_term(pg_conn, kind: str, term: str, embedding: list[float]) ->
         )
 
 
-def test_fetch_member_returns_a_sitting_member_with_in_office_true(pg_conn):
+async def test_fetch_member_returns_a_sitting_member_with_in_office_true(pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id)
     _insert_term(pg_conn, bioguide_id, state="GA")
     pg_conn.commit()
 
     try:
-        row = db.fetch_member(bioguide_id)
+        row = await db.fetch_member(bioguide_id)
         assert row is not None
         assert row["bioguide_id"] == bioguide_id
         assert row["state"] == "GA"
@@ -165,7 +180,7 @@ def test_fetch_member_returns_a_sitting_member_with_in_office_true(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_member_serves_a_departed_current_congress_member(pg_conn):
+async def test_fetch_member_serves_a_departed_current_congress_member(pg_conn):
     # Left the current Congress mid-term -> still served, in_office false.
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id)
@@ -173,7 +188,7 @@ def test_fetch_member_serves_a_departed_current_congress_member(pg_conn):
     pg_conn.commit()
 
     try:
-        row = db.fetch_member(bioguide_id)
+        row = await db.fetch_member(bioguide_id)
         assert row is not None
         assert row["bioguide_id"] == bioguide_id
         assert row["in_office"] is False
@@ -183,7 +198,7 @@ def test_fetch_member_serves_a_departed_current_congress_member(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_member_returns_none_when_only_term_is_a_past_congress(pg_conn):
+async def test_fetch_member_returns_none_when_only_term_is_a_past_congress(pg_conn):
     # member_terms rows are never deleted, so once the 120th Congress is
     # synced a 119th-only member still has a row -- but fetch_member is
     # scoped (via current_members) to current_congress(), so it 404s.
@@ -195,7 +210,7 @@ def test_fetch_member_returns_none_when_only_term_is_a_past_congress(pg_conn):
     pg_conn.commit()
 
     try:
-        assert db.fetch_member(bioguide_id) is None
+        assert await db.fetch_member(bioguide_id) is None
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
@@ -203,7 +218,7 @@ def test_fetch_member_returns_none_when_only_term_is_a_past_congress(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_member_returns_none_for_a_member_with_no_term_at_all(pg_conn):
+async def test_fetch_member_returns_none_for_a_member_with_no_term_at_all(pg_conn):
     # Defensive: a members row with no member_terms row (not a state the
     # ETL produces, but fetch_member shouldn't blow up on it).
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
@@ -211,15 +226,15 @@ def test_fetch_member_returns_none_for_a_member_with_no_term_at_all(pg_conn):
     pg_conn.commit()
 
     try:
-        assert db.fetch_member(bioguide_id) is None
+        assert await db.fetch_member(bioguide_id) is None
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
         pg_conn.commit()
 
 
-def test_fetch_member_returns_none_for_an_unknown_bioguide_id():
-    assert db.fetch_member("NOTAREALID99") is None
+async def test_fetch_member_returns_none_for_an_unknown_bioguide_id():
+    assert await db.fetch_member("NOTAREALID99") is None
 
 
 def _insert_seat(
@@ -248,7 +263,7 @@ def _insert_seat(
         )
 
 
-def test_fetch_members_returns_senators_and_reps_for_a_state_by_default(pg_conn):
+async def test_fetch_members_returns_senators_and_reps_for_a_state_by_default(pg_conn):
     # A unique 2-char state so leftover "ZZ" rows from other tests in this
     # shared DB can't leak into the result set.
     st = uuid.uuid4().hex[:2].upper()
@@ -261,7 +276,7 @@ def test_fetch_members_returns_senators_and_reps_for_a_state_by_default(pg_conn)
     pg_conn.commit()
 
     try:
-        rows = db.fetch_members(st)
+        rows = await db.fetch_members(st)
         assert {r["bioguide_id"] for r in rows} == {sen_a, sen_b, rep}
         # ORDER BY: senators (district NULL) first, then House by district.
         assert rows[-1]["bioguide_id"] == rep
@@ -272,7 +287,7 @@ def test_fetch_members_returns_senators_and_reps_for_a_state_by_default(pg_conn)
         pg_conn.commit()
 
 
-def test_fetch_members_chamber_filter_excludes_the_other_chamber(pg_conn):
+async def test_fetch_members_chamber_filter_excludes_the_other_chamber(pg_conn):
     st = uuid.uuid4().hex[:2].upper()
     sen, rep = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
     _insert_seat(pg_conn, sen, chamber="SENATE", state=st, district=None)
@@ -280,15 +295,15 @@ def test_fetch_members_chamber_filter_excludes_the_other_chamber(pg_conn):
     pg_conn.commit()
 
     try:
-        assert [r["bioguide_id"] for r in db.fetch_members(st, chamber="SENATE")] == [sen]
-        assert [r["bioguide_id"] for r in db.fetch_members(st, chamber="HOUSE")] == [rep]
+        assert [r["bioguide_id"] for r in await db.fetch_members(st, chamber="SENATE")] == [sen]
+        assert [r["bioguide_id"] for r in await db.fetch_members(st, chamber="HOUSE")] == [rep]
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sen, rep],))
         pg_conn.commit()
 
 
-def test_fetch_members_district_filter_never_bundles_senators(pg_conn):
+async def test_fetch_members_district_filter_never_bundles_senators(pg_conn):
     # The old union trick returned "district N plus the state's senators".
     # An honest collection returns only House members in district N.
     st = uuid.uuid4().hex[:2].upper()
@@ -298,16 +313,16 @@ def test_fetch_members_district_filter_never_bundles_senators(pg_conn):
     pg_conn.commit()
 
     try:
-        rows = db.fetch_members(st, district=5)
+        rows = await db.fetch_members(st, district=5)
         assert [r["bioguide_id"] for r in rows] == [rep]
-        assert db.fetch_members(st, district=9) == []  # vacant -> empty, not senators
+        assert await db.fetch_members(st, district=9) == []  # vacant -> empty, not senators
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sen, rep],))
         pg_conn.commit()
 
 
-def test_fetch_members_excludes_a_departed_member(pg_conn):
+async def test_fetch_members_excludes_a_departed_member(pg_conn):
     st = uuid.uuid4().hex[:2].upper()
     sitting, gone = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
     _insert_seat(pg_conn, sitting, chamber="HOUSE", state=st, district=1)
@@ -315,14 +330,14 @@ def test_fetch_members_excludes_a_departed_member(pg_conn):
     pg_conn.commit()
 
     try:
-        assert [r["bioguide_id"] for r in db.fetch_members(st)] == [sitting]
+        assert [r["bioguide_id"] for r in await db.fetch_members(st)] == [sitting]
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sitting, gone],))
         pg_conn.commit()
 
 
-def test_fetch_closest_vocab_term_returns_the_nearest_match(pg_conn):
+async def test_fetch_closest_vocab_term_returns_the_nearest_match(pg_conn):
     kind = "POLICY_AREA"
     close_term, far_term = (f"test-term-{uuid.uuid4().hex[:8]}" for _ in range(2))
     _insert_vocab_term(pg_conn, kind, close_term, _vector(1.0, 0.0))
@@ -330,7 +345,7 @@ def test_fetch_closest_vocab_term_returns_the_nearest_match(pg_conn):
     pg_conn.commit()
 
     try:
-        result = db.fetch_closest_vocab_term(_vector(1.0, 0.0))
+        result = await db.fetch_closest_vocab_term(_vector(1.0, 0.0))
 
         assert result["term"] == close_term
         assert result["kind"] == kind
@@ -344,13 +359,13 @@ def test_fetch_closest_vocab_term_returns_the_nearest_match(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_bills_by_policy_area_matches_exact_term(pg_conn):
+async def test_fetch_bills_by_policy_area_matches_exact_term(pg_conn):
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number, policy_area="Immigration")
     pg_conn.commit()
 
     try:
-        results = db.fetch_bills_by_policy_area("Immigration", limit=10)
+        results = await db.fetch_bills_by_policy_area("Immigration", limit=10)
 
         matched = next(row for row in results if row["bill_id"] == bill_id)
         assert matched["bill_key"] == f"119-hr-{bill_number}"
@@ -360,13 +375,13 @@ def test_fetch_bills_by_policy_area_matches_exact_term(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_bills_by_policy_area_respects_limit(pg_conn):
+async def test_fetch_bills_by_policy_area_respects_limit(pg_conn):
     term = f"test-policy-area-{uuid.uuid4().hex[:8]}"
     bill_ids = [_insert_bill(pg_conn, _bill_number(), policy_area=term) for _ in range(3)]
     pg_conn.commit()
 
     try:
-        results = db.fetch_bills_by_policy_area(term, limit=2)
+        results = await db.fetch_bills_by_policy_area(term, limit=2)
 
         assert len(results) == 2
     finally:
@@ -375,14 +390,14 @@ def test_fetch_bills_by_policy_area_respects_limit(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_bills_by_subject_matches_a_joined_subject_name(pg_conn):
+async def test_fetch_bills_by_subject_matches_a_joined_subject_name(pg_conn):
     term = f"test-subject-{uuid.uuid4().hex[:8]}"
     bill_id = _insert_bill(pg_conn, _bill_number())
     _insert_subject(pg_conn, bill_id, term)
     pg_conn.commit()
 
     try:
-        results = db.fetch_bills_by_subject(term, limit=10)
+        results = await db.fetch_bills_by_subject(term, limit=10)
 
         assert [row["bill_id"] for row in results] == [bill_id]
     finally:
@@ -391,7 +406,7 @@ def test_fetch_bills_by_subject_matches_a_joined_subject_name(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_bills_by_similarity_orders_closest_first(pg_conn):
+async def test_fetch_bills_by_similarity_orders_closest_first(pg_conn):
     closest = _insert_bill(pg_conn, _bill_number(), embedding=_vector(1.0, 0.0))
     medium = _insert_bill(pg_conn, _bill_number(), embedding=_vector(1.0, 1.0))
     farthest = _insert_bill(pg_conn, _bill_number(), embedding=_vector(0.0, 1.0))
@@ -400,7 +415,7 @@ def test_fetch_bills_by_similarity_orders_closest_first(pg_conn):
     try:
         # max_distance=2.0 (cosine distance's own max) -- this test cares
         # about ordering, not the relevance-floor filtering covered below.
-        results = db.fetch_bills_by_similarity(
+        results = await db.fetch_bills_by_similarity(
             _vector(1.0, 0.0), exclude_bill_ids=[], limit=10, max_distance=2.0,
         )
         result_ids = [row["bill_id"] for row in results]
@@ -414,13 +429,13 @@ def test_fetch_bills_by_similarity_orders_closest_first(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_bills_by_similarity_excludes_given_bill_ids(pg_conn):
+async def test_fetch_bills_by_similarity_excludes_given_bill_ids(pg_conn):
     excluded = _insert_bill(pg_conn, _bill_number(), embedding=_vector(1.0, 0.0))
     included = _insert_bill(pg_conn, _bill_number(), embedding=_vector(1.0, 0.0))
     pg_conn.commit()
 
     try:
-        results = db.fetch_bills_by_similarity(
+        results = await db.fetch_bills_by_similarity(
             _vector(1.0, 0.0), exclude_bill_ids=[excluded], limit=10, max_distance=2.0,
         )
         result_ids = {row["bill_id"] for row in results}
@@ -433,12 +448,12 @@ def test_fetch_bills_by_similarity_excludes_given_bill_ids(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_bills_by_similarity_excludes_bills_with_no_embedding(pg_conn):
+async def test_fetch_bills_by_similarity_excludes_bills_with_no_embedding(pg_conn):
     bill_id = _insert_bill(pg_conn, _bill_number(), embedding=None)
     pg_conn.commit()
 
     try:
-        results = db.fetch_bills_by_similarity(
+        results = await db.fetch_bills_by_similarity(
             _vector(1.0, 0.0), exclude_bill_ids=[], limit=1000, max_distance=2.0,
         )
 
@@ -449,7 +464,7 @@ def test_fetch_bills_by_similarity_excludes_bills_with_no_embedding(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_bills_by_similarity_excludes_bills_beyond_max_distance(pg_conn):
+async def test_fetch_bills_by_similarity_excludes_bills_beyond_max_distance(pg_conn):
     # The relevance floor: a bill farther than max_distance from the
     # query embedding is excluded entirely, not backfilled in just to
     # pad the response out to `limit` -- pins the fix for a query with
@@ -461,7 +476,7 @@ def test_fetch_bills_by_similarity_excludes_bills_beyond_max_distance(pg_conn):
 
     try:
         # cosine distance(near, query) == 0.0, distance(far, query) == 1.0
-        results = db.fetch_bills_by_similarity(
+        results = await db.fetch_bills_by_similarity(
             _vector(1.0, 0.0), exclude_bill_ids=[], limit=10, max_distance=0.5,
         )
         result_ids = {row["bill_id"] for row in results}
@@ -474,7 +489,7 @@ def test_fetch_bills_by_similarity_excludes_bills_beyond_max_distance(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_member_votes_returns_the_members_votes_keyed_by_bill_key(pg_conn):
+async def test_fetch_member_votes_returns_the_members_votes_keyed_by_bill_key(pg_conn):
     voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number)
@@ -485,7 +500,7 @@ def test_fetch_member_votes_returns_the_members_votes_keyed_by_bill_key(pg_conn)
     pg_conn.commit()
 
     try:
-        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+        rows = await db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
 
         assert len(rows) == 1
         assert rows[0]["bill_key"] == f"119-hr-{bill_number}"
@@ -504,7 +519,7 @@ def test_fetch_member_votes_returns_the_members_votes_keyed_by_bill_key(pg_conn)
         pg_conn.commit()
 
 
-def test_fetch_member_votes_keeps_a_synced_bill_with_no_member_vote(pg_conn):
+async def test_fetch_member_votes_keeps_a_synced_bill_with_no_member_vote(pg_conn):
     # A bill that exists and has a roll call, but not one this member
     # voted on -> one row, NULL vote_cast (the LEFT JOIN miss). The
     # shaper routes this to meta.bills_without_votes, not a resource.
@@ -519,7 +534,7 @@ def test_fetch_member_votes_keeps_a_synced_bill_with_no_member_vote(pg_conn):
     pg_conn.commit()
 
     try:
-        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+        rows = await db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
 
         assert len(rows) == 1
         assert rows[0]["bill_key"] == f"119-hr-{bill_number}"
@@ -532,7 +547,7 @@ def test_fetch_member_votes_keeps_a_synced_bill_with_no_member_vote(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_member_votes_keeps_a_synced_bill_with_no_roll_calls_at_all(pg_conn):
+async def test_fetch_member_votes_keeps_a_synced_bill_with_no_roll_calls_at_all(pg_conn):
     voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number)
@@ -541,7 +556,7 @@ def test_fetch_member_votes_keeps_a_synced_bill_with_no_roll_calls_at_all(pg_con
     pg_conn.commit()
 
     try:
-        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+        rows = await db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
 
         assert len(rows) == 1
         assert rows[0]["vote_cast"] is None
@@ -553,14 +568,14 @@ def test_fetch_member_votes_keeps_a_synced_bill_with_no_roll_calls_at_all(pg_con
         pg_conn.commit()
 
 
-def test_fetch_member_votes_omits_a_bill_key_that_matches_no_bill(pg_conn):
+async def test_fetch_member_votes_omits_a_bill_key_that_matches_no_bill(pg_conn):
     voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, voter)
     _insert_term(pg_conn, voter)
     pg_conn.commit()
 
     try:
-        rows = db.fetch_member_votes(voter, ["119-hr-99999999"])
+        rows = await db.fetch_member_votes(voter, ["119-hr-99999999"])
         assert rows == []
     finally:
         with pg_conn.cursor() as cur:
@@ -568,7 +583,7 @@ def test_fetch_member_votes_omits_a_bill_key_that_matches_no_bill(pg_conn):
         pg_conn.commit()
 
 
-def test_fetch_member_votes_returns_none_for_a_non_current_congress_member(pg_conn):
+async def test_fetch_member_votes_returns_none_for_a_non_current_congress_member(pg_conn):
     # No current-Congress term -> None (the route's 404), same rule as
     # fetch_member. A bare members row with no member_terms row stands in.
     voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
@@ -576,18 +591,18 @@ def test_fetch_member_votes_returns_none_for_a_non_current_congress_member(pg_co
     pg_conn.commit()
 
     try:
-        assert db.fetch_member_votes(voter, ["119-hr-1"]) is None
+        assert await db.fetch_member_votes(voter, ["119-hr-1"]) is None
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = %s", (voter,))
         pg_conn.commit()
 
 
-def test_fetch_member_votes_returns_none_for_an_unknown_bioguide_id():
-    assert db.fetch_member_votes("NOTAREALID99", ["119-hr-1"]) is None
+async def test_fetch_member_votes_returns_none_for_an_unknown_bioguide_id():
+    assert await db.fetch_member_votes("NOTAREALID99", ["119-hr-1"]) is None
 
 
-def test_fetch_member_votes_returns_votes_oldest_first(pg_conn):
+async def test_fetch_member_votes_returns_votes_oldest_first(pg_conn):
     voter = f"TEST{uuid.uuid4().hex[:8].upper()}"
     bill_number = _bill_number()
     bill_id = _insert_bill(pg_conn, bill_number)
@@ -619,7 +634,7 @@ def test_fetch_member_votes_returns_votes_oldest_first(pg_conn):
     pg_conn.commit()
 
     try:
-        rows = db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
+        rows = await db.fetch_member_votes(voter, [f"119-hr-{bill_number}"])
 
         assert [r["vote_question"] for r in rows] == [
             "On Motion to Recommit", "On Passage"
@@ -632,42 +647,52 @@ def test_fetch_member_votes_returns_votes_oldest_first(pg_conn):
         pg_conn.commit()
 
 
+async def test_rows_are_plain_mutable_dicts(pg_conn):
+    # Not asyncpg.Record: bills.py adds a "matches" key to each row.
+    bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_member(pg_conn, bioguide_id)
+    _insert_term(pg_conn, bioguide_id)
+    pg_conn.commit()
 
-def test_pool_reuses_one_backend_connection_across_queries(pg_conn):
-    # psycopg2's pool closes any returned connection beyond `minconn`, so a
-    # misconfigured pool "works" while reconnecting on every request. Two
-    # sequential queries must land on the same Postgres backend.
-    db.close_pool()
     try:
-        pids = set()
-        for _ in range(2):
-            with db._connection() as conn, conn.cursor() as cur:
-                cur.execute("SELECT pg_backend_pid() AS pid")
-                pids.add(cur.fetchone()["pid"])
-        assert len(pids) == 1
+        row = await db.fetch_member(bioguide_id)
+        assert type(row) is dict
+        rows = await db.fetch_members("ZZ")
+        assert all(type(r) is dict for r in rows)
     finally:
-        db.close_pool()
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (bioguide_id,))
+        pg_conn.commit()
 
 
-def test_pooled_connection_goes_back_without_an_open_transaction(pg_conn):
-    # psycopg2 opens a transaction on the first execute, even for a plain
-    # SELECT -- it must be ended before the connection is reused, or every
-    # pooled connection would sit idle-in-transaction holding a snapshot.
-    import psycopg2.extensions
-
-    db.close_pool()
-    try:
-        db.fetch_member("Z999999")
-        with db._connection() as conn:
-            assert conn.status == psycopg2.extensions.STATUS_READY
-    finally:
-        db.close_pool()
+async def test_pool_reuses_its_connections_across_queries():
+    # Ten sequential queries must land on at most POOL_SIZE backends -- a
+    # pool that reconnected per query would show ten distinct pids.
+    pids = set()
+    for _ in range(10):
+        async with db._acquire() as conn:
+            pids.add(await conn.fetchval("SELECT pg_backend_pid()"))
+    assert len(pids) <= db.POOL_SIZE
 
 
-def test_close_pool_lets_the_next_query_reopen_it(pg_conn):
-    db.close_pool()
-    db.fetch_member("Z999999")
-    db.close_pool()
+async def test_pooled_connection_goes_back_without_an_open_transaction():
+    await db.fetch_member("Z999999")
+    async with db._acquire() as conn:
+        assert not conn.is_in_transaction()
+
+
+async def test_a_query_before_connect_raises():
+    await db.close()
+
+    with pytest.raises(RuntimeError, match="connect"):
+        await db.fetch_member("Z999999")
+
+
+async def test_close_then_connect_reopens_the_pool():
+    # Each TestClient lifespan in the suite closes and reopens this pool,
+    # so close() must leave it fully reset.
+    await db.close()
     assert db._pool is None
-    assert db.fetch_member("Z999999") is None
-    db.close_pool()
+
+    await db.connect()
+    assert await db.fetch_member("Z999999") is None
