@@ -67,6 +67,19 @@ def test_escape_strings_and_unterminated_quotes_raise(query):
         named(query, {"a": 1})
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        # Postgres still treats ":a */" as comment; a lazy */ match wouldn't.
+        "SELECT 1 /* outer /* inner */ :a */",
+        "SELECT 1 /* unterminated :a",
+    ],
+)
+def test_nested_or_unterminated_block_comments_raise(query):
+    with pytest.raises(ValueError, match="unsupported SQL"):
+        named(query, {"a": 1})
+
+
 def test_typed_literals_ending_in_e_are_not_escape_strings():
     # date'...' is a plain typed literal; the E check needs a word boundary.
     assert named("SELECT date'2026-01-01', :a", {"a": 1}) == (

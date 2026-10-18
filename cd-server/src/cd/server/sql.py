@@ -12,7 +12,8 @@ Left alone: `::type` casts, '...' literals, "..." identifiers, and `--` /
 `/* */` comments. A `$` anywhere else raises ValueError: a leftover
 positional `$n` would collide with the `$n` this assigns, and `$$`
 dollar-quoting isn't parsed. E'...' backslash-escape strings (where \\'
-doesn't end the literal) and unterminated quotes raise too. Not handled,
+doesn't end the literal), nested /* /* */ */ comments, and unterminated
+quotes or comments raise too. Not handled,
 since no query here needs them: `arr[lo:hi]` slices.
 """
 
@@ -26,15 +27,15 @@ from typing import Any
 # `unsupported` and raises, rather than silently binding to the wrong slot.
 _TOKEN = re.compile(
     r"""
-      \b[Ee](?P<escape>')       # E'...' backslash-escape string
-    | '(?:[^']|'')*'           # string literal
-    | "(?:[^"]|"")*"           # quoted identifier
-    | --[^\n]*                 # line comment
-    | /\*[\s\S]*?\*/           # block comment
-    | ::                       # type cast
-    | :(?P<name>[A-Za-z_]\w*)  # placeholder
-    | (?P<unsupported>\$|['"])  # positional $n, $$ dollar-quoting, or an
-                               # unterminated quote
+      \b[Ee](?P<escape>')             # E'...' backslash-escape string
+    | '(?:[^']|'')*'                  # string literal
+    | "(?:[^"]|"")*"                  # quoted identifier
+    | --[^\n]*                        # line comment
+    | (?P<comment>/\*[\s\S]*?\*/)     # block comment
+    | ::                              # type cast
+    | :(?P<name>[A-Za-z_]\w*)         # placeholder
+    | (?P<unsupported>\$|['"]|/\*)    # positional $n, $$ dollar-quoting,
+                                      # or an unterminated quote/comment
     """,
     re.VERBOSE,
 )
@@ -49,7 +50,10 @@ def named(query: str, params: Mapping[str, Any]) -> tuple[Any, ...]:
     slots: dict[str, int] = {}  # name -> n, insertion-ordered
 
     def number(match: re.Match[str]) -> str:
-        if match["unsupported"] or match["escape"]:
+        # Postgres nests /* */ comments, but the lazy match above stops at
+        # the first */ -- so a nested one would leave the rest exposed.
+        nested = match["comment"] and "/*" in match["comment"][2:]
+        if match["unsupported"] or match["escape"] or nested:
             raise ValueError(
                 f"unsupported SQL for named() at offset {match.start()}: "
                 f"{query[match.start():match.start() + 20]!r}"
