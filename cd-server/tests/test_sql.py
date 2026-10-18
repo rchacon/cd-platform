@@ -52,6 +52,29 @@ def test_a_dollar_outside_literals_raises(query):
         named(query, {"a": 1})
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        # \' doesn't end an E'' literal, so the :a is still inside it.
+        "SELECT E'it\\'s :a'",
+        "SELECT e'x' , :a",
+        "SELECT 'unterminated :a",
+        'SELECT "unterminated :a',
+    ],
+)
+def test_escape_strings_and_unterminated_quotes_raise(query):
+    with pytest.raises(ValueError, match="unsupported SQL"):
+        named(query, {"a": 1})
+
+
+def test_typed_literals_ending_in_e_are_not_escape_strings():
+    # date'...' is a plain typed literal; the E check needs a word boundary.
+    assert named("SELECT date'2026-01-01', :a", {"a": 1}) == (
+        "SELECT date'2026-01-01', $1",
+        1,
+    )
+
+
 def test_a_dollar_inside_a_literal_is_fine():
     assert named("SELECT '$1', :a", {"a": 1}) == ("SELECT '$1', $1", 1)
 

@@ -11,8 +11,9 @@ same string (asyncpg caches prepared statements by exact query text).
 Left alone: `::type` casts, '...' literals, "..." identifiers, and `--` /
 `/* */` comments. A `$` anywhere else raises ValueError: a leftover
 positional `$n` would collide with the `$n` this assigns, and `$$`
-dollar-quoting isn't parsed. Also not handled, since no query here needs
-them: E'...' backslash escapes, `arr[lo:hi]` slices.
+dollar-quoting isn't parsed. E'...' backslash-escape strings (where \\'
+doesn't end the literal) and unterminated quotes raise too. Not handled,
+since no query here needs them: `arr[lo:hi]` slices.
 """
 
 import re
@@ -25,13 +26,15 @@ from typing import Any
 # `unsupported` and raises, rather than silently binding to the wrong slot.
 _TOKEN = re.compile(
     r"""
-      '(?:[^']|'')*'           # string literal
+      \b[Ee](?P<escape>')       # E'...' backslash-escape string
+    | '(?:[^']|'')*'           # string literal
     | "(?:[^"]|"")*"           # quoted identifier
     | --[^\n]*                 # line comment
     | /\*[\s\S]*?\*/           # block comment
     | ::                       # type cast
     | :(?P<name>[A-Za-z_]\w*)  # placeholder
-    | (?P<unsupported>\$)      # positional $n, or $$ dollar-quoting
+    | (?P<unsupported>\$|['"])  # positional $n, $$ dollar-quoting, or an
+                               # unterminated quote
     """,
     re.VERBOSE,
 )
@@ -46,7 +49,7 @@ def named(query: str, params: Mapping[str, Any]) -> tuple[Any, ...]:
     slots: dict[str, int] = {}  # name -> n, insertion-ordered
 
     def number(match: re.Match[str]) -> str:
-        if match["unsupported"]:
+        if match["unsupported"] or match["escape"]:
             raise ValueError(
                 f"unsupported SQL for named() at offset {match.start()}: "
                 f"{query[match.start():match.start() + 20]!r}"
