@@ -112,9 +112,9 @@ class AiSummaryClient:
         # docstring), not worth a round-trip re-select/re-decode of data
         # this call just wrote verbatim.
         # subject is bound directly as a Python object -- the pool's jsonb
-        # codec (see _register_codecs) encodes it; Postgres infers
-        # :subject's type as jsonb from the target column, no explicit
-        # cast needed.
+        # codec (see _register_codecs) encodes it; Postgres infers the
+        # type of the parameter bound to :subject as jsonb from the target
+        # column, no explicit cast needed.
         row = await self._pool.fetchrow(
             *named(
                 """
@@ -152,8 +152,9 @@ class AiSummaryClient:
         # fetch -- otherwise LIMIT counts rows of every kind, and a
         # kind-scoped caller (myAiSummaries) silently gets back fewer than
         # `limit` once a second kind is ever stored, with no way to page
-        # to the rest. :kind::text so asyncpg can type the parameter in
-        # the `IS NULL` branch (nothing else constrains it there).
+        # to the rest. The ::text cast on :kind lets asyncpg type that
+        # parameter in the `IS NULL` branch (nothing else constrains it
+        # there).
         rows = await self._pool.fetch(
             *named(
                 """
