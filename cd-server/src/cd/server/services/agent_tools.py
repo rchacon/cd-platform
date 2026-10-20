@@ -134,7 +134,8 @@ class AgentTools:
         id, title, policy area, a shortened CRS summary, and how it
         matched: 'policy_area' or 'subject' (an exact topic match) or
         'summary' (semantic similarity, so check that the title and
-        summary are really on topic)."""
+        summary are really on topic). Specific everyday phrasing can miss
+        bills that broader or more formal wording finds."""
         try:
             bills = await self._bill_search.discover(query, min(limit, _MAX_SEARCH_RESULTS))
         except (ApiClientError, ValidationError) as exc:
