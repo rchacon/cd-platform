@@ -11,11 +11,14 @@ from strawberry.extensions import DisableIntrospection
 from strawberry.scalars import JSON
 
 from cd.server import settings
+from cd.server.services.agent_service import ConversationNotFoundError, get_agent_service
+from cd.server.services.agent_store import AgentConversationRecord, AgentTurnRecord
 from cd.server.services.ai_summary_service import AiSummaryRecord, get_ai_summary_service
 from cd.server.services.bill_search_service import BillResult, BillSearchService
 from cd.server.services.cd_api_service import get_cd_api_service
 from cd.server.services.entitlements_service import (
     AI_SUMMARY,
+    RESEARCH_AGENT,
     EntitlementsService,
     FeatureStatus,
     FeatureUnavailableError,
@@ -57,14 +60,23 @@ users_service = get_users_service()
 # get_cd_api_service()/get_users_service() already apply to their own
 # required config.
 ai_summary_service = get_ai_summary_service(cd_api_service, bill_search_service)
-# Pure logic over ai_summary_service's row counts + the configured daily
-# limits -- no pool of its own, so nothing to open/close in app.py's
-# lifespan. Reported by the `features` query and enforced by
-# summarizeVotingRecord (cd-platform#169).
+# The research agent (cd-platform#164). Holds its own asyncpg pool
+# against cd_customers for agent_conversations/agent_turns (opened/closed
+# via app.py's lifespan) and reads through the same cd-api services as
+# everything above.
+agent_service = get_agent_service(cd_api_service, bill_search_service)
+# Pure logic over ai_summary_service's and agent_service's row counts +
+# the configured daily limits -- no pool of its own, so nothing to
+# open/close in app.py's lifespan. Reported by the `features` query and
+# enforced by summarizeVotingRecord (cd-platform#169) and the agent
+# mutations.
 entitlements_service = EntitlementsService(
     ai_summary_service,
     settings.AI_SUMMARY_FREE_TIER_DAILY_LIMIT,
     settings.AI_SUMMARY_GLOBAL_DAILY_LIMIT,
+    agent_service=agent_service,
+    agent_per_user_daily_limit=settings.AGENT_FREE_TIER_DAILY_LIMIT,
+    agent_global_daily_limit=settings.AGENT_GLOBAL_DAILY_LIMIT,
 )
 
 
@@ -211,14 +223,83 @@ def _to_ai_summary(record: AiSummaryRecord) -> AiSummary:
 
 
 @strawberry.type
+class AgentTurn:
+    """One message in a research-agent conversation. A `user` turn is
+    the question; an `assistant` turn is the answer, with `stopReason`
+    (`answered`, `step_limit` -- the agent ran out of steps -- or
+    `citations_flagged` -- the answer cites an id no tool returned, so
+    show it with a warning), token usage, and `trace`: the ordered steps
+    the agent took, each `{"type": "model" | "tool" | "citation_check",
+    ...}` with inputs, outputs and `latency_ms`. `trace` is `JSON`, not a
+    typed field, so new step kinds don't need a schema change. Only
+    assistant turns carry the stop reason, usage and a non-empty trace."""
+
+    id: strawberry.ID
+    role: str
+    content: str
+    stop_reason: str | None
+    trace: JSON
+    input_tokens: int | None
+    output_tokens: int | None
+    created_at: datetime
+
+
+@strawberry.type
+class AgentConversation:
+    """A research-agent conversation. `turns` is every message, oldest
+    first, from `agentConversation` and the two agent mutations; it's
+    always empty from `myAgentConversations`, which lists conversations
+    without loading them."""
+
+    id: strawberry.ID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    turns: list[AgentTurn]
+
+
+def _to_agent_turn(record: AgentTurnRecord) -> AgentTurn:
+    return AgentTurn(
+        id=strawberry.ID(str(record.id)),
+        role=record.role,
+        content=record.content,
+        stop_reason=record.stop_reason,
+        trace=record.trace,
+        input_tokens=record.input_tokens,
+        output_tokens=record.output_tokens,
+        created_at=record.created_at,
+    )
+
+
+def _to_agent_conversation(record: AgentConversationRecord) -> AgentConversation:
+    return AgentConversation(
+        id=strawberry.ID(str(record.id)),
+        title=record.title,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        turns=[_to_agent_turn(t) for t in record.turns],
+    )
+
+
+def _conversation_id(value: strawberry.ID) -> int:
+    # Any id that isn't a number names no conversation -- the same error
+    # as one that doesn't exist or isn't the caller's.
+    try:
+        return int(value)
+    except ValueError:
+        raise ConversationNotFoundError(value) from None
+
+
+@strawberry.type
 class Feature:
     """One feature's availability for the calling user, right now -- from
     EntitlementsService's FeatureStatus. `enabled` is the flag to branch
     on; `reason` (a slug, null when enabled) tells "you've spent your
     daily allowance" (`daily_limit_reached`) from "temporarily off for
     everyone" (`globally_unavailable`); `usedToday`/`dailyLimit`/
-    `resetsAt` drive a "N of <limit> used, resets <time>" hint. v1 has
-    exactly one, `ai_summary` (the summarizeVotingRecord mutation)."""
+    `resetsAt` drive a "N of <limit> used, resets <time>" hint. Two
+    today: `ai_summary` (the summarizeVotingRecord mutation) and
+    `research_agent` (the agent mutations, counted per answer)."""
 
     name: str
     enabled: bool
@@ -386,6 +467,36 @@ class Query:
         statuses = await entitlements_service.features(user_id)
         return [_to_feature(s) for s in statuses]
 
+    @strawberry.field
+    async def my_agent_conversations(
+        self, info: strawberry.Info, limit: int = 20
+    ) -> list[AgentConversation]:
+        """This caller's research-agent conversations, most recently active
+        first, without their turns (fetch one with `agentConversation`).
+        Requires a verified caller -- `NotAuthenticatedError` otherwise."""
+        user_id = info.context["user_id"]
+        if user_id is None:
+            raise NotAuthenticatedError("myAgentConversations requires authentication")
+        records = await agent_service.conversations(user_id, _clamp_limit(limit))
+        return [_to_agent_conversation(r) for r in records]
+
+    @strawberry.field
+    async def agent_conversation(
+        self, info: strawberry.Info, id: strawberry.ID
+    ) -> AgentConversation | None:
+        """One of this caller's research-agent conversations with every
+        turn, for replaying it read-only. `null` when it doesn't exist or
+        belongs to someone else. Requires a verified caller."""
+        user_id = info.context["user_id"]
+        if user_id is None:
+            raise NotAuthenticatedError("agentConversation requires authentication")
+        try:
+            conversation_id = _conversation_id(id)
+        except ConversationNotFoundError:
+            return None
+        record = await agent_service.conversation(user_id, conversation_id)
+        return None if record is None else _to_agent_conversation(record)
+
 
 @strawberry.type
 class Mutation:
@@ -419,6 +530,47 @@ class Mutation:
         return _to_ai_summary(record)
 
 
+    @strawberry.mutation
+    async def start_agent_conversation(
+        self, info: strawberry.Info, question: str
+    ) -> AgentConversation:
+        """Ask the research agent a question about the current Congress,
+        starting a new conversation. The agent looks members, bills and
+        votes up with tools and cites the ids behind its answer; the
+        whole turn runs before this returns (several seconds). Returns
+        the conversation with both turns.
+
+        Requires a verified caller (`NotAuthenticatedError`), and raises
+        `FeatureUnavailableError` once the caller's daily answers or the
+        global ceiling are used up (the `research_agent` entry in
+        `features`). An empty question, or one over 1,000 characters, is a
+        `ValueError`; a Bedrock outage surfaces as its own error.
+        """
+        user_id = info.context["user_id"]
+        if user_id is None:
+            raise NotAuthenticatedError("startAgentConversation requires authentication")
+        await entitlements_service.require(user_id, RESEARCH_AGENT)
+        record = await agent_service.ask(user_id, question)
+        return _to_agent_conversation(record)
+
+    @strawberry.mutation
+    async def continue_agent_conversation(
+        self, info: strawberry.Info, conversation_id: strawberry.ID, question: str
+    ) -> AgentConversation:
+        """Ask a follow-up in one of the caller's conversations. The agent
+        sees the earlier questions and answers, and can still cite what it
+        looked up for them. Same auth, caps and errors as
+        `startAgentConversation`, plus `ConversationNotFoundError` for a
+        conversation that doesn't exist or isn't the caller's. Returns the
+        whole conversation, new turns last."""
+        user_id = info.context["user_id"]
+        if user_id is None:
+            raise NotAuthenticatedError("continueAgentConversation requires authentication")
+        await entitlements_service.require(user_id, RESEARCH_AGENT)
+        record = await agent_service.ask(user_id, question, _conversation_id(conversation_id))
+        return _to_agent_conversation(record)
+
+
 class _Schema(strawberry.Schema):
     """Strawberry's default `process_errors` logs every GraphQL field
     error at ERROR with a full traceback. `NotAuthenticatedError`
@@ -436,7 +588,7 @@ class _Schema(strawberry.Schema):
             for e in errors
             if not isinstance(
                 getattr(e, "original_error", None),
-                (NotAuthenticatedError, FeatureUnavailableError),
+                (NotAuthenticatedError, FeatureUnavailableError, ConversationNotFoundError),
             )
         ]
         if loud:

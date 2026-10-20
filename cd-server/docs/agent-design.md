@@ -84,7 +84,8 @@ evals is for.
   last 20 turns of a conversation are replayed, and CRS summaries are cut
   to 600 characters in tool results.
 - **Cost.** Every assistant turn stores its summed token usage. Daily caps
-  are planned in the same style as `summarizeVotingRecord`'s.
+  on answers, per user and global, go through the same
+  `EntitlementsService` as `summarizeVotingRecord`'s.
 
 ## Storage: cd-server's own tables, not a LangGraph checkpointer
 

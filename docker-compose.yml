@@ -193,6 +193,10 @@ services:
       # the same defaults, so an unset var is fine too.
       AI_SUMMARY_FREE_TIER_DAILY_LIMIT: ${AI_SUMMARY_FREE_TIER_DAILY_LIMIT:-10}
       AI_SUMMARY_GLOBAL_DAILY_LIMIT: ${AI_SUMMARY_GLOBAL_DAILY_LIMIT:-100}
+      # The research agent's daily caps (cd-platform#164), counted in
+      # answers -- same shape and `0` = disabled rule as the two above.
+      AGENT_FREE_TIER_DAILY_LIMIT: ${AGENT_FREE_TIER_DAILY_LIMIT:-20}
+      AGENT_GLOBAL_DAILY_LIMIT: ${AGENT_GLOBAL_DAILY_LIMIT:-200}
     ports:
       - "8000:8000"
     volumes:

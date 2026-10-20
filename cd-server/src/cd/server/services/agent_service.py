@@ -34,7 +34,7 @@ import operator
 import re
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any, TypedDict
 
 from botocore.config import Config
@@ -414,6 +414,14 @@ class AgentService:
 
     async def conversations(self, user_id: str, limit: int = 20) -> list[AgentConversationRecord]:
         return await self._store.list_conversations(user_id, limit)
+
+    async def count_by_user_since(self, user_id: str, since: datetime) -> int:
+        """This caller's answers since `since` -- the per-user daily cap."""
+        return await self._store.count_answers_since(since, user_id)
+
+    async def count_global_since(self, since: datetime) -> int:
+        """Every caller's answers since `since` -- the global daily cap."""
+        return await self._store.count_answers_since(since)
 
 
 # Longer than bedrock_chat_service's 30s: a tool-calling turn's final
