@@ -70,6 +70,30 @@ class HttpApiClient(ApiClient):
         await self._client.aclose()
 
 
+class AsgiApiClient(ApiClient):
+    """Calls cd.api in this process through httpx's ASGI transport -- no
+    network hop and no running server. Used by the agent evals and the
+    MCP server, which run cd.api standalone, so the caller opens and
+    closes cd.api.db's pool itself (no lifespan runs here). Imports cd.api
+    lazily so the HTTP and Lambda paths never load it."""
+
+    def __init__(self):
+        from cd.api.app import app as api_app
+
+        self._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api_app), base_url="http://cd-api"
+        )
+
+    async def get(self, path: str, query: dict[str, str]) -> dict:
+        response = await self._client.get(path, params=query)
+        if response.is_error:
+            raise ApiClientError(response.status_code, response.text)
+        return response.json()
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
 class LambdaApiClient(ApiClient):
     """Calls cd-api's real Lambda function directly via boto3, bypassing
     API Gateway entirely -- no network hop, and no X-Api-Key needed

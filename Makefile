@@ -1,4 +1,4 @@
-.PHONY: start-etl test-etl start-server test-server eval-agent
+.PHONY: start-etl test-etl start-server test-server eval-agent mcp-server
 
 start-etl:
 	docker compose up -d postgres
@@ -21,3 +21,11 @@ test-server:
 eval-agent:
 	docker compose up -d postgres
 	docker compose run --rm cd-server uv run python -m evals.run $(ARGS)
+
+# The research agent's tools as an MCP server over stdio, for Claude
+# Desktop / Claude Code (see cd-server/README.md's "MCP server"). -T and
+# --entrypoint "" keep stdout clean for the protocol: no TTY, and no
+# entrypoint migration output.
+mcp-server:
+	@docker compose up -d --quiet-pull postgres >&2
+	@docker compose run --rm -T --no-deps --entrypoint "" cd-server uv run python -m cd.server.mcp_server

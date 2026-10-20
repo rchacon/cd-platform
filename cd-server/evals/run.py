@@ -30,40 +30,20 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-import httpx
 from botocore.config import Config
 from cd.lib import bedrock
 from langchain_aws import ChatBedrockConverse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 
 from cd.api import db as api_db
-from cd.api.app import app as api_app
 from cd.server import settings
 from cd.server.services.agent_service import AgentService, get_agent_service, trace_ids
 from cd.server.services.bill_search_service import BillSearchService
-from cd.server.services.cd_api_service import ApiClient, ApiClientError, CdApiService
+from cd.server.services.cd_api_service import AsgiApiClient, CdApiService
 from evals.cases import CASES, Case
 from evals.grading import CaseResult, Check, deterministic_checks, judge, judge_checks
 
 RESULTS_DIR = Path(__file__).parent / "results"
-
-
-class AsgiApiClient(ApiClient):
-    """Calls cd.api in this process instead of over the network."""
-
-    def __init__(self):
-        self._client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=api_app), base_url="http://cd-api"
-        )
-
-    async def get(self, path: str, query: dict[str, str]) -> dict:
-        response = await self._client.get(path, params=query)
-        if response.is_error:
-            raise ApiClientError(response.status_code, response.text)
-        return response.json()
-
-    async def aclose(self) -> None:
-        await self._client.aclose()
 
 
 async def run_case(

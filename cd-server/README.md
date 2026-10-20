@@ -466,6 +466,42 @@ which the frozen production cd-api Lambda doesn't have. Don't release the
 agent to production before cd-platform#179 points `CdApiService` at
 `cd.api` directly.
 
+### MCP server
+
+`src/cd/server/mcp_server.py` exposes the research agent's four tools
+(`find_members`, `get_member`, `search_bills`, `get_member_votes`) as an
+MCP server over stdio. Claude Desktop, Claude Code or any other MCP client
+can then look up members, bills and votes in your local data directly.
+
+- **Same tools as the agent.** It wraps the same `AgentTools` methods,
+  with the same descriptions and parameter schemas, all marked read-only.
+- **In-process cd.api.** It calls cd.api in-process, so it needs Postgres
+  with a synced `congressional_app`, and AWS credentials for
+  `search_bills`' embeddings. It doesn't need a running cd-server.
+
+From the repo root, `make mcp-server` starts it. To register it with Claude
+Code:
+
+```bash
+claude mcp add cd-platform -- make -s -C /path/to/cd-platform mcp-server
+```
+
+For Claude Desktop, add it to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "cd-platform": {
+      "command": "make",
+      "args": ["-s", "-C", "/path/to/cd-platform", "mcp-server"]
+    }
+  }
+}
+```
+
+stdout carries the protocol, so the target runs the container without a
+TTY and skips the migrating entrypoint. All logging goes to stderr.
+
 ### Calling cd-api locally
 
 `HttpApiClient`'s local default target is `http://localhost:8000/v1`
