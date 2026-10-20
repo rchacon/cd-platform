@@ -13,7 +13,7 @@ from cd.server.services.cd_api_service import CdApiService
 # this many ids (its own MAX_VOTE_BILLS). GET /bills' page[size] cap is a
 # separate constant over there that happens to match today; `search()`
 # clamps to this so the votes hop can't 422 if the two ever diverge.
-_MAX_VOTE_BILLS = 50
+MAX_VOTE_BILLS = 50
 
 
 @dataclass(frozen=True)
@@ -121,22 +121,29 @@ class BillSearchService:
         # returned bill gets a real vote lookup) rather than 422ing.
         # `None` stays `None` (cd-api's own default is well under the cap).
         if page_size is not None:
-            page_size = min(page_size, _MAX_VOTE_BILLS)
+            page_size = min(page_size, MAX_VOTE_BILLS)
         bills = await self._cd_api.search_bills(query, page_size)
         if not bills.data:
             # No bills -> nothing to filter votes by; skip the second hop
             # (an empty filter[bill] is a 422 anyway).
             return []
 
-        bill_keys = [r.id for r in bills.data]
-        votes = await self._cd_api.member_votes(bioguide_id, bill_keys)
-
-        votes_by_bill: dict[str, list[VoteResult]] = {}
-        for vote in votes.data:
-            bill_key = _bill_id_of(vote)
-            if bill_key is not None:
-                votes_by_bill.setdefault(bill_key, []).append(_vote_result(vote.attributes))
+        votes_by_bill = await self.votes_by_bill(bioguide_id, [r.id for r in bills.data])
 
         # Search-relevance order preserved; a matched bill with no vote
         # keeps an explicit empty list.
         return [_bill_result(r, votes=votes_by_bill.get(r.id, [])) for r in bills.data]
+
+    async def votes_by_bill(
+        self, bioguide_id: str, bill_keys: list[str]
+    ) -> dict[str, list[VoteResult]]:
+        """How `bioguide_id` voted on each of `bill_keys` (1-50 of them),
+        grouped by bill key. A bill with no recorded vote is simply
+        absent from the dict."""
+        votes = await self._cd_api.member_votes(bioguide_id, bill_keys)
+        grouped: dict[str, list[VoteResult]] = {}
+        for vote in votes.data:
+            bill_key = _bill_id_of(vote)
+            if bill_key is not None:
+                grouped.setdefault(bill_key, []).append(_vote_result(vote.attributes))
+        return grouped

@@ -388,6 +388,21 @@ def test_cd_api_service_aclose_delegates_to_transport():
 # --- member_detail (GET /members/{id}, for cd-webapp's detail page) ---
 
 
+def test_find_members_sends_only_the_filters_given_and_keeps_state():
+    transport = _FakeTransport({"data": [_resource(_MEMBER)]})
+    service = CdApiService(transport)
+
+    doc = asyncio.run(service.find_members(name="doe", chamber="house"))
+    asyncio.run(service.find_members(state="CA", district=0))
+
+    assert transport.calls == [
+        ("/members", {"filter[name]": "doe", "filter[chamber]": "house"}),
+        ("/members", {"filter[state]": "CA", "filter[district]": "0"}),
+    ]
+    assert doc.data[0].id == "D000001"
+    assert doc.data[0].attributes.state == "CA"
+
+
 def test_member_detail_fetches_by_id_and_returns_typed_document():
     transport = _FakeTransport({"data": _resource(_MEMBER)})
     doc = asyncio.run(CdApiService(transport).member_detail("D000001"))
