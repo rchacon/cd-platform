@@ -230,6 +230,34 @@ class CdApiService:
         )
         return _members(result, chamber="senators")
 
+    async def find_members(
+        self,
+        name: str | None = None,
+        state: str | None = None,
+        chamber: str | None = None,
+        district: int | None = None,
+    ) -> CollectionDocument[MemberDetail]:
+        """cd-api `GET /members` with whichever filters are given -- the
+        research agent's member lookup (cd-platform#164), by name across
+        every state or by state/chamber/district. Returns the validated
+        collection whole, so each resource keeps its `state`, which the
+        flattened `Member` drops. cd-api needs `name` or `state` (`422`
+        otherwise), and `district` needs `state`; both surface as
+        `ApiClientError`.
+        """
+        params = {
+            key: value
+            for key, value in (
+                ("filter[name]", name),
+                ("filter[state]", state),
+                ("filter[chamber]", chamber),
+                ("filter[district]", None if district is None else str(district)),
+            )
+            if value is not None
+        }
+        result = await self._transport.get("/members", params)
+        return CollectionDocument[MemberDetail].model_validate(result)
+
     async def member_detail(self, bioguide_id: str) -> Document[MemberDetail]:
         """cd-api `GET /members/{bioguide_id}` -- one current-Congress
         member (sitting *or* departed mid-term, `in_office` flag),
