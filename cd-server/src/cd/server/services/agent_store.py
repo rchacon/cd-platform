@@ -122,7 +122,11 @@ class AgentStoreClient:
     async def connect(self) -> None:
         # Same per-connection jsonb codec as AiSummaryClient, so `trace`
         # binds and reads as a plain Python list.
-        self._pool = await asyncpg.create_pool(self._dsn, init=self._register_codecs)
+        # min_size=0: connections open on first use, so startup (and every
+        # test lifespan) doesn't pay for a pool the request may never touch.
+        self._pool = await asyncpg.create_pool(
+            self._dsn, min_size=0, init=self._register_codecs
+        )
 
     async def close(self) -> None:
         if self._pool is not None:
