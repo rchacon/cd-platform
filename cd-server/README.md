@@ -456,6 +456,10 @@ defaults to 20 per user and `AGENT_GLOBAL_DAILY_LIMIT` to 200, and `0`
 disables a cap. Each answer can be up to 8 Bedrock calls, so the global
 ceiling is the real cost lid.
 
+`make eval-agent` (from the repo root) runs the agent's golden questions
+against real Bedrock and your local data, and writes a scorecard to
+`evals/results/`. See `docs/agent-design.md`'s Evals section.
+
 The agent uses the same `BEDROCK_CHAT_MODEL_ID` and Bedrock access as
 `summarizeVotingRecord`. Its member lookup needs cd-api's `filter[name]`,
 which the frozen production cd-api Lambda doesn't have. Don't release the
