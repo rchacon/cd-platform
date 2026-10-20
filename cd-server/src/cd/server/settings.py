@@ -97,3 +97,12 @@ BEDROCK_CHAT_MODEL_ID = os.environ.get("BEDROCK_CHAT_MODEL_ID", "")
 # new; prod tunes these via the task-def env.
 AI_SUMMARY_FREE_TIER_DAILY_LIMIT = _int_env("AI_SUMMARY_FREE_TIER_DAILY_LIMIT", 10)
 AI_SUMMARY_GLOBAL_DAILY_LIMIT = _int_env("AI_SUMMARY_GLOBAL_DAILY_LIMIT", 100)
+
+# Daily caps on the research agent (cd-platform#164), counted in answers
+# (assistant turns) per UTC day -- same shape and `0` = disabled rule as
+# the AI summary caps above. Higher than those because a conversation
+# naturally takes several follow-ups, but each answer can be several
+# Bedrock calls (up to agent_service.DEFAULT_MAX_STEPS), so the global
+# ceiling is the real cost lid.
+AGENT_FREE_TIER_DAILY_LIMIT = _int_env("AGENT_FREE_TIER_DAILY_LIMIT", 20)
+AGENT_GLOBAL_DAILY_LIMIT = _int_env("AGENT_GLOBAL_DAILY_LIMIT", 200)

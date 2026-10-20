@@ -7,6 +7,7 @@ import pytest
 from cd.server.services import entitlements_service
 from cd.server.services.entitlements_service import (
     AI_SUMMARY,
+    RESEARCH_AGENT,
     REASON_DAILY_LIMIT,
     REASON_GLOBAL,
     EntitlementsService,
@@ -19,9 +20,9 @@ from cd.server.services.entitlements_service import (
 def _reset_global_warning_dedupe():
     # require()'s global-ceiling WARN dedupes on a module-level "last
     # warned UTC date" -- clear it so tests don't leak that state.
-    entitlements_service._last_global_warning_date = None
+    entitlements_service._last_global_warning_dates.clear()
     yield
-    entitlements_service._last_global_warning_date = None
+    entitlements_service._last_global_warning_dates.clear()
 
 # A fixed "now" so resets_at / the day window are deterministic.
 _NOW = datetime(2026, 9, 6, 14, 30, tzinfo=timezone.utc)
@@ -198,6 +199,69 @@ def test_require_warn_logs_the_global_ceiling_only_once_per_utc_day(caplog):
 
 
 def test_require_ignores_an_unknown_feature():
-    # Only ai_summary is gated today -- require() no-ops for anything else
-    # rather than raising KeyError.
+    # require() no-ops for a feature with no gate rather than raising
+    # KeyError.
     asyncio.run(_service(user_count=10, global_count=100).require("u1", "some_other_feature"))
+
+
+class _FakeAgentService:
+    def __init__(self, user_count=0, global_count=0):
+        self._user_count = user_count
+        self._global_count = global_count
+        self.calls: list[tuple] = []
+
+    async def count_by_user_since(self, user_id, since):
+        self.calls.append(("user", user_id, since))
+        return self._user_count
+
+    async def count_global_since(self, since):
+        self.calls.append(("global", since))
+        return self._global_count
+
+
+def _with_agent(agent: _FakeAgentService, per_user=20, global_limit=200, ai_user_count=0):
+    return EntitlementsService(
+        _FakeAiSummaryService(user_count=ai_user_count),
+        per_user_daily_limit=10,
+        global_daily_limit=100,
+        agent_service=agent,
+        agent_per_user_daily_limit=per_user,
+        agent_global_daily_limit=global_limit,
+    )
+
+
+def test_features_reports_the_research_agent_with_its_own_counts_and_limit():
+    agent = _FakeAgentService(user_count=4)
+    features = asyncio.run(_with_agent(agent, ai_user_count=1).features("u1", now=_NOW))
+
+    assert [(f.name, f.used_today, f.daily_limit) for f in features] == [
+        (AI_SUMMARY, 1, 10),
+        (RESEARCH_AGENT, 4, 20),
+    ]
+    assert sorted(agent.calls) == sorted([("user", "u1", _DAY_START), ("global", _DAY_START)])
+
+
+def test_the_research_agent_is_gated_independently_of_ai_summary():
+    svc = _with_agent(_FakeAgentService(user_count=20), ai_user_count=0)
+
+    asyncio.run(svc.require("u1", AI_SUMMARY, now=_NOW))  # unaffected
+    with pytest.raises(FeatureUnavailableError) as excinfo:
+        asyncio.run(svc.require("u1", RESEARCH_AGENT, now=_NOW))
+    assert (excinfo.value.feature, excinfo.value.reason) == (RESEARCH_AGENT, REASON_DAILY_LIMIT)
+
+
+def test_each_feature_warns_about_its_own_global_ceiling(caplog):
+    svc = EntitlementsService(
+        _FakeAiSummaryService(global_count=100),
+        per_user_daily_limit=10,
+        global_daily_limit=100,
+        agent_service=_FakeAgentService(global_count=200),
+        agent_per_user_daily_limit=20,
+        agent_global_daily_limit=200,
+    )
+    with caplog.at_level(logging.WARNING, logger="cd.server.services.entitlements_service"):
+        for feature in (AI_SUMMARY, RESEARCH_AGENT, AI_SUMMARY):
+            with pytest.raises(FeatureUnavailableError):
+                asyncio.run(svc.require("u1", feature, now=_NOW))
+
+    assert [r.getMessage().split()[0] for r in caplog.records] == [AI_SUMMARY, RESEARCH_AGENT]

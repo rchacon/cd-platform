@@ -399,7 +399,7 @@ Two surfaces:
 - **`features` query** (`[Feature!]!`, auth-gated like `myAiSummaries`) --
   what cd-webapp reads to show/hide the "Summarize with AI" affordance and
   explain why (`{ name enabled reason dailyLimit usedToday resetsAt }`).
-  v1 returns exactly one entry, `ai_summary`.
+  It returns `ai_summary` and `research_agent` (see below).
 - **`summarizeVotingRecord`** calls `entitlements_service.require()` after
   the auth check and before any cd-api/Bedrock work -- a gated caller gets
   a `FeatureUnavailableError` GraphQL field error (not ERROR-logged, same
@@ -413,6 +413,54 @@ control), same call cd-platform#169 made. A generation that fails (e.g. a
 Bedrock outage) inserts no row, so it doesn't count -- each failed
 attempt still costs an errored Bedrock call (negligible), and Bedrock
 throttles its own side.
+
+### Research agent
+
+A tool-using, multi-turn agent for questions about the current Congress
+(cd-platform#164), such as "how have my senators voted on gun bills?" It
+runs a LangGraph graph over Bedrock Converse:
+
+1. The model looks members, bills and votes up through four tools
+   (`services/agent_tools.py`). Several tool calls from one model turn run
+   concurrently.
+2. A citation check makes sure every `[S000033]` / `[119-hr-2616]` in the
+   answer came from a tool.
+3. A step budget (8 model calls) ends a turn that's going nowhere.
+
+`docs/agent-design.md` explains the design. The code is in
+`services/agent_service.py`.
+
+GraphQL, all auth-gated:
+
+- **`startAgentConversation(question)`** starts a conversation.
+- **`continueAgentConversation(conversationId, question)`** asks a
+  follow-up.
+
+  Both run the whole turn before returning, which takes several seconds.
+  They return the `AgentConversation` with its turns. Each answer carries
+  `stopReason` (`answered`, `step_limit` or `citations_flagged`), its
+  token usage, and a `trace` of every model and tool call.
+- **`myAgentConversations(limit)`** lists the caller's conversations,
+  without turns.
+- **`agentConversation(id)`** returns one conversation with every turn,
+  or `null`.
+
+Storage is `agent_conversations` / `agent_turns` (migration `0004`,
+`services/agent_store.py`). A question and its answer are written in one
+transaction once the turn finishes, so a failed turn stores nothing and
+doesn't count against the caps.
+
+Daily caps work like `summarizeVotingRecord`'s, through the same
+`EntitlementsService`. They count answers: `AGENT_FREE_TIER_DAILY_LIMIT`
+defaults to 20 per user and `AGENT_GLOBAL_DAILY_LIMIT` to 200, and `0`
+disables a cap. Each answer can be up to 8 Bedrock calls, so the global
+ceiling is the real cost lid.
+
+The agent uses the same `BEDROCK_CHAT_MODEL_ID` and Bedrock access as
+`summarizeVotingRecord`. Its member lookup needs cd-api's `filter[name]`,
+which the frozen production cd-api Lambda doesn't have. Don't release the
+agent to production before cd-platform#179 points `CdApiService` at
+`cd.api` directly.
 
 ### Calling cd-api locally
 

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from cd.server.app import app, get_graphql_context
 from cd.server.schema import (
+    agent_service,
     ai_summary_service,
     bill_search_service,
     cd_api_service,
@@ -72,6 +73,8 @@ def test_lifespan_connects_and_closes_ai_summary_service(monkeypatch):
 
     monkeypatch.setattr(users_service, "connect", _noop)
     monkeypatch.setattr(users_service, "aclose", _noop)
+    monkeypatch.setattr(agent_service, "connect", _noop)
+    monkeypatch.setattr(agent_service, "aclose", _noop)
 
     calls = []
 
@@ -113,6 +116,32 @@ def test_lifespan_connects_and_closes_users_service(monkeypatch):
     # their own real asyncpg pool -- stub them out here too.
     monkeypatch.setattr(ai_summary_service, "connect", _noop)
     monkeypatch.setattr(ai_summary_service, "aclose", _noop)
+    monkeypatch.setattr(agent_service, "connect", _noop)
+    monkeypatch.setattr(agent_service, "aclose", _noop)
+
+    with TestClient(app):
+        assert calls == ["connect"]
+    assert calls == ["connect", "aclose"]
+
+
+def test_lifespan_connects_and_closes_agent_service(monkeypatch):
+    async def _noop():
+        pass
+
+    for service in (users_service, ai_summary_service):
+        monkeypatch.setattr(service, "connect", _noop)
+        monkeypatch.setattr(service, "aclose", _noop)
+
+    calls = []
+
+    async def fake_connect():
+        calls.append("connect")
+
+    async def fake_aclose():
+        calls.append("aclose")
+
+    monkeypatch.setattr(agent_service, "connect", fake_connect)
+    monkeypatch.setattr(agent_service, "aclose", fake_aclose)
 
     with TestClient(app):
         assert calls == ["connect"]
@@ -1016,3 +1045,174 @@ def test_summarize_voting_record_is_gated_when_require_raises(client, monkeypatc
     # gated before any generation, and not logged as a server error
     assert generated == []
     assert [r for r in caplog.records if r.name == "strawberry.execution"] == []
+
+
+# --- the research agent ---
+
+from cd.server.services.agent_service import ConversationNotFoundError  # noqa: E402
+from cd.server.services.agent_store import (  # noqa: E402
+    AgentConversationRecord,
+    AgentTurnRecord,
+)
+from cd.server.services.entitlements_service import (  # noqa: E402
+    REASON_DAILY_LIMIT,
+    RESEARCH_AGENT,
+    FeatureUnavailableError,
+)
+
+_T = datetime(2026, 10, 20, tzinfo=timezone.utc)
+_CONVERSATION = AgentConversationRecord(
+    id=7,
+    title="Who is Sanders?",
+    created_at=_T,
+    updated_at=_T,
+    turns=[
+        AgentTurnRecord(1, "user", "Who is Sanders?", [], None, None, None, None, _T),
+        AgentTurnRecord(
+            2, "assistant", "Bernie Sanders [S000033].",
+            [{"type": "tool", "name": "find_members", "latency_ms": 12}],
+            "test-model", "answered", 400, 35, _T,
+        ),
+    ],
+)
+_CONVERSATION_FIELDS = (
+    "{ id title turns { id role content stopReason trace inputTokens outputTokens } }"
+)
+
+
+def _post(client, query):
+    return client.post("/graphql", json={"query": query}, headers={"Authorization": "Bearer a.b.c"})
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        'mutation { startAgentConversation(question: "hi") { id } }',
+        'mutation { continueAgentConversation(conversationId: "7", question: "hi") { id } }',
+        "{ myAgentConversations { id } }",
+        '{ agentConversation(id: "7") { id } }',
+    ],
+)
+def test_every_agent_field_requires_authentication(client, query):
+    response = client.post("/graphql", json={"query": query})
+    assert "requires authentication" in response.json()["errors"][0]["message"]
+
+
+def test_start_agent_conversation_is_gated_then_returns_both_turns(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+    gated = []
+
+    async def fake_require(user_id, feature):
+        gated.append((user_id, feature))
+
+    async def fake_ask(user_id, question, conversation_id=None):
+        assert (user_id, question, conversation_id) == ("cognito-sub-123", "Who is Sanders?", None)
+        return _CONVERSATION
+
+    monkeypatch.setattr(entitlements_service, "require", fake_require)
+    monkeypatch.setattr(agent_service, "ask", fake_ask)
+
+    response = _post(
+        client,
+        f'mutation {{ startAgentConversation(question: "Who is Sanders?") {_CONVERSATION_FIELDS} }}',
+    )
+
+    assert gated == [("cognito-sub-123", RESEARCH_AGENT)]
+    conversation = response.json()["data"]["startAgentConversation"]
+    assert conversation["id"] == "7"
+    question, answer = conversation["turns"]
+    assert (question["role"], question["stopReason"], question["trace"]) == ("user", None, [])
+    assert answer == {
+        "id": "2",
+        "role": "assistant",
+        "content": "Bernie Sanders [S000033].",
+        "stopReason": "answered",
+        "trace": [{"type": "tool", "name": "find_members", "latency_ms": 12}],
+        "inputTokens": 400,
+        "outputTokens": 35,
+    }
+
+
+def test_an_agent_mutation_over_the_daily_cap_never_runs_the_agent(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+
+    async def capped(user_id, feature):
+        raise FeatureUnavailableError(feature, REASON_DAILY_LIMIT)
+
+    async def never(*args, **kwargs):
+        raise AssertionError("the agent ran despite the cap")
+
+    monkeypatch.setattr(entitlements_service, "require", capped)
+    monkeypatch.setattr(agent_service, "ask", never)
+
+    response = _post(client, 'mutation { startAgentConversation(question: "hi") { id } }')
+
+    assert "daily_limit_reached" in response.json()["errors"][0]["message"]
+
+
+def test_continue_agent_conversation_passes_the_numeric_id(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+    seen = {}
+
+    async def fake_ask(user_id, question, conversation_id=None):
+        seen["args"] = (question, conversation_id)
+        return _CONVERSATION
+
+    monkeypatch.setattr(agent_service, "ask", fake_ask)
+
+    response = _post(
+        client, 'mutation { continueAgentConversation(conversationId: "7", question: "Party?") { id } }'
+    )
+
+    assert response.json()["data"]["continueAgentConversation"]["id"] == "7"
+    assert seen["args"] == ("Party?", 7)
+
+
+@pytest.mark.parametrize("conversation_id", ["99", "not-a-number"])
+def test_continue_agent_conversation_reports_an_unknown_conversation(client, monkeypatch, conversation_id):
+    _as_verified_user(monkeypatch)
+
+    async def fake_ask(user_id, question, conversation_id=None):
+        raise ConversationNotFoundError(conversation_id)
+
+    monkeypatch.setattr(agent_service, "ask", fake_ask)
+
+    response = _post(
+        client,
+        f'mutation {{ continueAgentConversation(conversationId: "{conversation_id}", question: "hi") {{ id }} }}',
+    )
+
+    assert response.json()["data"] is None
+    assert len(response.json()["errors"]) == 1
+
+
+def test_my_agent_conversations_lists_without_turns(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+    listed = AgentConversationRecord(id=7, title="Who is Sanders?", created_at=_T, updated_at=_T)
+
+    async def fake_conversations(user_id, limit):
+        assert (user_id, limit) == ("cognito-sub-123", 5)
+        return [listed]
+
+    monkeypatch.setattr(agent_service, "conversations", fake_conversations)
+
+    response = _post(client, "{ myAgentConversations(limit: 5) { id title turns { id } } }")
+
+    assert response.json()["data"]["myAgentConversations"] == [
+        {"id": "7", "title": "Who is Sanders?", "turns": []}
+    ]
+
+
+def test_agent_conversation_is_null_when_missing_or_malformed(client, monkeypatch):
+    _as_verified_user(monkeypatch)
+
+    async def fake_conversation(user_id, conversation_id):
+        return _CONVERSATION if conversation_id == 7 else None
+
+    monkeypatch.setattr(agent_service, "conversation", fake_conversation)
+
+    found = _post(client, '{ agentConversation(id: "7") { id turns { role } } }').json()
+    assert [t["role"] for t in found["data"]["agentConversation"]["turns"]] == ["user", "assistant"]
+    for missing in ("8", "abc"):
+        response = _post(client, f'{{ agentConversation(id: "{missing}") {{ id }} }}').json()
+        assert response == {"data": {"agentConversation": None}}
