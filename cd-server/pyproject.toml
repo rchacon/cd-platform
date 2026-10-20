@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.28.0",
     "langchain-aws>=1.9",
     "langgraph>=1.2",
+    "mcp>=2.3",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.9",
     "pyjwt[crypto]>=2.9",

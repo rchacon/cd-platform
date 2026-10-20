@@ -147,8 +147,10 @@ they stay citable.
 ## Tools are plain async methods
 
 `AgentTools` has no LangChain imports. `agent_service.build_tools()` wraps
-its methods as LangChain `StructuredTool`s. The MCP server exposes the same
-methods.
+its methods as LangChain `StructuredTool`s. The MCP server
+(`mcp_server.py`, `make mcp-server`) registers the same methods with the MCP
+SDK's `MCPServer`. Each client gets the same names, descriptions and
+argument schemas, because both read them from the methods.
 
 Each tool's model-facing description is its docstring, and each parameter
 is described with `Annotated[..., Field(description=...)]`, which both
