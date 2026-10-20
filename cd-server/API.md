@@ -32,16 +32,26 @@ GET /members?filter[state]=GA
 
 GET /members?filter[state]=GA&filter[chamber]=house
 GET /members?filter[state]=GA&filter[district]=5
+GET /members?filter[name]=bernie+sanders
 ```
 
-An **honest collection**: `filter[state]` is required (it's the only
-required filter), and `filter[chamber]` (`senate`/`house`, case-insensitive
+An **honest collection**: at least one of `filter[state]` and
+`filter[name]` is required, and `filter[chamber]` (`senate`/`house`, case-insensitive
 -- `house` folds in non-voting Delegates and the Resident Commissioner)
 and `filter[district]` (`0` at-large, `1+` numbered) each narrow the set
 further, composably. `filter[district]=5` returns *only* House members in
 district 5 -- Senators have no district and are never bundled in (unlike
 the old shape). "Who represents this address" is now two calls (one per
 chamber), which `cd-server` already makes concurrently.
+
+`filter[name]` (1-100 characters) searches by name across every state,
+case-insensitively: each word must appear in the member's first name,
+nickname or last name, so `bernie sanders` and `sanders` both find
+Bernard Sanders. It composes with the other filters
+(`filter[state]=VT&filter[name]=welch`). `filter[district]` needs
+`filter[state]` (422 otherwise), and a name that matches nobody is `200`
+with `data` empty. Results are ordered by state, then senators before
+House members by district.
 
 For the six non-voting-delegate jurisdictions (DC, PR, GU, VI, AS, MP),
 `filter[district]=98` -- the U.S. Census Bureau's FIPS "nonvoting

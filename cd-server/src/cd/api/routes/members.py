@@ -77,6 +77,9 @@ _CHAMBER_FILTER = {"senate": "SENATE", "house": "HOUSE"}
 
 _STATE_QUERY = dict(min_length=2, max_length=2, pattern="^[A-Za-z]{2}$")
 
+# Long enough for any real full name; bounds the per-word ILIKE clauses.
+_NAME_FILTER_MAX_LENGTH = 100
+
 
 @jsonapi_router.get(
     "/members",
@@ -106,9 +109,10 @@ _STATE_QUERY = dict(min_length=2, max_length=2, pattern="^[A-Za-z]{2}$")
             "parameter other than `profile`/`ext`."
         ),
         422: jsonapi_error_response(
-            "Request parameters failed validation (e.g. `filter[state]` "
-            "missing or not two letters, `filter[chamber]` not "
-            "`senate`/`house`)."
+            "Request parameters failed validation (e.g. both "
+            "`filter[state]` and `filter[name]` missing, `filter[state]` "
+            "not two letters, `filter[district]` without `filter[state]`, "
+            "`filter[chamber]` not `senate`/`house`)."
         ),
         500: jsonapi_error_response("An unexpected error occurred."),
     },
@@ -117,7 +121,10 @@ async def get_members(
     state_filter: str | None = Query(
         None,
         alias="filter[state]",
-        description="2-letter USPS state/territory code. Required.",
+        description=(
+            "2-letter USPS state/territory code. Required unless "
+            "`filter[name]` is given."
+        ),
         **_STATE_QUERY,
     ),
     chamber_filter: str | None = Query(
@@ -139,7 +146,19 @@ async def get_members(
             "that district only (Senators have no district and never "
             "match). Omit for all districts. For a non-voting-delegate "
             "jurisdiction (DC, PR, GU, VI, AS, MP) the Census FIPS code "
-            "`98` is accepted as an alias for `0`."
+            "`98` is accepted as an alias for `0`. Requires `filter[state]`."
+        ),
+    ),
+    name_filter: str | None = Query(
+        None,
+        alias="filter[name]",
+        min_length=1,
+        max_length=_NAME_FILTER_MAX_LENGTH,
+        description=(
+            "Name search, case-insensitive: every word must appear in the "
+            "member's first name, nickname or last name (`pelosi`, "
+            "`bernie sanders`). Searches every state unless "
+            "`filter[state]` is also given."
         ),
     ),
 ) -> dict:
@@ -148,7 +167,10 @@ async def get_members(
     An honest collection: each `filter[...]` narrows the set, and they
     compose. `filter[state]=GA` alone returns every current GA member
     (both Senators and Representatives); add `filter[chamber]=house` or
-    `filter[district]=5` to narrow further. `filter[state]` is required.
+    `filter[district]=5` to narrow further. `filter[name]=warnock` finds
+    members by name across every state. At least one of `filter[state]`
+    and `filter[name]` is required; `filter[district]` needs
+    `filter[state]`.
 
     Returns a JSON:API collection of `member` resources -- the same
     resource shape as `GET /members/{bioguide_id}`, `in_office` always
@@ -160,10 +182,24 @@ async def get_members(
     apportionment) is `404`; a real district that's currently vacant is
     `200` with `data` empty. An unknown `filter[state]` is `404`.
     """
+    if name_filter is not None and not name_filter.split():
+        name_filter = None  # all whitespace: treat as omitted
     if state_filter is None:
-        raise HTTPException(
-            status_code=422, detail="`filter[state]` is required."
-        )
+        if name_filter is None:
+            raise HTTPException(
+                status_code=422,
+                detail="`filter[state]` or `filter[name]` is required.",
+            )
+        if district_filter is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="`filter[district]` requires `filter[state]`.",
+            )
+        # A name search across every state: no apportionment table to
+        # check against, so matching nobody is just 200 with `data` empty.
+        chamber = _parse_chamber(chamber_filter)
+        rows = await fetch_members(chamber=chamber, name=name_filter)
+        return members_collection_document(rows)
     state = state_filter.upper()
 
     # Accept the Census FIPS nonvoting-delegate code (98) as an alias for
@@ -173,14 +209,7 @@ async def get_members(
     # member_terms.district stores 0.
     district = normalize_district(state, district_filter)
 
-    chamber = None
-    if chamber_filter is not None:
-        chamber = _CHAMBER_FILTER.get(chamber_filter.lower())
-        if chamber is None:
-            raise HTTPException(
-                status_code=422,
-                detail="`filter[chamber]` must be `senate` or `house`.",
-            )
+    chamber = _parse_chamber(chamber_filter)
 
     # "district doesn't exist" (404) vs "district exists but is vacant"
     # (200, empty data) -- see cd-platform#12. `seats is None` means the
@@ -195,7 +224,9 @@ async def get_members(
             ),
         )
 
-    rows = await fetch_members(state, chamber=chamber, district=district)
+    rows = await fetch_members(
+        state, chamber=chamber, district=district, name=name_filter
+    )
     # Empty is a real answer for a known state (vacant district, a
     # chamber with no seated member) -- 200 with `data: []`. Only a
     # state absent from the apportionment table (`seats is None`) that
@@ -209,6 +240,18 @@ async def get_members(
             status_code=404, detail=f"No data found for state {state}"
         )
     return members_collection_document(rows)
+
+
+def _parse_chamber(chamber_filter: str | None) -> str | None:
+    if chamber_filter is None:
+        return None
+    chamber = _CHAMBER_FILTER.get(chamber_filter.lower())
+    if chamber is None:
+        raise HTTPException(
+            status_code=422,
+            detail="`filter[chamber]` must be `senate` or `house`.",
+        )
+    return chamber
 
 
 @jsonapi_router.get(
