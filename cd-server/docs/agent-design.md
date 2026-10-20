@@ -69,6 +69,40 @@ plausible-looking bill that it never looked up. It doesn't prove that a
 claim matches its source. That is what the faithfulness grading in the
 evals is for.
 
+## Evals
+
+`make eval-agent` runs about 25 golden questions (`evals/cases.py`) against
+real Bedrock and the dev `congressional_app` data. It writes a scorecard to
+`evals/results/`. The cases cover:
+
+- member lookup, including ambiguous and nonexistent names
+- voting records, for one member and for a comparison of two
+- what the data can't answer, such as Senate votes or bill text
+- out-of-scope questions and prompt injection
+- neutrality
+- multi-turn follow-ups
+
+Each answer is graded two ways:
+
+- **Deterministically, from the trace.**
+  - The turn finished (not flagged or step-limited).
+  - The required tools were called and no forbidden ones were.
+  - The pinned ids were cited. Only stable bioguide ids are pinned,
+    because which bills match a topic changes as data syncs.
+- **By an LLM judge**, with structured output:
+  - whether every claim is supported by the tool results the judge is
+    shown (faithfulness)
+  - each case's own rubric, e.g. "says Senate votes aren't available" or
+    "doesn't speculate about motives"
+
+The judge defaults to the agent's own model, and `--judge-model` picks
+another.
+
+The evals call cd.api in-process through httpx's ASGI transport, so
+nothing needs to be running except Postgres. They don't run in CI. CI's
+database has only the schema and no synced data, and a run costs real
+Bedrock calls. `tests/test_eval_grading.py` unit-tests the grading itself.
+
 ## Guardrails
 
 - **Step budget.** At most 8 model calls per turn

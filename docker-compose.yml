@@ -207,6 +207,8 @@ services:
       # test-server` uses) would run against whatever tests/ was baked
       # into the image at the last --build, not local edits.
       - ./cd-server/tests:/app/tests
+      # The research agent's evals (make eval-agent), same live-edit reason.
+      - ./cd-server/evals:/app/evals
       # Same live-edit convenience as the src mount above, for the
       # cd-lib code this service also depends on.
       - ./cd-lib/src:/cd-lib/src

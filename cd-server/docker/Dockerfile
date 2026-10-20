@@ -66,3 +66,4 @@ RUN echo "${CD_SERVER_VERSION}" > /app/src/cd/server/VERSION
 FROM base AS development
 RUN uv sync --locked
 COPY cd-server/tests/ ./tests/
+COPY cd-server/evals/ ./evals/

@@ -29,4 +29,5 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# "." so tests can import the evals package (tests/test_eval_grading.py).
+pythonpath = ["src", "."]

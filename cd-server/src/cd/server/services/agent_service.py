@@ -145,6 +145,18 @@ def result_ids(value: Any) -> set[str]:
     return ids
 
 
+def trace_ids(trace: list[dict[str, Any]]) -> set[str]:
+    """Every id the successful tool calls in a stored trace returned."""
+    ids: set[str] = set()
+    for step in trace:
+        if step.get("type") == "tool" and not step.get("error"):
+            try:
+                ids |= result_ids(json.loads(step["output"]))
+            except (KeyError, ValueError):
+                pass  # an output cut short in the trace
+    return ids
+
+
 class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     trace: Annotated[list[dict[str, Any]], operator.add]
@@ -304,12 +316,7 @@ def _history(turns: list[AgentTurnRecord]) -> tuple[list[AnyMessage], set[str]]:
         else:
             messages.append(AIMessage(content=turn.content))
     for turn in turns:
-        for step in turn.trace:
-            if step.get("type") == "tool" and not step.get("error"):
-                try:
-                    known |= result_ids(json.loads(step["output"]))
-                except (KeyError, ValueError):
-                    pass  # an output cut short in the trace
+        known |= trace_ids(turn.trace)
     return messages, known
 
 
