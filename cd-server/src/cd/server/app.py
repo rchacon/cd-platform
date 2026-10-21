@@ -1,6 +1,6 @@
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,16 +26,13 @@ logger = logging.getLogger(__name__)
 
 def warn_if_cd_api_db_unconfigured(environment: str, environ=os.environ) -> None:
     # cd.api.db falls back to localhost when CD_API_PGHOST is unset, which
-    # only makes sense in local dev. Elsewhere every /v1 query would fail
-    # while /health stays green, so say so at startup. A warning, not a
-    # RuntimeError like get_cd_api_service()'s: production doesn't set the
-    # CD_API_PG* vars until cd-infra#76, and raising would crash-loop the
-    # next release before then. Once cd.api's pool opens at startup
-    # (cd-platform#180), an unreachable database fails the boot anyway.
+    # only makes sense in local dev. Elsewhere every /v1 request then fails
+    # on a connection error to localhost -- this logs the actual cause.
     if environment != "local" and not environ.get("CD_API_PGHOST"):
         logger.warning(
-            "CD_API_PGHOST is unset outside local dev -- every /v1 query will "
-            "fail until the CD_API_PG* variables are configured"
+            "CD_API_PGHOST is unset outside local dev -- cd.api's database "
+            "pool will try localhost, so /v1 fails until the CD_API_PG* "
+            "variables are configured"
         )
 
 
@@ -44,27 +41,33 @@ warn_if_cd_api_db_unconfigured(settings.ENVIRONMENT)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # users_service and ai_summary_service each hold an asyncpg pool that
+    # users_service, ai_summary_service and cd.api each hold an asyncpg pool that
     # must be opened before serving any request, not just closed after the
     # last one -- unlike cd_api_service/geocoder_service, whose pools open
     # synchronously at import time (see schema.py), asyncpg.create_pool()
     # is a coroutine and has no synchronous equivalent.
-    await users_service.connect()
-    await ai_summary_service.connect()
-    yield
-    # cd_api_service's aclose() delegates to its underlying ApiClient
-    # (HttpApiClient holds an open httpx.AsyncClient connection pool;
-    # LambdaApiClient's is a no-op, boto3 needs no explicit close).
-    # geocoder_service holds its own separate connection pool for the
-    # (unrelated) Census geocoder. See services/cd_api_service.py and
-    # services/geocoder_service.py.
-    await cd_api_service.aclose()
-    await geocoder_service.aclose()
-    await users_service.aclose()
-    await ai_summary_service.aclose()
-    # cd.api's psycopg2 pool opens lazily on its first query, so it only
-    # needs closing here.
-    api_db.close_pool()
+    #
+    # An AsyncExitStack, so a startup step that raises still closes
+    # everything opened before it, and one aclose() that raises doesn't
+    # stop the rest from running. Callbacks run in reverse order.
+    async with AsyncExitStack() as stack:
+        # cd_api_service's aclose() delegates to its underlying ApiClient
+        # (HttpApiClient holds an open httpx.AsyncClient connection pool;
+        # LambdaApiClient's is a no-op, boto3 needs no explicit close).
+        # geocoder_service holds its own separate connection pool for the
+        # (unrelated) Census geocoder. Both are already open (see
+        # services/cd_api_service.py and services/geocoder_service.py).
+        stack.push_async_callback(cd_api_service.aclose)
+        stack.push_async_callback(geocoder_service.aclose)
+        await users_service.connect()
+        stack.push_async_callback(users_service.aclose)
+        await ai_summary_service.connect()
+        stack.push_async_callback(ai_summary_service.aclose)
+        # cd.api's congressional_app pool (mounted at /v1). Its own lifespan
+        # never runs under a mount, so it's opened here.
+        await api_db.connect()
+        stack.push_async_callback(api_db.close)
+        yield
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)

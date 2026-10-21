@@ -355,8 +355,7 @@ def _members_by_id(body: dict) -> dict:
     return {r["id"]: r for r in body["data"]}
 
 
-def test_get_members_returns_a_jsonapi_collection_of_members(seeded_state):
-    client = TestClient(app)
+def test_get_members_returns_a_jsonapi_collection_of_members(client, seeded_state):
     response = client.get("/members", params={"filter[state]": STATE})
 
     assert response.status_code == 200
@@ -384,9 +383,7 @@ def test_get_members_returns_a_jsonapi_collection_of_members(seeded_state):
     assert rep["attributes"]["district"] == DISTRICT
 
 
-def test_get_members_filter_by_chamber(seeded_state):
-    client = TestClient(app)
-
+def test_get_members_filter_by_chamber(client, seeded_state):
     senate = client.get(
         "/members", params={"filter[state]": STATE, "filter[chamber]": "senate"}
     ).json()
@@ -400,8 +397,7 @@ def test_get_members_filter_by_chamber(seeded_state):
     assert [r["id"] for r in house["data"]] == [seeded_state["rep"]]
 
 
-def test_get_members_filter_by_district_does_not_bundle_senators(seeded_state):
-    client = TestClient(app)
+def test_get_members_filter_by_district_does_not_bundle_senators(client, seeded_state):
     response = client.get(
         "/members", params={"filter[state]": STATE, "filter[district]": DISTRICT}
     )
@@ -420,7 +416,7 @@ def test_get_members_rejects_the_removed_bare_state_and_district_aliases(seeded_
         assert response.status_code == 400
 
 
-def test_get_members_role_comes_from_member_type_for_a_delegate(pg_conn):
+def test_get_members_role_comes_from_member_type_for_a_delegate(client, pg_conn):
     # A HOUSE row whose member_type differs from "Representative" -- proves
     # role passes member_type through, and that filter[chamber]=house
     # folds Delegates in.
@@ -430,7 +426,6 @@ def test_get_members_role_comes_from_member_type_for_a_delegate(pg_conn):
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         response = client.get(
             "/members", params={"filter[state]": STATE, "filter[chamber]": "house"}
         )
@@ -444,8 +439,7 @@ def test_get_members_role_comes_from_member_type_for_a_delegate(pg_conn):
         pg_conn.commit()
 
 
-def test_get_members_unknown_state_returns_jsonapi_404(pg_conn):
-    client = TestClient(app)
+def test_get_members_unknown_state_returns_jsonapi_404(client, pg_conn):
     response = client.get("/members", params={"filter[state]": "QQ"})
 
     assert response.status_code == 404
@@ -543,21 +537,19 @@ def test_get_members_unhandled_exception_returns_jsonapi_500(monkeypatch, caplog
     assert "db exploded" in caplog.text
 
 
-def test_get_members_omitted_district_returns_the_whole_state(seeded_state):
-    client = TestClient(app)
+def test_get_members_omitted_district_returns_the_whole_state(client, seeded_state):
     response = client.get("/members", params={"filter[state]": STATE})
 
     assert response.status_code == 200
     assert len(response.json()["data"]) == 3  # 2 senators + 1 rep
 
 
-def test_get_members_real_state_with_no_members_is_200_empty():
+def test_get_members_real_state_with_no_members_is_200_empty(client):
     # An "honest collection": a real (apportionment-table) state that
     # simply has nobody synced is an empty collection, not a 404. (A
     # state NOT in the table -- only synthetic test codes, never a real
     # 2-letter USPS code -- still 404s; see the unknown-state test.) MT
     # has 2 districts so it's a real state; nothing is seeded for it.
-    client = TestClient(app)
     response = client.get("/members", params={"filter[state]": "MT"})
 
     assert response.status_code == 200
@@ -594,7 +586,7 @@ def test_get_members_district_one_invalid_for_at_large_state_returns_404():
     assert "1 district)" in detail
 
 
-def test_get_members_accepts_fips_98_as_at_large_alias_for_a_delegate_jurisdiction(pg_conn):
+def test_get_members_accepts_fips_98_as_at_large_alias_for_a_delegate_jurisdiction(client, pg_conn):
     # cd-platform#72: the Census FIPS nonvoting-delegate code 98 is
     # accepted as an alias for this API's at-large convention (0) for
     # DC/PR/GU/VI/AS/MP, so a consumer carrying the FIPS code around
@@ -605,7 +597,6 @@ def test_get_members_accepts_fips_98_as_at_large_alias_for_a_delegate_jurisdicti
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         by_98 = client.get("/members", params={"filter[state]": "DC", "filter[district]": 98})
         by_0 = client.get("/members", params={"filter[state]": "DC", "filter[district]": 0})
 
@@ -631,7 +622,7 @@ def test_get_members_fips_98_still_invalid_for_a_voting_at_large_state():
     assert "District 98 does not exist for state WY" in response.json()["errors"][0]["detail"]
 
 
-def test_get_members_valid_but_vacant_district_returns_200_empty_data(pg_conn):
+def test_get_members_valid_but_vacant_district_returns_200_empty_data(client, pg_conn):
     # cd-platform#12: a real, in-range district with no current
     # representative (a genuine vacancy) must NOT be confused with an
     # out-of-range one -- 200 with `data: []`. Unlike the old shape, no
@@ -644,7 +635,6 @@ def test_get_members_valid_but_vacant_district_returns_200_empty_data(pg_conn):
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         response = client.get(
             "/members", params={"filter[state]": "GA", "filter[district]": 5}
         )
@@ -657,7 +647,7 @@ def test_get_members_valid_but_vacant_district_returns_200_empty_data(pg_conn):
         pg_conn.commit()
 
 
-def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
+def test_get_members_excludes_a_representative_who_left_mid_term(client, pg_conn):
     # current_members (cd-etl 0007) keeps departed members, flagged
     # in_office=false -- this list must still exclude them.
     sen, rep = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(2))
@@ -668,7 +658,6 @@ def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         by_state = client.get("/members", params={"filter[state]": "GA"}).json()
         assert sen in {r["id"] for r in by_state["data"]}
         assert rep not in {r["id"] for r in by_state["data"]}
@@ -683,8 +672,7 @@ def test_get_members_excludes_a_representative_who_left_mid_term(pg_conn):
         pg_conn.commit()
 
 
-def test_get_member_by_id_returns_a_sitting_member_as_a_jsonapi_document(seeded_state):
-    client = TestClient(app)
+def test_get_member_by_id_returns_a_sitting_member_as_a_jsonapi_document(client, seeded_state):
     response = client.get(f"/members/{seeded_state['rep']}")
 
     assert response.status_code == 200
@@ -705,14 +693,13 @@ def test_get_member_by_id_returns_a_sitting_member_as_a_jsonapi_document(seeded_
     assert attributes["in_office"] is True
 
 
-def test_get_member_by_id_serves_a_departed_member_with_in_office_false(pg_conn):
+def test_get_member_by_id_serves_a_departed_member_with_in_office_false(client, pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id, "Gone", "Gomez")
     _insert_term(pg_conn, bioguide_id, "HOUSE", 4, state="TX", end_year=LAST_YEAR)
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         response = client.get(f"/members/{bioguide_id}")
 
         assert response.status_code == 200
@@ -726,8 +713,7 @@ def test_get_member_by_id_serves_a_departed_member_with_in_office_false(pg_conn)
         pg_conn.commit()
 
 
-def test_get_member_by_id_unknown_bioguide_id_returns_404(pg_conn):
-    client = TestClient(app)
+def test_get_member_by_id_unknown_bioguide_id_returns_404(client, pg_conn):
     response = client.get("/members/NOTAREALID99")
 
     assert response.status_code == 404
@@ -747,8 +733,7 @@ def test_get_member_by_id_rejects_an_unsupported_query_param(seeded_state):
     assert "include" in response.json()["errors"][0]["detail"]
 
 
-def test_get_member_by_id_success_is_vnd_api_json(seeded_state):
-    client = TestClient(app)
+def test_get_member_by_id_success_is_vnd_api_json(client, seeded_state):
     response = client.get(f"/members/{seeded_state['rep']}")
 
     assert response.status_code == 200
@@ -853,7 +838,7 @@ def _seed_roll_call(
     return vote_number
 
 
-def test_get_member_votes_returns_roll_call_vote_resources_with_relationships(pg_conn):
+def test_get_member_votes_returns_roll_call_vote_resources_with_relationships(client, pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id, "Vera", "Voss")
     _insert_term(pg_conn, bioguide_id, "HOUSE", 3, state="CA")
@@ -865,7 +850,6 @@ def test_get_member_votes_returns_roll_call_vote_resources_with_relationships(pg
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         response = client.get(
             f"/members/{bioguide_id}/votes",
             params={"filter[bill]": f"119-hr-{no_vote},119-hr-{voted},119-hr-99999"},
@@ -903,7 +887,7 @@ def test_get_member_votes_returns_roll_call_vote_resources_with_relationships(pg
         pg_conn.commit()
 
 
-def test_get_member_votes_orders_by_requested_bill_then_oldest_first(pg_conn):
+def test_get_member_votes_orders_by_requested_bill_then_oldest_first(client, pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id, "Otto", "Ordway")
     _insert_term(pg_conn, bioguide_id, "HOUSE", 3, state="CA")
@@ -920,7 +904,6 @@ def test_get_member_votes_orders_by_requested_bill_then_oldest_first(pg_conn):
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         # Request bill b first, though its vote is chronologically earliest.
         response = client.get(
             f"/members/{bioguide_id}/votes",
@@ -945,8 +928,7 @@ def test_get_member_votes_orders_by_requested_bill_then_oldest_first(pg_conn):
         pg_conn.commit()
 
 
-def test_get_member_votes_unknown_member_returns_404(pg_conn):
-    client = TestClient(app)
+def test_get_member_votes_unknown_member_returns_404(client, pg_conn):
     response = client.get(
         "/members/NOTAREALID99/votes", params={"filter[bill]": "119-hr-1"}
     )
@@ -990,14 +972,13 @@ def test_get_member_votes_too_many_bills_returns_422(seeded_state):
     assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
 
 
-def test_get_member_votes_success_is_vnd_api_json(pg_conn):
+def test_get_member_votes_success_is_vnd_api_json(client, pg_conn):
     bioguide_id = f"TEST{uuid.uuid4().hex[:8].upper()}"
     _insert_member(pg_conn, bioguide_id, "Sue", "Serrano")
     _insert_term(pg_conn, bioguide_id, "HOUSE", 3, state="CA")
     pg_conn.commit()
 
     try:
-        client = TestClient(app)
         response = client.get(
             f"/members/{bioguide_id}/votes",
             params={"filter[bill]": "119-hr-1"},
@@ -1047,8 +1028,7 @@ def test_jsonapi_route_rejects_an_only_parametrized_accept(seeded_state):
     assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
 
 
-def test_jsonapi_route_allows_an_unparametrized_accept_alongside_a_parametrized_one(seeded_state):
-    client = TestClient(app)
+def test_jsonapi_route_allows_an_unparametrized_accept_alongside_a_parametrized_one(client, seeded_state):
     response = client.get(
         f"/members/{seeded_state['rep']}",
         headers={"Accept": "application/vnd.api+json, application/vnd.api+json; version=1"},
@@ -1065,8 +1045,7 @@ def test_jsonapi_route_allows_an_unparametrized_accept_alongside_a_parametrized_
         "application/vnd.api+json;q=0.8, text/html;q=0.9",
     ],
 )
-def test_jsonapi_route_does_not_406_on_q_or_profile(seeded_state, accept):
-    client = TestClient(app)
+def test_jsonapi_route_does_not_406_on_q_or_profile(client, seeded_state, accept):
     response = client.get(
         f"/members/{seeded_state['rep']}", headers={"Accept": accept}
     )
@@ -1075,8 +1054,7 @@ def test_jsonapi_route_does_not_406_on_q_or_profile(seeded_state, accept):
     assert response.headers["content-type"] == JSONAPI_MEDIA_TYPE
 
 
-def test_jsonapi_route_does_not_415_on_a_profile_content_type(seeded_state):
-    client = TestClient(app)
+def test_jsonapi_route_does_not_415_on_a_profile_content_type(client, seeded_state):
     response = client.get(
         f"/members/{seeded_state['rep']}",
         headers={"Content-Type": 'application/vnd.api+json; profile="https://example.com/x"'},
@@ -1085,10 +1063,9 @@ def test_jsonapi_route_does_not_415_on_a_profile_content_type(seeded_state):
     assert response.status_code == 200
 
 
-def test_jsonapi_route_tolerates_a_semicolon_inside_a_quoted_profile_value(seeded_state):
+def test_jsonapi_route_tolerates_a_semicolon_inside_a_quoted_profile_value(client, seeded_state):
     # `profile` is 1.1-exempt; a naive `;` split would see `b"` as a
     # bogus second parameter and 415. Quoted-string-aware parsing must not.
-    client = TestClient(app)
     response = client.get(
         f"/members/{seeded_state['rep']}",
         headers={"Content-Type": 'application/vnd.api+json; profile="https://example.com/a;b"'},
@@ -1234,7 +1211,7 @@ def test_get_bills_search_bedrock_failure_returns_503(monkeypatch):
     assert response.json()["errors"][0]["status"] == "503"
 
 
-def test_get_bills_search_tier1_policy_area_match(monkeypatch, pg_conn):
+def test_get_bills_search_tier1_policy_area_match(client, monkeypatch, pg_conn):
     term = f"test-policy-area-{uuid.uuid4().hex[:8]}"
     bill_number = random_number(20000, 29000)
     _insert_vocab_term(pg_conn, "POLICY_AREA", term, _vector(1.0, 0.0))
@@ -1243,7 +1220,6 @@ def test_get_bills_search_tier1_policy_area_match(monkeypatch, pg_conn):
     monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
 
     try:
-        client = TestClient(app)
         response = client.get(
             "/bills", params={"filter[query]": "some free text"}
         )
@@ -1269,7 +1245,7 @@ def test_get_bills_search_tier1_policy_area_match(monkeypatch, pg_conn):
         pg_conn.commit()
 
 
-def test_get_bills_search_tier1_subject_match(monkeypatch, pg_conn):
+def test_get_bills_search_tier1_subject_match(client, monkeypatch, pg_conn):
     term = f"test-subject-{uuid.uuid4().hex[:8]}"
     bill_number = random_number(20000, 29000)
     _insert_vocab_term(pg_conn, "SUBJECT", term, _vector(1.0, 0.0))
@@ -1279,7 +1255,6 @@ def test_get_bills_search_tier1_subject_match(monkeypatch, pg_conn):
     monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
 
     try:
-        client = TestClient(app)
         response = client.get("/bills", params={"filter[query]": "x"})
 
         assert response.status_code == 200
@@ -1295,7 +1270,7 @@ def test_get_bills_search_tier1_subject_match(monkeypatch, pg_conn):
         pg_conn.commit()
 
 
-def test_get_bills_search_falls_back_to_similarity_with_via_summary(monkeypatch, pg_conn):
+def test_get_bills_search_falls_back_to_similarity_with_via_summary(client, monkeypatch, pg_conn):
     unrelated_term = f"test-unrelated-{uuid.uuid4().hex[:8]}"
     bill_number = random_number(20000, 29000)
     # Vocab term far from the query embedding -> tier 1 finds nothing
@@ -1306,7 +1281,6 @@ def test_get_bills_search_falls_back_to_similarity_with_via_summary(monkeypatch,
     monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
 
     try:
-        client = TestClient(app)
         response = client.get("/bills", params={"filter[query]": "x"})
 
         assert response.status_code == 200
@@ -1323,7 +1297,7 @@ def test_get_bills_search_falls_back_to_similarity_with_via_summary(monkeypatch,
         pg_conn.commit()
 
 
-def test_get_bills_search_omits_bills_beyond_the_relevance_floor(monkeypatch, pg_conn):
+def test_get_bills_search_omits_bills_beyond_the_relevance_floor(client, monkeypatch, pg_conn):
     # A query with no genuinely related bill returns fewer (here zero)
     # results rather than backfilling with the least-far bill.
     unrelated_term = f"test-unrelated-{uuid.uuid4().hex[:8]}"
@@ -1335,7 +1309,6 @@ def test_get_bills_search_omits_bills_beyond_the_relevance_floor(monkeypatch, pg
     monkeypatch.setattr(bedrock, "embed", lambda client, text: _vector(1.0, 0.0))
 
     try:
-        client = TestClient(app)
         response = client.get("/bills", params={"filter[query]": "x"})
 
         assert response.status_code == 200

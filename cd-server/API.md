@@ -84,9 +84,16 @@ follows [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) ("Problem
 Details for HTTP APIs", `application/problem+json`), handled by
 `src/cd/api/problem.py`'s `problem_response`.
 
-`src/cd/api/db.py` queries `current_members` with `psycopg2` through a
-`ThreadedConnectionPool` (`CD_API_PG_POOL_SIZE`, default 5), opened lazily
-on the first query and closed in cd-server's lifespan shutdown. It reads
+`src/cd/api/db.py` queries `current_members` and the bill tables through
+an asyncpg pool (`CD_API_PG_POOL_SIZE`, default 5), and the routes are
+`async def`. The pool is opened at startup by cd-server's lifespan and
+closed at shutdown; Starlette never runs a mounted app's own lifespan, so
+cd.api's lifespan only runs when the app is served on its own (its tests).
+The pool opens no connections up front (`min_size=0`), so an unreachable
+`congressional_app` fails `/v1` requests (500) rather than cd-server's
+boot; startup probes it once and logs a warning if it can't connect. Queries use `:name` placeholders through `cd-lib`'s
+`cd.lib.sql.named()`. `GET /bills`' Titan embed (boto3, no async API)
+runs on the threadpool via `run_in_threadpool`. It reads
 its own `CD_API_PGHOST`/`CD_API_PGPORT`/`CD_API_PGDATABASE`/`CD_API_PGUSER`/
 `CD_API_PGPASSWORD`, not the plain `PG*` names, which cd-server's
 `settings.py` already uses for its `cd_customers` database. `src/cd/api/transform.py` holds the pure row -> JSON-shape

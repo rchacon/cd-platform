@@ -7,6 +7,10 @@ import os
 # seeding -- setting it only here, after import, would leave the app
 # querying the real dev database while tests seed the test one.
 os.environ.setdefault("CD_API_PGDATABASE", "congressional_app_test")
+# The pool opens connections on demand (min_size=0), and nothing here runs
+# queries concurrently, so a small cap is enough -- it keeps the number of
+# test connections to the shared Postgres low.
+os.environ.setdefault("CD_API_PG_POOL_SIZE", "2")
 
 import uuid
 
@@ -34,3 +38,17 @@ def pg_conn():
         )
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def client(pg_conn):
+    # As a context manager, so cd.api's lifespan opens (and then closes) its
+    # asyncpg pool on the TestClient's own event loop -- a bare
+    # TestClient(app) never runs the lifespan, so any route that queries the
+    # database would fail. Depends on pg_conn to skip without Postgres.
+    from fastapi.testclient import TestClient
+
+    from cd.api.app import app
+
+    with TestClient(app) as client:
+        yield client

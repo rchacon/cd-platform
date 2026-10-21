@@ -125,8 +125,7 @@ already had it.
 placeholders to asyncpg's positional `$n` and returns `(query, *args)`
 to splat into `fetch`/`fetchrow`/`execute` (cd-platform#166). Shared by
 `cd-server`'s two asyncpg consumers: `cd.server`'s `cd_customers`
-services and, once it moves off psycopg2 (cd-platform#180), `cd.api`'s
-`congressional_app` queries. It lives here rather than in `cd.server`
+services and `cd.api`'s `congressional_app` queries (cd-platform#180). It lives here rather than in `cd.server`
 so `cd.api` never has to import from `cd.server`. Pure Python, no
 `asyncpg` dependency of its own. SQL it can't rewrite safely (any `$`
 outside a literal, `E'...'` strings, nested or unterminated comments)

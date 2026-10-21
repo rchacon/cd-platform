@@ -4,6 +4,7 @@ import logging
 
 from botocore.config import Config
 from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from cd.api.db import (
     fetch_bills_by_policy_area,
@@ -105,7 +106,7 @@ router = APIRouter(route_class=JsonApiRoute, tags=["bills"])
         ),
     },
 )
-def get_bills(
+async def get_bills(
     query: str = Query(
         ...,
         alias="filter[query]",
@@ -159,7 +160,11 @@ def get_bills(
     the query alone.
     """
     try:
-        query_embedding = bedrock.embed(_BEDROCK_CLIENT, query)
+        # boto3 has no async API, so the embed runs on AnyIO's threadpool
+        # (the one FastAPI uses for sync endpoints) instead of blocking the
+        # event loop -- not asyncio.to_thread, whose much smaller default
+        # executor the Bedrock chat calls already share.
+        query_embedding = await run_in_threadpool(bedrock.embed, _BEDROCK_CLIENT, query)
     except Exception as exc:
         # Unlike cd-etl's degrade-gracefully precedent for a stale
         # embedding, there's nothing to fall back to here -- the
@@ -170,21 +175,21 @@ def get_bills(
             status_code=503, detail="Search is temporarily unavailable."
         ) from exc
 
-    vocab_match = fetch_closest_vocab_term(query_embedding)
+    vocab_match = await fetch_closest_vocab_term(query_embedding)
     tier1_bills: list[dict] = []
     if vocab_match is not None and vocab_match["distance"] <= VOCAB_MATCH_THRESHOLD:
         if vocab_match["kind"] == "POLICY_AREA":
-            tier1_bills = fetch_bills_by_policy_area(vocab_match["term"], page_size)
+            tier1_bills = await fetch_bills_by_policy_area(vocab_match["term"], page_size)
             tier1_via = "policy_area"
         else:
-            tier1_bills = fetch_bills_by_subject(vocab_match["term"], page_size)
+            tier1_bills = await fetch_bills_by_subject(vocab_match["term"], page_size)
             tier1_via = "subject"
         for bill in tier1_bills:
             bill["matches"] = [{"via": tier1_via}]
 
     remaining = page_size - len(tier1_bills)
     tier2_bills = (
-        fetch_bills_by_similarity(
+        await fetch_bills_by_similarity(
             query_embedding, [b["bill_id"] for b in tier1_bills], remaining,
             BILL_SIMILARITY_THRESHOLD,
         )

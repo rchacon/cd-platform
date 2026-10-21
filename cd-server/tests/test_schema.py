@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from cd.api import db as api_db
 from cd.server.app import app, get_graphql_context
 from cd.server.schema import (
     ai_summary_service,
@@ -16,6 +17,19 @@ from cd.server.schema import (
     users_service,
 )
 from cd.server.services.users_service import InvalidTokenError
+
+
+@pytest.fixture(autouse=True)
+def _no_cd_api_pool(monkeypatch):
+    # Every TestClient(app) here runs app.py's lifespan, which opens
+    # cd.api's congressional_app pool. Stubbed for the same "no real
+    # network/DB calls" reason as the users_service/ai_summary_service
+    # stubs below; tests/api/ covers the real pool.
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(api_db, "connect", _noop)
+    monkeypatch.setattr(api_db, "close", _noop)
 
 
 @pytest.fixture
@@ -117,6 +131,61 @@ def test_lifespan_connects_and_closes_users_service(monkeypatch):
     with TestClient(app):
         assert calls == ["connect"]
     assert calls == ["connect", "aclose"]
+
+
+def test_lifespan_connects_and_closes_cd_api_pool(monkeypatch):
+    # Under the /v1 mount, cd.api's own lifespan never runs, so this is
+    # the only thing that opens its pool -- dropping it would 500 every
+    # /v1 request while cd.api's own tests still pass.
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(users_service, "connect", _noop)
+    monkeypatch.setattr(users_service, "aclose", _noop)
+    monkeypatch.setattr(ai_summary_service, "connect", _noop)
+    monkeypatch.setattr(ai_summary_service, "aclose", _noop)
+
+    calls = []
+
+    async def fake_connect():
+        calls.append("connect")
+
+    async def fake_close():
+        calls.append("close")
+
+    monkeypatch.setattr(api_db, "connect", fake_connect)
+    monkeypatch.setattr(api_db, "close", fake_close)
+
+    with TestClient(app):
+        assert calls == ["connect"]
+    assert calls == ["connect", "close"]
+
+
+def test_lifespan_closes_what_it_opened_when_startup_fails(monkeypatch):
+    calls = []
+
+    def recorder(name):
+        async def record():
+            calls.append(name)
+
+        return record
+
+    async def failing_connect():
+        raise OSError("congressional_app unreachable")
+
+    monkeypatch.setattr(users_service, "connect", recorder("users.connect"))
+    monkeypatch.setattr(users_service, "aclose", recorder("users.aclose"))
+    monkeypatch.setattr(ai_summary_service, "connect", recorder("ai.connect"))
+    monkeypatch.setattr(ai_summary_service, "aclose", recorder("ai.aclose"))
+    monkeypatch.setattr(api_db, "connect", failing_connect)
+    monkeypatch.setattr(api_db, "close", recorder("api_db.close"))
+
+    with pytest.raises(OSError, match="unreachable"), TestClient(app):
+        pass
+
+    # Everything opened before the failure is closed, in reverse order;
+    # api_db.close isn't called, since its connect never succeeded.
+    assert calls == ["users.connect", "ai.connect", "ai.aclose", "users.aclose"]
 
 
 def test_graphql_request_without_authorization_header_still_succeeds(client):
