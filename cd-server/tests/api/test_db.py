@@ -709,3 +709,10 @@ async def test_connect_survives_an_unreachable_database(monkeypatch, caplog):
     assert "can't reach its database" in caplog.text
     with pytest.raises(OSError):
         await db.fetch_member("Z999999")
+
+
+async def test_connect_twice_keeps_the_open_pool():
+    # A second connect() must not replace (and orphan) the open pool.
+    pool = db._pool
+    await db.connect()
+    assert db._pool is pool

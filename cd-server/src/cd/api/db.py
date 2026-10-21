@@ -51,7 +51,13 @@ async def connect() -> None:
     # when the app runs standalone, e.g. its tests). An asyncpg pool belongs
     # to the event loop it was created on, so it has to be opened by the
     # loop that serves requests -- never lazily or at import.
+    #
+    # A no-op if the pool is already open, so a second caller (cd.api's
+    # standalone lifespan inside a test that already connected) doesn't
+    # orphan the first pool's connections. close() resets it.
     global _pool
+    if _pool is not None:
+        return
     _pool = await asyncpg.create_pool(
         min_size=0,
         max_size=POOL_SIZE,
