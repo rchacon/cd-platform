@@ -7,9 +7,9 @@ import os
 # seeding -- setting it only here, after import, would leave the app
 # querying the real dev database while tests seed the test one.
 os.environ.setdefault("CD_API_PGDATABASE", "congressional_app_test")
-# Every TestClient lifespan (and test_db.py's per-test fixture) opens the
-# whole pool up front, and nothing here runs queries concurrently -- a small
-# pool keeps that setup cost down.
+# The pool opens connections on demand (min_size=0), and nothing here runs
+# queries concurrently, so a small cap is enough -- it keeps the number of
+# test connections to the shared Postgres low.
 os.environ.setdefault("CD_API_PG_POOL_SIZE", "2")
 
 import uuid
