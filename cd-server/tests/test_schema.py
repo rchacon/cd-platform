@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from cd.api import db as api_db
 from cd.server.app import app, get_graphql_context
 from cd.server.schema import (
     ai_summary_service,
@@ -16,6 +17,19 @@ from cd.server.schema import (
     users_service,
 )
 from cd.server.services.users_service import InvalidTokenError
+
+
+@pytest.fixture(autouse=True)
+def _no_cd_api_pool(monkeypatch):
+    # Every TestClient(app) here runs app.py's lifespan, which opens
+    # cd.api's congressional_app pool. Stubbed for the same "no real
+    # network/DB calls" reason as the users_service/ai_summary_service
+    # stubs below; tests/api/ covers the real pool.
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(api_db, "connect", _noop)
+    monkeypatch.setattr(api_db, "close", _noop)
 
 
 @pytest.fixture
