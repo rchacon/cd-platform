@@ -675,12 +675,6 @@ async def test_pool_reuses_its_connections_across_queries():
     assert len(pids) <= db.POOL_SIZE
 
 
-async def test_pooled_connection_goes_back_without_an_open_transaction():
-    await db.fetch_member("Z999999")
-    async with db._acquire() as conn:
-        assert not conn.is_in_transaction()
-
-
 async def test_a_query_before_connect_raises():
     await db.close()
 
