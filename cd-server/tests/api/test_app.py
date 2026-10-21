@@ -203,7 +203,7 @@ def test_openapi_members_list_documents_filter_parameters():
         p["name"]: p for p in schema["paths"]["/members"]["get"]["parameters"]
     }
     assert set(parameters) == {
-        "filter[state]", "filter[chamber]", "filter[district]"
+        "filter[state]", "filter[chamber]", "filter[district]", "filter[name]"
     }
 
     district_desc = parameters["filter[district]"]["description"].lower()
@@ -449,13 +449,51 @@ def test_get_members_unknown_state_returns_jsonapi_404(client, pg_conn):
     assert error["detail"] == "No data found for state QQ"
 
 
-def test_get_members_missing_state_returns_jsonapi_422():
+def test_get_members_missing_state_and_name_returns_jsonapi_422():
     client = TestClient(app)
-    response = client.get("/members")
+    for params in ({}, {"filter[name]": "   "}):
+        response = client.get("/members", params=params)
+
+        assert response.status_code == 422
+        assert response.headers["content-type"] == "application/vnd.api+json"
+        detail = response.json()["errors"][0]["detail"]
+        assert "filter[state]" in detail and "filter[name]" in detail
+
+
+def test_get_members_filter_by_name_searches_every_state(client, seeded_state):
+    response = client.get("/members", params={"filter[name]": "carol clark"})
+
+    assert response.status_code == 200
+    assert seeded_state["rep"] in {r["id"] for r in response.json()["data"]}
+
+
+def test_get_members_filter_by_name_composes_with_state(client, seeded_state):
+    response = client.get(
+        "/members", params={"filter[state]": STATE, "filter[name]": "baker"}
+    )
+
+    assert response.status_code == 200
+    assert [r["id"] for r in response.json()["data"]] == [seeded_state["senator_b"]]
+
+
+def test_get_members_district_without_state_returns_jsonapi_422():
+    client = TestClient(app)
+    response = client.get(
+        "/members", params={"filter[name]": "clark", "filter[district]": 1}
+    )
 
     assert response.status_code == 422
-    assert response.headers["content-type"] == "application/vnd.api+json"
-    assert "filter[state]" in response.json()["errors"][0]["detail"]
+    assert "filter[district]" in response.json()["errors"][0]["detail"]
+
+
+def test_get_members_bad_chamber_with_name_only_returns_jsonapi_422():
+    client = TestClient(app)
+    response = client.get(
+        "/members", params={"filter[name]": "clark", "filter[chamber]": "upper"}
+    )
+
+    assert response.status_code == 422
+    assert "filter[chamber]" in response.json()["errors"][0]["detail"]
 
 
 def test_get_members_bad_chamber_returns_jsonapi_422(seeded_state):

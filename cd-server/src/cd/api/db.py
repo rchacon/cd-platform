@@ -110,7 +110,10 @@ async def _fetchrow(query: str, params: dict[str, Any]) -> dict | None:
 
 
 async def fetch_members(
-    state: str, chamber: str | None = None, district: int | None = None
+    state: str | None = None,
+    chamber: str | None = None,
+    district: int | None = None,
+    name: str | None = None,
 ) -> list[dict]:
     # Backs GET /members -- an "honest collection": every filter given is
     # AND'd, and a filter that's omitted simply doesn't constrain. No
@@ -121,34 +124,55 @@ async def fetch_members(
     # `filter[chamber]=house` folds in Delegates / the Resident
     # Commissioner (chamber HOUSE, member_type differs).
     #
+    # `name`: every whitespace-separated word must appear (case-insensitive
+    # substring) in the given name, nickname or family name, so "bernie
+    # sanders" matches given_name Bernard via his nickname, and "pelosi"
+    # alone matches too. LIKE's own wildcards are escaped, so a `%` or `_`
+    # in the input is matched literally.
+    #
     # `AND in_office`: current_members (cd-etl migration 0007) no longer
     # filters departed members out -- it exposes `in_office` instead, so
     # GET /members/{bioguide_id} can still serve them. This roster
     # endpoint is sitting-only, so it re-applies the filter here.
     #
-    # ORDER BY: senators first, then House by district, bioguide_id as a
-    # final deterministic tiebreak (two same-state senators, an at-large
-    # 0 vs NULL) -- so the flat `data` list has a stable order the old
-    # {senators, representatives} split gave for free.
+    # ORDER BY: state (only varies for a name search), then senators,
+    # then House by district, bioguide_id as a final deterministic
+    # tiebreak (two same-state senators, an at-large 0 vs NULL) -- so the
+    # flat `data` list has a stable order the old {senators,
+    # representatives} split gave for free.
     #
     # Each optional filter adds its clause and its parameter together:
     # named() rejects a parameter the query never uses.
-    clauses = ["state = :state", "in_office"]
-    params: dict[str, Any] = {"state": state}
+    clauses = ["in_office"]
+    params: dict[str, Any] = {}
+    if state is not None:
+        clauses.append("state = :state")
+        params["state"] = state
     if chamber is not None:
         clauses.append("chamber = :chamber")
         params["chamber"] = chamber
     if district is not None:
         clauses.append("district = :district")
         params["district"] = district
+    for i, word in enumerate((name or "").split()):
+        clauses.append(
+            f"(given_name ILIKE :name_{i} OR nickname ILIKE :name_{i}"
+            f" OR family_name ILIKE :name_{i})"
+        )
+        params[f"name_{i}"] = f"%{_escape_like(word)}%"
     return await _fetch(
         f"""
         SELECT * FROM current_members
         WHERE {" AND ".join(clauses)}
-        ORDER BY (chamber <> 'SENATE'), district NULLS FIRST, bioguide_id
+        ORDER BY state, (chamber <> 'SENATE'), district NULLS FIRST, bioguide_id
         """,
         params,
     )
+
+
+def _escape_like(text: str) -> str:
+    # Backslash is ILIKE's default escape character.
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 async def fetch_member(bioguide_id: str) -> dict | None:

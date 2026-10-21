@@ -47,12 +47,18 @@ def _vector(*first_values: float, dimensions: int = 1024) -> list[float]:
     return values
 
 
-def _insert_member(pg_conn, bioguide_id: str) -> None:
+def _insert_member(
+    pg_conn,
+    bioguide_id: str,
+    given_name: str = "Test",
+    family_name: str = "Member",
+    nickname: str | None = None,
+) -> None:
     with pg_conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO members (bioguide_id, given_name, family_name, source_hash) "
-            "VALUES (%s, %s, %s, %s)",
-            (bioguide_id, "Test", "Member", f"hash-{bioguide_id}"),
+            "INSERT INTO members (bioguide_id, given_name, family_name, nickname, source_hash) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (bioguide_id, given_name, family_name, nickname, f"hash-{bioguide_id}"),
         )
 
 
@@ -246,10 +252,11 @@ def _insert_seat(
     district: int | None,
     member_type: str | None = None,
     end_year: int | None = None,
+    **names: str,
 ) -> None:
     if member_type is None:
         member_type = "Senator" if chamber == "SENATE" else "Representative"
-    _insert_member(pg_conn, bioguide_id)
+    _insert_member(pg_conn, bioguide_id, **names)
     with pg_conn.cursor() as cur:
         cur.execute(
             """
@@ -334,6 +341,67 @@ async def test_fetch_members_excludes_a_departed_member(pg_conn):
     finally:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([sitting, gone],))
+        pg_conn.commit()
+
+
+def _unique_name() -> str:
+    # A family name no other row in the shared test DB can contain.
+    return f"Zq{uuid.uuid4().hex[:10]}"
+
+
+async def test_fetch_members_name_filter_matches_across_states(pg_conn):
+    family = _unique_name()
+    a, b, other = (f"TEST{uuid.uuid4().hex[:8].upper()}" for _ in range(3))
+    _insert_seat(pg_conn, a, chamber="SENATE", state="AA", district=None,
+                 given_name="Ann", family_name=family)
+    _insert_seat(pg_conn, b, chamber="HOUSE", state="BB", district=2,
+                 given_name="Ben", family_name=family)
+    _insert_seat(pg_conn, other, chamber="HOUSE", state="AA", district=3)
+    pg_conn.commit()
+
+    try:
+        rows = await db.fetch_members(name=family.upper())  # case-insensitive
+        assert [r["bioguide_id"] for r in rows] == [a, b]  # ordered by state
+        # Composes with the other filters.
+        assert [r["bioguide_id"] for r in await db.fetch_members("BB", name=family)] == [b]
+        assert [r["bioguide_id"] for r in await db.fetch_members(name=family, chamber="SENATE")] == [a]
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = ANY(%s)", ([a, b, other],))
+        pg_conn.commit()
+
+
+async def test_fetch_members_name_filter_needs_every_word_and_checks_the_nickname(pg_conn):
+    family = _unique_name()
+    member = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_seat(pg_conn, member, chamber="SENATE", state="AA", district=None,
+                 given_name="Bernard", nickname="Bernie", family_name=family)
+    pg_conn.commit()
+
+    try:
+        for query in (f"bernie {family}", f"Bernard {family}", family[:6]):
+            assert [r["bioguide_id"] for r in await db.fetch_members(name=query)] == [member]
+        assert await db.fetch_members(name=f"Alice {family}") == []
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (member,))
+        pg_conn.commit()
+
+
+async def test_fetch_members_name_filter_matches_like_wildcards_literally(pg_conn):
+    family = _unique_name()
+    member = f"TEST{uuid.uuid4().hex[:8].upper()}"
+    _insert_seat(pg_conn, member, chamber="HOUSE", state="AA", district=1,
+                 family_name=family)
+    pg_conn.commit()
+
+    try:
+        # Unescaped, "%" or "_" would match this member's name.
+        assert await db.fetch_members(name=f"{family[:4]}%") == []
+        assert await db.fetch_members(name=f"{family[:4]}_") == []
+    finally:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM members WHERE bioguide_id = %s", (member,))
         pg_conn.commit()
 
 
