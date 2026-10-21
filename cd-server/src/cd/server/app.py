@@ -1,6 +1,6 @@
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,23 +46,28 @@ async def lifespan(app: FastAPI):
     # last one -- unlike cd_api_service/geocoder_service, whose pools open
     # synchronously at import time (see schema.py), asyncpg.create_pool()
     # is a coroutine and has no synchronous equivalent.
-    await users_service.connect()
-    await ai_summary_service.connect()
-    # cd.api's congressional_app pool (mounted at /v1). Its own lifespan
-    # never runs under a mount, so it's opened here.
-    await api_db.connect()
-    yield
-    # cd_api_service's aclose() delegates to its underlying ApiClient
-    # (HttpApiClient holds an open httpx.AsyncClient connection pool;
-    # LambdaApiClient's is a no-op, boto3 needs no explicit close).
-    # geocoder_service holds its own separate connection pool for the
-    # (unrelated) Census geocoder. See services/cd_api_service.py and
-    # services/geocoder_service.py.
-    await cd_api_service.aclose()
-    await geocoder_service.aclose()
-    await users_service.aclose()
-    await ai_summary_service.aclose()
-    await api_db.close()
+    #
+    # An AsyncExitStack, so a startup step that raises still closes
+    # everything opened before it, and one aclose() that raises doesn't
+    # stop the rest from running. Callbacks run in reverse order.
+    async with AsyncExitStack() as stack:
+        # cd_api_service's aclose() delegates to its underlying ApiClient
+        # (HttpApiClient holds an open httpx.AsyncClient connection pool;
+        # LambdaApiClient's is a no-op, boto3 needs no explicit close).
+        # geocoder_service holds its own separate connection pool for the
+        # (unrelated) Census geocoder. Both are already open (see
+        # services/cd_api_service.py and services/geocoder_service.py).
+        stack.push_async_callback(cd_api_service.aclose)
+        stack.push_async_callback(geocoder_service.aclose)
+        await users_service.connect()
+        stack.push_async_callback(users_service.aclose)
+        await ai_summary_service.connect()
+        stack.push_async_callback(ai_summary_service.aclose)
+        # cd.api's congressional_app pool (mounted at /v1). Its own lifespan
+        # never runs under a mount, so it's opened here.
+        await api_db.connect()
+        stack.push_async_callback(api_db.close)
+        yield
 
 
 app = FastAPI(title="cd-server", lifespan=lifespan)

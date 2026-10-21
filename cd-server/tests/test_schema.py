@@ -133,6 +133,33 @@ def test_lifespan_connects_and_closes_users_service(monkeypatch):
     assert calls == ["connect", "aclose"]
 
 
+def test_lifespan_closes_what_it_opened_when_startup_fails(monkeypatch):
+    calls = []
+
+    def recorder(name):
+        async def record():
+            calls.append(name)
+
+        return record
+
+    async def failing_connect():
+        raise OSError("congressional_app unreachable")
+
+    monkeypatch.setattr(users_service, "connect", recorder("users.connect"))
+    monkeypatch.setattr(users_service, "aclose", recorder("users.aclose"))
+    monkeypatch.setattr(ai_summary_service, "connect", recorder("ai.connect"))
+    monkeypatch.setattr(ai_summary_service, "aclose", recorder("ai.aclose"))
+    monkeypatch.setattr(api_db, "connect", failing_connect)
+    monkeypatch.setattr(api_db, "close", recorder("api_db.close"))
+
+    with pytest.raises(OSError, match="unreachable"), TestClient(app):
+        pass
+
+    # Everything opened before the failure is closed, in reverse order;
+    # api_db.close isn't called, since its connect never succeeded.
+    assert calls == ["users.connect", "ai.connect", "ai.aclose", "users.aclose"]
+
+
 def test_graphql_request_without_authorization_header_still_succeeds(client):
     response = client.post("/graphql", json={"query": "{ version }"})
     assert response.status_code == 200
