@@ -133,6 +133,34 @@ def test_lifespan_connects_and_closes_users_service(monkeypatch):
     assert calls == ["connect", "aclose"]
 
 
+def test_lifespan_connects_and_closes_cd_api_pool(monkeypatch):
+    # Under the /v1 mount, cd.api's own lifespan never runs, so this is
+    # the only thing that opens its pool -- dropping it would 500 every
+    # /v1 request while cd.api's own tests still pass.
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(users_service, "connect", _noop)
+    monkeypatch.setattr(users_service, "aclose", _noop)
+    monkeypatch.setattr(ai_summary_service, "connect", _noop)
+    monkeypatch.setattr(ai_summary_service, "aclose", _noop)
+
+    calls = []
+
+    async def fake_connect():
+        calls.append("connect")
+
+    async def fake_close():
+        calls.append("close")
+
+    monkeypatch.setattr(api_db, "connect", fake_connect)
+    monkeypatch.setattr(api_db, "close", fake_close)
+
+    with TestClient(app):
+        assert calls == ["connect"]
+    assert calls == ["connect", "close"]
+
+
 def test_lifespan_closes_what_it_opened_when_startup_fails(monkeypatch):
     calls = []
 
