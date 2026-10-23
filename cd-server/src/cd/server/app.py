@@ -51,12 +51,10 @@ async def lifespan(app: FastAPI):
     # everything opened before it, and one aclose() that raises doesn't
     # stop the rest from running. Callbacks run in reverse order.
     async with AsyncExitStack() as stack:
-        # cd_api_service's aclose() delegates to its underlying ApiClient
-        # (HttpApiClient holds an open httpx.AsyncClient connection pool;
-        # LambdaApiClient's is a no-op, boto3 needs no explicit close).
-        # geocoder_service holds its own separate connection pool for the
-        # (unrelated) Census geocoder. Both are already open (see
-        # services/cd_api_service.py and services/geocoder_service.py).
+        # cd_api_service and geocoder_service each hold an httpx client,
+        # already open (see services/cd_api_service.py and
+        # services/geocoder_service.py): cd_api_service's calls cd.api
+        # in-process, geocoder_service's the (unrelated) Census geocoder.
         stack.push_async_callback(cd_api_service.aclose)
         stack.push_async_callback(geocoder_service.aclose)
         await users_service.connect()

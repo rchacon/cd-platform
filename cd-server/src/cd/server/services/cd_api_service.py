@@ -1,20 +1,13 @@
-import asyncio
-import json
-from abc import ABC, abstractmethod
-
-import boto3
 import httpx
-from botocore.exceptions import BotoCoreError, ClientError
+from cd.api.app import app as api_app
 from cd.lib.jsonapi import CollectionDocument, Document
 from cd.lib.models import Bill, Member, MemberDetail, RollCallVote
 
-from cd.server import settings
-
 
 class ApiClientError(Exception):
-    """Raised by every ApiClient implementation on a non-2xx response from
-    cd-api, so callers get one consistent error type regardless of which
-    implementation get_cd_api_service() picked."""
+    """Raised on a non-2xx response from cd-api's /v1 app, so callers get
+    one error type whatever went wrong -- the status code is cd-api's
+    own (404 for an unknown member, 503 when search is down, ...)."""
 
     def __init__(self, status_code: int, body: str):
         self.status_code = status_code
@@ -22,141 +15,29 @@ class ApiClientError(Exception):
         super().__init__(f"cd-api returned {status_code}: {body}")
 
 
-class ApiClient(ABC):
-    """Transport interface HttpApiClient/LambdaApiClient both implement,
-    so the two can't silently drift apart (a subclass missing get()
-    raises TypeError at instantiation, not just at first call). Internal
-    detail of this module -- callers outside it should go through
-    CdApiService below, not an ApiClient directly."""
+def build_cd_api_client() -> httpx.AsyncClient:
+    """An httpx client that calls cd.api's FastAPI app in-process, through
+    httpx.ASGITransport -- no network hop, no Lambda. It goes through the
+    app's routing, request validation and JSON:API serialization exactly
+    as a real /v1 request does, so cd-server consumes cd-api's public
+    contract the same way cd-lookup does rather than reaching around it
+    into cd.api.db/cd.api.transform (cd-platform#179).
 
-    @abstractmethod
-    async def get(self, path: str, query: dict[str, str]) -> dict:
-        ...
+    It calls the bare app, not the OriginGuard-wrapped mount in app.py:
+    OriginGuard keeps out requests that skipped API Gateway, and this one
+    never left the process. Paths are relative to the app (`/members`,
+    not `/v1/members`) -- the base URL's host is a placeholder.
 
-    async def aclose(self) -> None:
-        """Release any held resources (e.g. an open connection pool).
-        Default no-op -- only HttpApiClient currently needs this."""
-
-
-class HttpApiClient(ApiClient):
-    def __init__(self, base_url: str, origin_secret: str = ""):
-        self.base_url = base_url
-        # Locally this calls back into cd-server's own /v1, which
-        # OriginGuard protects. A configured CD_API_ORIGIN_SECRET is
-        # enforced even in local dev, so send it the way API Gateway would
-        # -- otherwise setting it locally 403s every member/bill resolver.
-        headers = {"X-Origin-Verify": origin_secret} if origin_secret else {}
-        # One client, reused across every get() call rather than opening
-        # a fresh connection per request -- httpx's own docs recommend
-        # against a new client per call for exactly this reason
-        # (connection-pool/TCP-handshake overhead). Closed via aclose(),
-        # called from app.py's lifespan on shutdown.
-        self._client = httpx.AsyncClient(headers=headers)
-
-    async def get(self, path: str, query: dict[str, str]) -> dict:
-        try:
-            response = await self._client.get(f"{self.base_url}{path}", params=query)
-        except httpx.HTTPError as e:
-            # Connection refused, timeout, DNS failure, etc. -- there's no
-            # HTTP response here to read a status code from at all, unlike
-            # the is_error branch below. 502 (bad gateway) matches cd-server
-            # acting as a gateway to an unreachable upstream.
-            raise ApiClientError(502, str(e)) from e
-        if response.is_error:
-            raise ApiClientError(response.status_code, response.text)
-        return response.json()
-
-    async def aclose(self) -> None:
-        await self._client.aclose()
-
-
-class LambdaApiClient(ApiClient):
-    """Calls cd-api's real Lambda function directly via boto3, bypassing
-    API Gateway entirely -- no network hop, and no X-Api-Key needed
-    (cd-api's own code never checks that header; only API Gateway does,
-    see cd/api/app.py's own DESCRIPTION). Dogfoods cd-api's
-    actual FastAPI app as much as possible by building a synthetic
-    API-Gateway-shaped event and invoking the same Mangum handler entry
-    point real requests go through, rather than reaching around it to
-    call cd-api's internal Python functions directly -- routing,
-    validation, and RFC 9457 error formatting all get exercised exactly
-    as they would over real HTTP.
+    ASGITransport doesn't run the app's lifespan; cd.api's database pool
+    is opened by cd-server's own lifespan (app.py). An exception the app
+    doesn't handle propagates out of the request as itself
+    (raise_app_exceptions, httpx's default) rather than as a bare 500, so
+    the resolver's error carries the real traceback.
     """
-
-    def __init__(self, function_name: str):
-        self.lambda_client = boto3.client("lambda")
-        self.function_name = function_name
-
-    async def get(self, path: str, query: dict[str, str]) -> dict:
-        # cd-api's Mangum handler strips a leading /v1 (api_gateway_base_path)
-        # before routing -- included here so this synthetic event matches
-        # what real API Gateway forwards in production (cd-infra#19),
-        # exercising the same stripping logic this shortcut would
-        # otherwise never touch.
-        event = _build_gateway_event(f"/v1{path}", query)
-
-        # boto3 has no async API at all -- invoke() is a genuinely
-        # blocking network call. asyncio.to_thread() runs it in a thread
-        # pool so it doesn't block the event loop, without needing a
-        # third-party async-boto3 wrapper (aioboto3/aiobotocore) for what
-        # this class does with just this one call.
-        try:
-            response = await asyncio.to_thread(
-                self.lambda_client.invoke,
-                FunctionName=self.function_name,
-                Payload=json.dumps(event),
-            )
-        except (ClientError, BotoCoreError) as e:
-            # ClientError/BotoCoreError don't share a common base besides
-            # Exception -- ClientError covers AWS API-level failures (bad
-            # function name, missing lambda:InvokeFunction permission),
-            # BotoCoreError covers lower-level ones (no credentials,
-            # can't reach the Lambda API endpoint at all). Neither
-            # produces a {statusCode, body} response to inspect below.
-            raise ApiClientError(502, str(e)) from e
-
-        # A crash inside the Lambda runtime itself (as opposed to a normal
-        # non-2xx HTTP response cd-api's own error handlers produced) sets
-        # this instead of returning the usual {statusCode, body} shape --
-        # Payload here is the raw Lambda error JSON, not RFC 9457.
-        if response.get("FunctionError"):
-            raise ApiClientError(500, response["Payload"].read().decode())
-
-        try:
-            result = json.load(response["Payload"])
-            status_code = result["statusCode"]
-            body = result["body"]
-        except (KeyError, json.JSONDecodeError) as e:
-            # Shouldn't happen given Mangum's own contract, but a
-            # malformed/unexpected payload here shouldn't surface as a
-            # raw KeyError either -- same "one consistent error type"
-            # promise as every other failure path in this class.
-            raise ApiClientError(502, f"Malformed Lambda response: {e}") from e
-
-        if status_code >= 400:
-            raise ApiClientError(status_code, body)
-
-        return json.loads(body)
-
-
-def _build_gateway_event(path: str, query: dict[str, str]) -> dict:
-    # Minimal shape mirrors tests/api/test_app.py's own
-    # _api_gateway_event helper, verified against Mangum's actual event
-    # parsing (mangum.handlers.api_gateway.APIGateway) rather than
-    # guessed: `resource`+`requestContext` are what Mangum's own type
-    # detection (APIGateway.infer) checks for, `httpMethod`/`path` are
-    # read directly (KeyError if absent), and query params come from
-    # multiValueQueryStringParameters.
-    return {
-        "resource": "/{proxy+}",
-        "path": path,
-        "httpMethod": "GET",
-        "headers": {},
-        "multiValueQueryStringParameters": {key: [value] for key, value in query.items()},
-        "requestContext": {"identity": {"sourceIp": "127.0.0.1"}},
-        "body": None,
-        "isBase64Encoded": False,
-    }
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api_app),
+        base_url="http://cd-api",
+    )
 
 
 def _members(payload: dict, *, chamber: str, district: int | None = None) -> list[Member]:
@@ -198,22 +79,34 @@ def _members(payload: dict, *, chamber: str, district: int | None = None) -> lis
 
 
 class CdApiService:
-    """The service layer schema.py depends on for cd-api data. Unlike the
-    ApiClient it wraps (which just makes the call and hands back a raw
-    dict), this validates cd-api's response against cd-lib's
-    `CollectionDocument[MemberDetail]` and returns real `Member` objects
-    -- the response-shape trust boundary lives here, not in schema.py's
+    """The service layer schema.py depends on for cd-api data. It calls
+    cd-api's /v1 routes, validates each response against cd-lib's
+    JSON:API models and returns real `Member`/`Bill`/... objects -- the
+    response-shape trust boundary lives here, not in schema.py's
     resolvers."""
 
-    def __init__(self, transport: ApiClient):
-        self._transport = transport
+    def __init__(self, client: httpx.AsyncClient):
+        self._client = client
+
+    async def _get(self, path: str, query: dict[str, str]) -> dict:
+        try:
+            response = await self._client.get(path, params=query)
+        except httpx.HTTPError as e:
+            # No response to read a status from. In-process this is rare
+            # (it isn't a network call), but a client that does go over
+            # the network -- a test's MockTransport, say -- can raise it.
+            # 502, as for a gateway whose upstream is unreachable.
+            raise ApiClientError(502, str(e)) from e
+        if response.is_error:
+            raise ApiClientError(response.status_code, response.text)
+        return response.json()
 
     async def get_representatives(self, state: str, district: int) -> list[Member]:
         # One filtered call -- cd-api's honest `/members` collection
         # (cd-platform#104 PR B) narrows to this state's House seat for
         # the district server-side; `_members` re-applies the same filter
         # as a backstop.
-        result = await self._transport.get(
+        result = await self._get(
             "/members",
             {
                 "filter[state]": state,
@@ -224,7 +117,7 @@ class CdApiService:
         return _members(result, chamber="representatives", district=district)
 
     async def get_senators(self, state: str) -> list[Member]:
-        result = await self._transport.get(
+        result = await self._get(
             "/members",
             {"filter[state]": state, "filter[chamber]": "senate"},
         )
@@ -243,9 +136,9 @@ class CdApiService:
 
         A malformed envelope raises `pydantic.ValidationError`; a `404`
         (an id with no current-Congress term -- e.g. a past-Congress
-        member) propagates as `ApiClientError` from the transport.
+        member) propagates as `ApiClientError`.
         """
-        result = await self._transport.get(f"/members/{bioguide_id}", {})
+        result = await self._get(f"/members/{bioguide_id}", {})
         return Document[MemberDetail].model_validate(result)
 
     async def search_bills(
@@ -260,13 +153,12 @@ class CdApiService:
 
         A malformed envelope raises `pydantic.ValidationError` (the
         response-shape trust boundary, same as `_members`); a non-2xx
-        (e.g. `503` when Bedrock is down) propagates as `ApiClientError`
-        from the transport.
+        (e.g. `503` when Bedrock is down) propagates as `ApiClientError`.
         """
         params = {"filter[query]": query}
         if page_size is not None:
             params["page[size]"] = str(page_size)
-        result = await self._transport.get("/bills", params)
+        result = await self._get("/bills", params)
         return CollectionDocument[Bill].model_validate(result)
 
     async def member_votes(
@@ -285,31 +177,15 @@ class CdApiService:
         member and `400` for a malformed id both propagate as
         `ApiClientError`.
         """
-        result = await self._transport.get(
+        result = await self._get(
             f"/members/{bioguide_id}/votes",
             {"filter[bill]": ",".join(bill_keys)},
         )
         return CollectionDocument[RollCallVote].model_validate(result)
 
     async def aclose(self) -> None:
-        await self._transport.aclose()
+        await self._client.aclose()
 
 
 def get_cd_api_service() -> CdApiService:
-    if settings.ENVIRONMENT == "local":
-        return CdApiService(
-            HttpApiClient(settings.CD_API_BASE_URL, settings.CD_API_ORIGIN_SECRET)
-        )
-    if not settings.CD_API_FUNCTION_NAME:
-        # Called at import time (schema.py's module-level cd_api_service =
-        # get_cd_api_service()), so a misconfigured non-local deploy fails
-        # immediately at startup instead of lazily on the first real
-        # GraphQL query with a boto3 ParamValidationError.
-        raise RuntimeError(
-            'CD_API_FUNCTION_NAME must be set when CD_SERVER_ENVIRONMENT is not "local".'
-        )
-    # The Lambda runs the last cd-api-v* build, frozen since its source
-    # moved into cd.api: changes to cd/api/ ship to /v1 but not to these
-    # resolvers in production. Until cd-platform#179 points CdApiService at
-    # cd.api directly, a change resolvers depend on needs #179 first.
-    return CdApiService(LambdaApiClient(settings.CD_API_FUNCTION_NAME))
+    return CdApiService(build_cd_api_client())

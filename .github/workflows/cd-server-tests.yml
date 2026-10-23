@@ -155,8 +155,8 @@ jobs:
       # in production mode: /v1 must only answer requests carrying API
       # Gateway's X-Origin-Verify secret, and must fail closed when that
       # secret isn't configured. The settings production mode makes
-      # mandatory at import get placeholders -- nothing here calls Cognito,
-      # Bedrock or the cd-api Lambda; only /health and /v1/version are hit.
+      # mandatory at import get placeholders -- nothing here calls Cognito or
+      # Bedrock; only /health and /v1/version are hit.
       # The two containers run one after the other: --network container:
       # shares Postgres's network namespace, so both would bind :8000.
       - name: Smoke test /v1's origin guard in production mode
@@ -164,7 +164,6 @@ jobs:
           POSTGRES_CID=$(docker compose ps -q postgres)
           PROD_ENV="-e CD_SERVER_ENVIRONMENT=production -e CD_SERVER_MIGRATE_TASK=1
             -e AWS_DEFAULT_REGION=us-west-2 -e AWS_REGION=us-west-2
-            -e CD_API_FUNCTION_NAME=smoke-placeholder
             -e COGNITO_USER_POOL_ID=us-west-2_smoke -e COGNITO_REGION=us-west-2
             -e COGNITO_CLIENT_IDS=smoke -e BEDROCK_CHAT_MODEL_ID=smoke-placeholder"
 
