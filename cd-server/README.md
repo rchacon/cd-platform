@@ -353,9 +353,10 @@ filters to `kind == "voting_record"` -- a polymorphic shape is a later
 problem, once a second kind exists.
 
 Generation calls **AWS Bedrock's Converse API** with an Anthropic Claude
-model (`services/bedrock_chat_service.py`'s `BedrockChatClient`, the sync
-`boto3` call wrapped in `asyncio.to_thread()`, same as `LambdaApiClient`;
-it stays cd-server-local rather than moving into `cd-lib`, which is for
+model (`services/bedrock_chat_service.py`'s `BedrockChatClient`, calling
+`langchain-aws`'s `ChatBedrockConverse` -- the chat model the
+research agent (#164) is built on -- whose `ainvoke()` runs the sync `boto3` call in a
+worker thread, since `boto3` has no async API; it stays cd-server-local rather than moving into `cd-lib`, which is for
 code with a second real consumer -- only `cd.lib.bedrock.build_bedrock_client()`
 is reused). It rejects a truncated (`stopReason == "max_tokens"`) or
 empty completion rather than storing a partial summary as if finished.
