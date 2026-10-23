@@ -43,20 +43,19 @@ come through it (`CD_API_ORIGIN_SECRET`). `cd-server` is a
 FastAPI + GraphQL (Strawberry) app (`cd-server/src/cd/server/app.py`) that
 will back `cd-webapp`, a separate React repo -- besides a `version` query
 and plain REST `/health`/`/version` endpoints (the latter mirroring
-`cd-api`'s own `GET /version` shape), it now makes real server-to-server
-calls to `cd-api` (`getSenators`/`getRepresentatives`, mirroring
-`cd-lookup`'s functionality). Its resolvers (`cd-server/src/cd/server/schema.py`)
+`cd-api`'s own `GET /version` shape), it now calls `cd-api`
+(`getSenators`/`getRepresentatives`, mirroring `cd-lookup`'s
+functionality). Its resolvers (`cd-server/src/cd/server/schema.py`)
 are thin, each delegating to a service in
 `cd-server/src/cd/server/services/` -- a client wraps a specific external
 system/protocol (thin, named after what it's a client *of*), a service is
 what a resolver actually depends on (may use one or more clients
 internally, but also owns real logic, named after the capability it
-provides). `services/cd_api_service.py`'s `CdApiService` wraps two
-interchangeable async client implementations sharing an `ApiClient` ABC
-(`HttpApiClient` for local dev, `LambdaApiClient` bypassing API Gateway
-via a direct `boto3` invoke -- wrapped in `asyncio.to_thread()` since
-`boto3` itself has no async API -- of the real function in production)
-picked by `settings.ENVIRONMENT`, and is also where cd-api's raw JSON
+provides). `services/cd_api_service.py`'s `CdApiService` calls cd-api's
+`/v1` routes in-process (an `httpx.AsyncClient` over `httpx.ASGITransport`
+pointed at `cd.api`'s app -- no network hop, but still cd-api's routing,
+validation and JSON:API serialization, so cd-server consumes the same
+public contract `cd-lookup` does), and is also where cd-api's raw JSON
 response gets validated against `cd-lib`'s
 `CollectionDocument[MemberDetail]` (cd-api's JSON:API `/members`
 collection, flattened one resource per `Member`) before a real `Member`

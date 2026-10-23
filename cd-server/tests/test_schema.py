@@ -44,7 +44,7 @@ def client():
 
 def test_lifespan_closes_both_services_on_shutdown(monkeypatch):
     # Spies on aclose() itself rather than reaching into internal
-    # connection-pool state (e.g. cd_api_service._transport._client.is_closed)
+    # connection-pool state (e.g. cd_api_service._client.is_closed)
     # -- cd_api_service/geocoder_service are module-level singletons shared
     # across the whole test session, so asserting on their actual open/closed
     # state would make this test's outcome depend on whether some earlier

@@ -102,9 +102,8 @@ def get_bedrock_chat_client() -> BedrockChatClient:
     if not settings.BEDROCK_CHAT_MODEL_ID:
         if settings.ENVIRONMENT != "local":
             # Fails at import time (schema.py's module-level singleton
-            # construction, once a follow-up PR wires this up), same
-            # "misconfigured non-local deploy fails immediately at
-            # startup" precedent as get_cd_api_service()/get_users_service().
+            # construction), same "misconfigured non-local deploy fails
+            # immediately at startup" precedent as get_users_service().
             raise RuntimeError(
                 'BEDROCK_CHAT_MODEL_ID must be set when CD_SERVER_ENVIRONMENT '
                 'is not "local".'
