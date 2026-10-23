@@ -1,5 +1,9 @@
 """Bedrock Converse API -- chat-style generation via Anthropic Claude,
-called by AiSummaryService to produce a stored summary.
+called by AiSummaryService to produce a stored summary. Calls go
+through langchain-aws's ChatBedrockConverse, the chat model the research
+agent (cd-platform#164) is built on, rather than raw boto3 -- so both features share
+one Bedrock code path, and a follow-up can stream the summary with
+astream().
 
 Sibling to cd-lib's bedrock.py (Titan embeddings, shared by cd-api and
 cd-etl) but deliberately NOT added there: this has exactly one consumer
@@ -11,13 +15,14 @@ client constructor) is reused as-is.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from cd.lib import bedrock
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from cd.server import settings
 
@@ -51,26 +56,30 @@ class BedrockChatClient:
     """Thin wrapper around one Bedrock Converse call -- no prompt
     composition, no storage, just "system+user text in, generated text
     out". Scoped like ApiClient/UsersClient: owns the external system's
-    request/response shape, nothing else."""
+    request/response shape, nothing else. ChatBedrockConverse does the
+    request/response translation; this adds the checks a stored summary
+    needs on top of it."""
 
-    def __init__(self, client: Any, model_id: str):
-        self._client = client
-        self.model_id = model_id
+    def __init__(self, model: ChatBedrockConverse):
+        self._model = model
+        self.model_id = model.model_id
 
     async def converse(self, system_prompt: str, user_prompt: str) -> str:
-        # boto3 has no async API at all -- same asyncio.to_thread()
-        # treatment as LambdaApiClient.get()'s invoke() call in
-        # cd_api_service.py.
+        # ainvoke still runs boto3's blocking converse() in a worker
+        # thread (langchain-core's default for a model with no native
+        # async API, which boto3 doesn't have) -- the same thing the
+        # asyncio.to_thread() call here used to do.
         try:
-            response = await asyncio.to_thread(
-                self._client.converse,
-                modelId=self.model_id,
-                system=[{"text": system_prompt}],
-                messages=[{"role": "user", "content": [{"text": user_prompt}]}],
-                inferenceConfig={"maxTokens": _MAX_TOKENS, "temperature": _TEMPERATURE},
+            message = await self._model.ainvoke(
+                [SystemMessage(system_prompt), HumanMessage(user_prompt)]
             )
         except (ClientError, BotoCoreError) as e:
             raise BedrockConverseError(f"Bedrock Converse call failed: {e}") from e
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            # ChatBedrockConverse's response parsing raises these for a
+            # response missing output.message.content, or carrying a
+            # content block it doesn't recognise.
+            raise BedrockConverseError(f"Malformed Bedrock Converse response: {e}") from e
 
         # A generation that hit the maxTokens ceiling is cut off
         # mid-sentence -- AiSummaryService persists whatever comes back as
@@ -79,23 +88,28 @@ class BedrockChatClient:
         # "stop_sequence" are the healthy stops; "max_tokens" is the one
         # that means "there was more to say" (raise _MAX_TOKENS, or move
         # to a model/prompt that fits, if this starts firing).
-        if response.get("stopReason") == "max_tokens":
+        if message.response_metadata.get("stopReason") == "max_tokens":
             raise BedrockConverseError(
                 f"Bedrock Converse response truncated at maxTokens={_MAX_TOKENS} "
                 "(stopReason=max_tokens) -- refusing to store a partial summary"
             )
 
-        try:
-            text = response["output"]["message"]["content"][0]["text"]
-        except (KeyError, IndexError, TypeError) as e:
-            raise BedrockConverseError(f"Malformed Bedrock Converse response: {e}") from e
-
         # An all-whitespace/empty completion (a content filter firing, a
         # model returning nothing) is not a usable summary -- same "don't
         # persist it as success" reasoning as the truncation check above.
+        text = message.text
         if not text.strip():
             raise BedrockConverseError("Bedrock Converse returned an empty completion")
         return text
+
+
+def build_chat_model(client: Any, model_id: str) -> ChatBedrockConverse:
+    return ChatBedrockConverse(
+        client=client,
+        model_id=model_id,
+        temperature=_TEMPERATURE,
+        max_tokens=_MAX_TOKENS,
+    )
 
 
 def get_bedrock_chat_client() -> BedrockChatClient:
@@ -115,4 +129,4 @@ def get_bedrock_chat_client() -> BedrockChatClient:
             "it (and configure real Bedrock access, e.g. the local-bedrock "
             "AWS profile) to test it locally."
         )
-    return BedrockChatClient(_BEDROCK_CLIENT, settings.BEDROCK_CHAT_MODEL_ID)
+    return BedrockChatClient(build_chat_model(_BEDROCK_CLIENT, settings.BEDROCK_CHAT_MODEL_ID))
