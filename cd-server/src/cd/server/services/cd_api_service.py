@@ -29,13 +29,18 @@ def build_cd_api_client() -> httpx.AsyncClient:
     not `/v1/members`) -- the base URL's host is a placeholder.
 
     ASGITransport doesn't run the app's lifespan; cd.api's database pool
-    is opened by cd-server's own lifespan (app.py). An exception the app
-    doesn't handle propagates out of the request as itself
-    (raise_app_exceptions, httpx's default) rather than as a bare 500, so
-    the resolver's error carries the real traceback.
+    is opened by cd-server's own lifespan (app.py).
+
+    An unexpected exception inside a route comes back as the 500 cd.api
+    sends any client, which CdApiService raises as ApiClientError(500) --
+    cd.api logs the traceback itself (jsonapi.py's JsonApiRoute,
+    app.py's catch-all handler). raise_app_exceptions=False because
+    Starlette also re-raises the exception after sending that 500, and
+    httpx would otherwise surface it raw, outside the one-error-type
+    contract.
     """
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=api_app),
+        transport=httpx.ASGITransport(app=api_app, raise_app_exceptions=False),
         base_url="http://cd-api",
     )
 

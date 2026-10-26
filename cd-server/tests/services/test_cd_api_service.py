@@ -61,6 +61,28 @@ def test_get_cd_api_service_calls_cd_api_in_process():
     assert "version" in asyncio.run(call())
 
 
+def test_get_cd_api_service_turns_an_unhandled_route_exception_into_a_500(monkeypatch):
+    # /version has no JSON:API route class of its own; its failure reaches
+    # Starlette's catch-all, which re-raises after sending the 500.
+    from cd.api.routes import version
+
+    def boom():
+        raise OSError("VERSION file missing")
+
+    monkeypatch.setattr(version, "read_version", boom)
+
+    async def call() -> None:
+        service = get_cd_api_service()
+        try:
+            await service._get("/version", {})
+        finally:
+            await service.aclose()
+
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(call())
+    assert exc.value.status_code == 500
+
+
 def test_get_cd_api_service_surfaces_cd_apis_own_error_status():
     async def call() -> None:
         service = get_cd_api_service()
