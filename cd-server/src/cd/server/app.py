@@ -24,19 +24,21 @@ from cd.server.services.users_service import InvalidTokenError
 logger = logging.getLogger(__name__)
 
 
-def warn_if_cd_api_db_unconfigured(environment: str, environ=os.environ) -> None:
+def require_cd_api_db_config(environment: str, environ=os.environ) -> None:
     # cd.api.db falls back to localhost when CD_API_PGHOST is unset, which
-    # only makes sense in local dev. Elsewhere every /v1 request then fails
-    # on a connection error to localhost -- this logs the actual cause.
+    # only makes sense in local dev. Elsewhere /v1 and every resolver backed
+    # by CdApiService (members, bill search, AI summaries) would fail on a
+    # connection error to localhost, while /health still passed. Failing at
+    # import instead keeps a misconfigured deploy from replacing healthy
+    # tasks -- same fail-fast precedent as get_users_service().
     if environment != "local" and not environ.get("CD_API_PGHOST"):
-        logger.warning(
-            "CD_API_PGHOST is unset outside local dev -- cd.api's database "
-            "pool will try localhost, so /v1 fails until the CD_API_PG* "
-            "variables are configured"
+        raise RuntimeError(
+            'CD_API_PGHOST must be set when CD_SERVER_ENVIRONMENT is not "local" '
+            "-- cd.api's database pool would otherwise try localhost."
         )
 
 
-warn_if_cd_api_db_unconfigured(settings.ENVIRONMENT)
+require_cd_api_db_config(settings.ENVIRONMENT)
 
 
 @asynccontextmanager
