@@ -50,7 +50,7 @@ class BedrockConverseError(Exception):
 class BedrockChatClient:
     """Thin wrapper around one Bedrock Converse call -- no prompt
     composition, no storage, just "system+user text in, generated text
-    out". Scoped like ApiClient/UsersClient: owns the external system's
+    out". Scoped like UsersClient: owns the external system's
     request/response shape, nothing else."""
 
     def __init__(self, client: Any, model_id: str):
@@ -58,9 +58,8 @@ class BedrockChatClient:
         self.model_id = model_id
 
     async def converse(self, system_prompt: str, user_prompt: str) -> str:
-        # boto3 has no async API at all -- same asyncio.to_thread()
-        # treatment as LambdaApiClient.get()'s invoke() call in
-        # cd_api_service.py.
+        # boto3 has no async API at all, so the blocking call runs in a
+        # worker thread to keep the event loop free.
         try:
             response = await asyncio.to_thread(
                 self._client.converse,
