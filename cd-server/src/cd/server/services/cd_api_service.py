@@ -1,7 +1,18 @@
+import asyncio
+
 import httpx
 from cd.api.app import app as api_app
 from cd.lib.jsonapi import CollectionDocument, Document
 from cd.lib.models import Bill, Member, MemberDetail, RollCallVote
+
+
+# ASGITransport ignores httpx's timeouts (there's no socket to time out),
+# so each in-process call gets an overall limit here. cd.api bounds each
+# database acquire and query on its own, but GET /bills makes several in a
+# row plus a Titan embedding, so a slow database could otherwise hold a
+# resolver for a minute or more. Below API Gateway's 29s, the limit an
+# external /v1 caller already has.
+CALL_TIMEOUT_SECONDS = 20
 
 
 class ApiClientError(Exception):
@@ -95,7 +106,13 @@ class CdApiService:
 
     async def _get(self, path: str, query: dict[str, str]) -> dict:
         try:
-            response = await self._client.get(path, params=query)
+            async with asyncio.timeout(CALL_TIMEOUT_SECONDS):
+                response = await self._client.get(path, params=query)
+        except TimeoutError as e:
+            # 504, as for a gateway whose upstream didn't answer in time.
+            raise ApiClientError(
+                504, f"cd-api did not respond within {CALL_TIMEOUT_SECONDS}s"
+            ) from e
         except httpx.HTTPError as e:
             # No response to read a status from. In-process this is rare
             # (it isn't a network call), but a client that does go over

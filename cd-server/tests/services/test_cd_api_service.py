@@ -48,6 +48,23 @@ def test_cd_api_service_maps_a_transport_failure_to_502():
     assert exc.value.status_code == 502
 
 
+def test_cd_api_service_times_out_a_slow_call_as_504(monkeypatch):
+    from cd.server.services import cd_api_service
+
+    monkeypatch.setattr(cd_api_service, "CALL_TIMEOUT_SECONDS", 0.01)
+
+    async def slow_app(scope, receive, send):
+        await asyncio.sleep(1)
+
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=slow_app), base_url="http://cd-api"
+    )
+
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(CdApiService(client).get_senators("CA"))
+    assert exc.value.status_code == 504
+
+
 def test_get_cd_api_service_calls_cd_api_in_process():
     # The real cd.api app, with no network and no database: /version reads
     # cd-server's VERSION file. Paths are relative to the app, not /v1.
