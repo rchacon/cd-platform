@@ -293,7 +293,8 @@ resolver requires auth yet.
 entirely rather than failing startup when `CD_SERVER_ENVIRONMENT` is
 `"local"` (the default) -- `make start-server` needs zero AWS setup for
 representative-lookup-only local dev; any other environment fails fast at
-import instead, same precedent as `get_cd_api_service()`. Note this is
+import instead, same precedent as `app.py`'s `require_cd_api_db_config()`
+for `CD_API_PGHOST`. Note this is
 necessary but not sufficient on its own: `cd-webapp` doesn't yet attach
 an `Authorization` header to any of its GraphQL calls, so nothing upserts
 in practice until that's wired up there, separately. `cd-server` will
@@ -359,7 +360,7 @@ branch: `get_bedrock_chat_client()` still warns and constructs the client
 when `CD_SERVER_ENVIRONMENT` is `"local"` (so `make start-server` keeps
 its zero-AWS-setup promise -- `summarizeVotingRecord` just fails if
 actually invoked), but **any other environment raises at import** if it's
-unset, same fail-fast as `get_cd_api_service()`. That means the
+unset, same fail-fast as `get_users_service()`. That means the
 production task definition must set `BEDROCK_CHAT_MODEL_ID` (and its task
 role must hold `bedrock:InvokeModel` for that model, with a 443 egress
 path to `bedrock-runtime`) *before* this ships -- tracked in cd-infra#69.
@@ -413,7 +414,10 @@ Nothing to configure: `CdApiService` calls `cd.api` in-process, the same
 way in local dev and in production. It reads `congressional_app` through
 `cd.api`'s own database pool (the `CD_API_PG*` variables, defaulting to
 the local Postgres), so local dev needs that database seeded -- run the
-DAGs or load `local_seed.sql` (see the root `AGENTS.md`).
+DAGs or load `local_seed.sql` (see the root `AGENTS.md`). Outside local
+dev, `CD_API_PGHOST` must be set or cd-server fails at startup
+(`app.py`'s `require_cd_api_db_config()`) -- members, bill search and AI
+summaries all read through that pool, not just `/v1`.
 
 ## Prerequisites
 

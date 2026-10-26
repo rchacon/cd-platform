@@ -107,7 +107,7 @@ disables verification entirely rather than failing startup when
 `CD_SERVER_ENVIRONMENT` is `"local"` (the default), so `make start-server`
 still needs zero AWS setup for representative-lookup-only local dev; any
 other environment fails fast at import instead, same precedent as
-`get_cd_api_service()`. This is necessary but not sufficient on its own:
+`app.py`'s `require_cd_api_db_config()` for `CD_API_PGHOST`. This is necessary but not sufficient on its own:
 `cd-webapp` doesn't yet attach an `Authorization` header to any of its
 GraphQL calls, so nothing upserts in practice until that's wired up
 there, separately. `cd-server` will still get its own API-key/billing
