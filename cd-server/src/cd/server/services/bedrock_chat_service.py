@@ -50,7 +50,7 @@ class BedrockConverseError(Exception):
 class BedrockChatClient:
     """Thin wrapper around one Bedrock Converse call -- no prompt
     composition, no storage, just "system+user text in, generated text
-    out". Scoped like ApiClient/UsersClient: owns the external system's
+    out". Scoped like UsersClient: owns the external system's
     request/response shape, nothing else."""
 
     def __init__(self, client: Any, model_id: str):
@@ -58,9 +58,8 @@ class BedrockChatClient:
         self.model_id = model_id
 
     async def converse(self, system_prompt: str, user_prompt: str) -> str:
-        # boto3 has no async API at all -- same asyncio.to_thread()
-        # treatment as LambdaApiClient.get()'s invoke() call in
-        # cd_api_service.py.
+        # boto3 has no async API at all, so the blocking call runs in a
+        # worker thread to keep the event loop free.
         try:
             response = await asyncio.to_thread(
                 self._client.converse,
@@ -102,9 +101,8 @@ def get_bedrock_chat_client() -> BedrockChatClient:
     if not settings.BEDROCK_CHAT_MODEL_ID:
         if settings.ENVIRONMENT != "local":
             # Fails at import time (schema.py's module-level singleton
-            # construction, once a follow-up PR wires this up), same
-            # "misconfigured non-local deploy fails immediately at
-            # startup" precedent as get_cd_api_service()/get_users_service().
+            # construction), same "misconfigured non-local deploy fails
+            # immediately at startup" precedent as get_users_service().
             raise RuntimeError(
                 'BEDROCK_CHAT_MODEL_ID must be set when CD_SERVER_ENVIRONMENT '
                 'is not "local".'

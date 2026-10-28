@@ -24,19 +24,21 @@ from cd.server.services.users_service import InvalidTokenError
 logger = logging.getLogger(__name__)
 
 
-def warn_if_cd_api_db_unconfigured(environment: str, environ=os.environ) -> None:
+def require_cd_api_db_config(environment: str, environ=os.environ) -> None:
     # cd.api.db falls back to localhost when CD_API_PGHOST is unset, which
-    # only makes sense in local dev. Elsewhere every /v1 request then fails
-    # on a connection error to localhost -- this logs the actual cause.
+    # only makes sense in local dev. Elsewhere /v1 and every resolver backed
+    # by CdApiService (members, bill search, AI summaries) would fail on a
+    # connection error to localhost, while /health still passed. Failing at
+    # import instead keeps a misconfigured deploy from replacing healthy
+    # tasks -- same fail-fast precedent as get_users_service().
     if environment != "local" and not environ.get("CD_API_PGHOST"):
-        logger.warning(
-            "CD_API_PGHOST is unset outside local dev -- cd.api's database "
-            "pool will try localhost, so /v1 fails until the CD_API_PG* "
-            "variables are configured"
+        raise RuntimeError(
+            'CD_API_PGHOST must be set when CD_SERVER_ENVIRONMENT is not "local" '
+            "-- cd.api's database pool would otherwise try localhost."
         )
 
 
-warn_if_cd_api_db_unconfigured(settings.ENVIRONMENT)
+require_cd_api_db_config(settings.ENVIRONMENT)
 
 
 @asynccontextmanager
@@ -51,12 +53,10 @@ async def lifespan(app: FastAPI):
     # everything opened before it, and one aclose() that raises doesn't
     # stop the rest from running. Callbacks run in reverse order.
     async with AsyncExitStack() as stack:
-        # cd_api_service's aclose() delegates to its underlying ApiClient
-        # (HttpApiClient holds an open httpx.AsyncClient connection pool;
-        # LambdaApiClient's is a no-op, boto3 needs no explicit close).
-        # geocoder_service holds its own separate connection pool for the
-        # (unrelated) Census geocoder. Both are already open (see
-        # services/cd_api_service.py and services/geocoder_service.py).
+        # cd_api_service and geocoder_service each hold an httpx client,
+        # already open (see services/cd_api_service.py and
+        # services/geocoder_service.py): cd_api_service's calls cd.api
+        # in-process, geocoder_service's the (unrelated) Census geocoder.
         stack.push_async_callback(cd_api_service.aclose)
         stack.push_async_callback(geocoder_service.aclose)
         await users_service.connect()

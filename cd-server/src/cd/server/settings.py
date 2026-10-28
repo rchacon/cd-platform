@@ -10,18 +10,10 @@ def _int_env(name: str, default: int) -> int:
     return int(os.environ.get(name) or str(default))
 
 
-# "local" picks HttpApiClient (plain HTTP to a locally-running cd-api);
-# anything else picks LambdaApiClient (direct boto3 invoke of the real
-# deployed function -- no AWS credentials/function needed for local dev).
+# "local" relaxes settings that production requires (Cognito, the Bedrock
+# model id, the /v1 origin secret) to warnings, so make start-server needs
+# no AWS setup; any other value makes them fail fast at import.
 ENVIRONMENT = os.environ.get("CD_SERVER_ENVIRONMENT", "local")
-
-# Local dev only (production uses CD_API_FUNCTION_NAME's Lambda): cd-api's
-# REST API is now mounted inside this same process at /v1 (cd/api/), so
-# HttpApiClient just calls back into it over localhost. Interim -- direct
-# in-process calls replace this HTTP hop once CdApiService is retired.
-CD_API_BASE_URL = os.environ.get("CD_API_BASE_URL", "http://localhost:8000/v1")
-
-CD_API_FUNCTION_NAME = os.environ.get("CD_API_FUNCTION_NAME", "")
 
 # Browser origins allowed to call the GraphQL endpoint cross-origin --
 # cd-webapp's deployed production domain, plus its local Vite dev server.
@@ -43,16 +35,14 @@ PGPASSWORD = os.environ.get("PGPASSWORD", "postgres")
 PG_DSN = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{PGDATABASE}"
 
 # Both required to construct a real JWKS client; deliberately no
-# hardcoded default for either, unlike CD_API_BASE_URL's
-# host.docker.internal default above -- the real values are cd-infra
+# hardcoded default for either -- the real values are cd-infra
 # Terraform outputs (cognito_user_pool_id, that pool's own region), not
 # something a safe local default can guess. See
 # services/users_service.py's get_users_service(): unset here disables
 # JWT verification entirely when ENVIRONMENT is "local" (the default) --
 # make start-server must keep working with zero AWS setup for
 # representative-lookup-only local dev -- but is a hard RuntimeError,
-# fail-fast at import, for any other environment, matching
-# get_cd_api_service()'s own precedent.
+# fail-fast at import, for any other environment.
 COGNITO_USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
 COGNITO_REGION = os.environ.get("COGNITO_REGION", "")
 
@@ -78,8 +68,8 @@ CD_API_ORIGIN_SECRET = os.environ.get("CD_API_ORIGIN_SECRET", "")
 # models on Bedrock generally require invoking via an inference profile.
 # No hardcoded default: which profile id is valid depends on what's
 # actually been granted model access in the target AWS account/region
-# (cd-infra Terraform, out of scope here). Unlike COGNITO_USER_POOL_ID/
-# CD_API_FUNCTION_NAME, there's no local-friendly "verification/feature
+# (cd-infra Terraform, out of scope here). Unlike COGNITO_USER_POOL_ID,
+# there's no local-friendly "verification/feature
 # disabled" branch for this one -- get_bedrock_chat_client() still warns
 # and constructs the client rather than failing at import when
 # ENVIRONMENT is "local", since local dev genuinely needs real Bedrock

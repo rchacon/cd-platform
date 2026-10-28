@@ -54,8 +54,7 @@ users_service = get_users_service()
 # here at import time -- so a non-"local" CD_SERVER_ENVIRONMENT with no
 # BEDROCK_CHAT_MODEL_ID set fails fast at startup (see
 # get_bedrock_chat_client()), the same deploy-time guard
-# get_cd_api_service()/get_users_service() already apply to their own
-# required config.
+# get_users_service() already applies to its own required config.
 ai_summary_service = get_ai_summary_service(cd_api_service, bill_search_service)
 # Pure logic over ai_summary_service's row counts + the configured daily
 # limits -- no pool of its own, so nothing to open/close in app.py's

@@ -26,7 +26,13 @@ PG_DSN = {
 # would take GraphQL and /health down with it). connect() probes it once
 # and logs a warning instead. asyncpg's acquire() waits for a free connection rather
 # than raising, so a burst queues instead of failing.
-POOL_SIZE = int(os.environ.get("CD_API_PG_POOL_SIZE") or "5")
+#
+# The pool serves external /v1 traffic and, through CdApiService's
+# in-process calls, every GraphQL resolver that reads congressional_app.
+# One address lookup alone holds two connections at once (senators and
+# representatives run concurrently), and a bill search makes several
+# queries, so 10 leaves headroom for a burst on one task.
+POOL_SIZE = int(os.environ.get("CD_API_PG_POOL_SIZE") or "10")
 # Bounds each connection attempt, so an unreachable host (a security-group
 # drop, a failover in progress) fails in seconds rather than after the OS's
 # TCP timeout.

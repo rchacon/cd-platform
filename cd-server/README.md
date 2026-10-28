@@ -84,18 +84,16 @@ no direct knowledge of `httpx`/`boto3`/the Census geocoder's response
 shape.
 
 `getSenators`/`getRepresentatives` are backed by
-`services/cd_api_service.py`'s `CdApiService`, cd-server's first real
-server-to-server integration with `cd-api`. Internally it holds an
-`ApiClient` (a shared ABC, so two transport implementations can't
-silently drift apart), picked by `settings.ENVIRONMENT`: `HttpApiClient`
-(plain HTTP, for local dev) and `LambdaApiClient` (direct `boto3` invoke
-of the real deployed function, bypassing API Gateway entirely -- no
-network hop, no `X-Api-Key` needed, since cd-api's own code never checks
-that header). `LambdaApiClient` builds a synthetic API-Gateway-shaped
-event and calls cd-api's actual Mangum handler with it, so
-routing/validation/error-formatting all get exercised exactly as they
-would over real HTTP rather than reaching around cd-api's HTTP layer to
-call its internal functions directly. `CdApiService` itself is where the
+`services/cd_api_service.py`'s `CdApiService`. It calls cd-api's `/v1`
+routes in-process: an `httpx.AsyncClient` over `httpx.ASGITransport`
+pointed at `cd.api`'s FastAPI app, with no network hop and no Lambda
+(cd-platform#179). Every call goes through cd-api's routing, request
+validation and JSON:API serialization exactly as a real `/v1` request
+does, so cd-server consumes cd-api's public contract the same way
+`cd-lookup` does, rather than reaching around it into `cd.api.db` or
+`cd.api.transform`. It calls the bare app, not the `OriginGuard`-wrapped
+mount, since an in-process request never came through API Gateway in the
+first place. `CdApiService` itself is where the
 response-shape trust boundary lives: it validates cd-api's raw JSON
 against `cd-lib`'s `CollectionDocument[MemberDetail]` and hands
 `schema.py`'s resolvers real `Member` objects, not a dict the resolver
@@ -164,14 +162,9 @@ and `Document.data.attributes` -> the rest; a cd-api `404` (an id with
 no current-Congress term) propagates as a GraphQL error, same as the
 other resolvers' cd-api failures.
 
-Both the transport `get()`s and the cd-api-backed GraphQL resolvers
-above are
-`async` -- `HttpApiClient` holds a single `httpx.AsyncClient` connection
-pool (closed via `CdApiService.aclose()`, called from `app.py`'s FastAPI
-`lifespan` on shutdown), and `LambdaApiClient` wraps `boto3`'s own invoke
-call (boto3 has no async API at all) in `asyncio.to_thread()` rather than
-pulling in a third-party async-boto3 wrapper for what's currently a
-single call. This matters concretely for a query requesting both fields
+`CdApiService`'s calls and the cd-api-backed GraphQL resolvers above
+are `async` (its client is closed via `CdApiService.aclose()`, called
+from `app.py`'s FastAPI `lifespan` on shutdown). This matters concretely for a query requesting both fields
 at once -- strawberry runs independent async resolvers concurrently, so
 `{ getSenators(...) getRepresentatives(...) }` in one request makes both
 cd-api calls in parallel rather than one after the other. Verified
@@ -300,7 +293,8 @@ resolver requires auth yet.
 entirely rather than failing startup when `CD_SERVER_ENVIRONMENT` is
 `"local"` (the default) -- `make start-server` needs zero AWS setup for
 representative-lookup-only local dev; any other environment fails fast at
-import instead, same precedent as `get_cd_api_service()`. Note this is
+import instead, same precedent as `app.py`'s `require_cd_api_db_config()`
+for `CD_API_PGHOST`. Note this is
 necessary but not sufficient on its own: `cd-webapp` doesn't yet attach
 an `Authorization` header to any of its GraphQL calls, so nothing upserts
 in practice until that's wired up there, separately. `cd-server` will
@@ -354,7 +348,7 @@ problem, once a second kind exists.
 
 Generation calls **AWS Bedrock's Converse API** with an Anthropic Claude
 model (`services/bedrock_chat_service.py`'s `BedrockChatClient`, the sync
-`boto3` call wrapped in `asyncio.to_thread()`, same as `LambdaApiClient`;
+`boto3` call wrapped in `asyncio.to_thread()`, since `boto3` has no async API;
 it stays cd-server-local rather than moving into `cd-lib`, which is for
 code with a second real consumer -- only `cd.lib.bedrock.build_bedrock_client()`
 is reused). It rejects a truncated (`stopReason == "max_tokens"`) or
@@ -366,7 +360,7 @@ branch: `get_bedrock_chat_client()` still warns and constructs the client
 when `CD_SERVER_ENVIRONMENT` is `"local"` (so `make start-server` keeps
 its zero-AWS-setup promise -- `summarizeVotingRecord` just fails if
 actually invoked), but **any other environment raises at import** if it's
-unset, same fail-fast as `get_cd_api_service()`. That means the
+unset, same fail-fast as `get_users_service()`. That means the
 production task definition must set `BEDROCK_CHAT_MODEL_ID` (and its task
 role must hold `bedrock:InvokeModel` for that model, with a 443 egress
 path to `bedrock-runtime`) *before* this ships -- tracked in cd-infra#69.
@@ -416,12 +410,14 @@ throttles its own side.
 
 ### Calling cd-api locally
 
-`HttpApiClient`'s local default target is `http://localhost:8000/v1`
-(overridable via `CD_API_BASE_URL`): cd-api's REST API is mounted in this
-same process, so local dev calls back into itself and needs nothing else
-running. Production still invokes the Lambda (`CD_API_FUNCTION_NAME`) until
-the cutover. Retiring `CdApiService` in favour of direct calls into `cd.api`
-is a follow-up.
+Nothing to configure: `CdApiService` calls `cd.api` in-process, the same
+way in local dev and in production. It reads `congressional_app` through
+`cd.api`'s own database pool (the `CD_API_PG*` variables, defaulting to
+the local Postgres), so local dev needs that database seeded -- run the
+DAGs or load `local_seed.sql` (see the root `AGENTS.md`). Outside local
+dev, `CD_API_PGHOST` must be set or cd-server fails at startup
+(`app.py`'s `require_cd_api_db_config()`) -- members, bill search and AI
+summaries all read through that pool, not just `/v1`.
 
 ## Prerequisites
 

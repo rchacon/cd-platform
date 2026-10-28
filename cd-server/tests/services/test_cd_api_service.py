@@ -1,253 +1,116 @@
 import asyncio
-import io
-import json
 
 import httpx
 import pytest
 
-from cd.server import settings
 from cd.server.services.cd_api_service import (
-    ApiClient,
     ApiClientError,
     CdApiService,
-    HttpApiClient,
-    LambdaApiClient,
-    _build_gateway_event,
     get_cd_api_service,
 )
 
 
-def test_both_clients_implement_the_shared_interface():
-    assert issubclass(HttpApiClient, ApiClient)
-    assert issubclass(LambdaApiClient, ApiClient)
+class _FakeTransport:
+    """Stands in for cd.api's app: answers every request with `result` at
+    `status` (or raises `raises`), and records each call's (path, query)."""
 
+    def __init__(self, result: dict | None = None, status: int = 200, raises=None):
+        self.calls: list[tuple[str, dict[str, str]]] = []
 
-def test_incomplete_subclass_cannot_be_instantiated():
-    class Incomplete(ApiClient):
-        pass
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.calls.append((request.url.path, dict(request.url.params)))
+            if raises is not None:
+                raise raises
+            return httpx.Response(status, json=result)
 
-    with pytest.raises(TypeError):
-        Incomplete()
-
-
-def test_build_gateway_event_shape():
-    event = _build_gateway_event("/v1/members", {"state": "CA", "district": "12"})
-    assert event["resource"] == "/{proxy+}"
-    assert event["path"] == "/v1/members"
-    assert event["httpMethod"] == "GET"
-    assert event["multiValueQueryStringParameters"] == {"state": ["CA"], "district": ["12"]}
-    assert "requestContext" in event
-
-
-def test_build_gateway_event_empty_query():
-    event = _build_gateway_event("/v1/version", {})
-    assert event["multiValueQueryStringParameters"] == {}
-
-
-def test_http_api_client_returns_json_on_success(monkeypatch):
-    async def fake_get(self, url, params=None):
-        assert url == "http://cd-api:8000/version"
-        assert params == {}
-        return httpx.Response(200, json={"version": "1.2.3"}, request=httpx.Request("GET", url))
-
-    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
-    client = HttpApiClient("http://cd-api:8000")
-    assert asyncio.run(client.get("/version", {})) == {"version": "1.2.3"}
-
-
-def test_http_api_client_sends_the_origin_secret_when_set():
-    # Locally /v1 sits behind OriginGuard, which enforces a configured
-    # secret even in local dev.
-    client = HttpApiClient("http://localhost:8000/v1", "s3cret")
-    try:
-        assert client._client.headers["X-Origin-Verify"] == "s3cret"
-    finally:
-        asyncio.run(client.aclose())
-
-
-def test_http_api_client_omits_the_origin_header_without_a_secret():
-    client = HttpApiClient("http://localhost:8000/v1")
-    try:
-        assert "X-Origin-Verify" not in client._client.headers
-    finally:
-        asyncio.run(client.aclose())
-
-
-def test_http_api_client_passes_query_params(monkeypatch):
-    captured = {}
-
-    async def fake_get(self, url, params=None):
-        captured["url"] = url
-        captured["params"] = params
-        return httpx.Response(200, json={}, request=httpx.Request("GET", url))
-
-    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
-    asyncio.run(HttpApiClient("http://cd-api:8000").get("/members", {"state": "CA"}))
-    assert captured["url"] == "http://cd-api:8000/members"
-    assert captured["params"] == {"state": "CA"}
-
-
-def test_http_api_client_raises_on_error_response(monkeypatch):
-    async def fake_get(self, url, params=None):
-        return httpx.Response(
-            404, json={"detail": "not found"}, request=httpx.Request("GET", url)
+        self.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://cd-api"
         )
 
-    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
-    with pytest.raises(ApiClientError) as exc_info:
-        asyncio.run(HttpApiClient("http://cd-api:8000").get("/members", {"state": "ZZ"}))
-    assert exc_info.value.status_code == 404
+
+def test_cd_api_service_raises_api_client_error_with_cd_apis_status_and_body():
+    body = {"errors": [{"status": "404", "title": "Not Found"}]}
+    transport = _FakeTransport(body, status=404)
+
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(CdApiService(transport.client).member_detail("X000000"))
+
+    assert exc.value.status_code == 404
+    assert "Not Found" in exc.value.body
 
 
-def test_http_api_client_wraps_connection_errors(monkeypatch):
-    async def fake_get(self, url, params=None):
-        raise httpx.ConnectError("Connection refused")
+def test_cd_api_service_maps_a_transport_failure_to_502():
+    transport = _FakeTransport(raises=httpx.ConnectError("refused"))
 
-    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
-    with pytest.raises(ApiClientError) as exc_info:
-        asyncio.run(HttpApiClient("http://cd-api:8000").get("/version", {}))
-    assert exc_info.value.status_code == 502
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(CdApiService(transport.client).get_senators("CA"))
 
-
-def test_http_api_client_aclose_closes_underlying_client():
-    client = HttpApiClient("http://cd-api:8000")
-    assert client._client.is_closed is False
-    asyncio.run(client.aclose())
-    assert client._client.is_closed is True
+    assert exc.value.status_code == 502
 
 
-class _FakeLambdaClient:
-    def __init__(self, payload: dict, function_error: str | None = None):
-        self._payload = payload
-        self._function_error = function_error
-        self.last_invoke_kwargs: dict | None = None
+def test_cd_api_service_times_out_a_slow_call_as_504(monkeypatch):
+    from cd.server.services import cd_api_service
 
-    def invoke(self, FunctionName, Payload):
-        self.last_invoke_kwargs = {"FunctionName": FunctionName, "Payload": Payload}
-        response = {"Payload": io.BytesIO(json.dumps(self._payload).encode())}
-        if self._function_error:
-            response["FunctionError"] = self._function_error
-        return response
+    monkeypatch.setattr(cd_api_service, "CALL_TIMEOUT_SECONDS", 0.01)
 
+    async def slow_app(scope, receive, send):
+        await asyncio.sleep(1)
 
-def test_lambda_api_client_returns_json_on_success(monkeypatch):
-    fake = _FakeLambdaClient({"statusCode": 200, "body": json.dumps({"version": "1.2.3"})})
-    monkeypatch.setattr("boto3.client", lambda service: fake)
-    client = LambdaApiClient("cd-platform-cd-api")
-    assert asyncio.run(client.get("/version", {})) == {"version": "1.2.3"}
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=slow_app), base_url="http://cd-api"
+    )
+
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(CdApiService(client).get_senators("CA"))
+    assert exc.value.status_code == 504
 
 
-def test_lambda_api_client_builds_v1_prefixed_event_with_query(monkeypatch):
-    fake = _FakeLambdaClient({"statusCode": 200, "body": "{}"})
-    monkeypatch.setattr("boto3.client", lambda service: fake)
-    asyncio.run(LambdaApiClient("cd-platform-cd-api").get("/members", {"state": "CA"}))
+def test_get_cd_api_service_calls_cd_api_in_process():
+    # The real cd.api app, with no network and no database: /version reads
+    # cd-server's VERSION file. Paths are relative to the app, not /v1.
+    async def call() -> dict:
+        service = get_cd_api_service()
+        try:
+            return await service._get("/version", {})
+        finally:
+            await service.aclose()
 
-    assert fake.last_invoke_kwargs["FunctionName"] == "cd-platform-cd-api"
-    event = json.loads(fake.last_invoke_kwargs["Payload"])
-    assert event["path"] == "/v1/members"
-    assert event["multiValueQueryStringParameters"] == {"state": ["CA"]}
-
-
-def test_lambda_api_client_raises_on_error_status(monkeypatch):
-    fake = _FakeLambdaClient({"statusCode": 404, "body": json.dumps({"detail": "not found"})})
-    monkeypatch.setattr("boto3.client", lambda service: fake)
-    with pytest.raises(ApiClientError) as exc_info:
-        asyncio.run(LambdaApiClient("cd-platform-cd-api").get("/members", {"state": "ZZ"}))
-    assert exc_info.value.status_code == 404
+    assert "version" in asyncio.run(call())
 
 
-def test_lambda_api_client_raises_on_function_error(monkeypatch):
-    fake = _FakeLambdaClient({"errorMessage": "boom"}, function_error="Unhandled")
-    monkeypatch.setattr("boto3.client", lambda service: fake)
-    with pytest.raises(ApiClientError) as exc_info:
-        asyncio.run(LambdaApiClient("cd-platform-cd-api").get("/version", {}))
-    assert exc_info.value.status_code == 500
+def test_get_cd_api_service_turns_an_unhandled_route_exception_into_a_500(monkeypatch):
+    # /version has no JSON:API route class of its own; its failure reaches
+    # Starlette's catch-all, which re-raises after sending the 500.
+    from cd.api.routes import version
+
+    def boom():
+        raise OSError("VERSION file missing")
+
+    monkeypatch.setattr(version, "read_version", boom)
+
+    async def call() -> None:
+        service = get_cd_api_service()
+        try:
+            await service._get("/version", {})
+        finally:
+            await service.aclose()
+
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(call())
+    assert exc.value.status_code == 500
 
 
-def test_lambda_api_client_wraps_boto_client_error(monkeypatch):
-    from botocore.exceptions import ClientError
+def test_get_cd_api_service_surfaces_cd_apis_own_error_status():
+    async def call() -> None:
+        service = get_cd_api_service()
+        try:
+            await service._get("/no-such-route", {})
+        finally:
+            await service.aclose()
 
-    class _RaisingLambdaClient:
-        def invoke(self, **kwargs):
-            raise ClientError(
-                {"Error": {"Code": "ResourceNotFoundException", "Message": "no such function"}},
-                "Invoke",
-            )
-
-    monkeypatch.setattr("boto3.client", lambda service: _RaisingLambdaClient())
-    with pytest.raises(ApiClientError) as exc_info:
-        asyncio.run(LambdaApiClient("does-not-exist").get("/version", {}))
-    assert exc_info.value.status_code == 502
-
-
-def test_lambda_api_client_wraps_botocore_error(monkeypatch):
-    from botocore.exceptions import NoCredentialsError
-
-    class _RaisingLambdaClient:
-        def invoke(self, **kwargs):
-            raise NoCredentialsError()
-
-    monkeypatch.setattr("boto3.client", lambda service: _RaisingLambdaClient())
-    with pytest.raises(ApiClientError) as exc_info:
-        asyncio.run(LambdaApiClient("cd-platform-cd-api").get("/version", {}))
-    assert exc_info.value.status_code == 502
-
-
-def test_lambda_api_client_wraps_malformed_response(monkeypatch):
-    # No "statusCode"/"body" keys and no FunctionError set -- an
-    # unexpected/malformed payload Mangum's own contract shouldn't
-    # actually produce, but shouldn't surface as a raw KeyError either.
-    fake = _FakeLambdaClient({"unexpected": "shape"})
-    monkeypatch.setattr("boto3.client", lambda service: fake)
-    with pytest.raises(ApiClientError) as exc_info:
-        asyncio.run(LambdaApiClient("cd-platform-cd-api").get("/version", {}))
-    assert exc_info.value.status_code == 502
-
-
-def test_lambda_api_client_aclose_is_a_noop(monkeypatch):
-    monkeypatch.setattr("boto3.client", lambda service: _FakeLambdaClient({}))
-    client = LambdaApiClient("cd-platform-cd-api")
-    asyncio.run(client.aclose())  # should not raise
-
-
-def test_get_cd_api_service_returns_http_client_for_local(monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "local")
-    monkeypatch.setattr(settings, "CD_API_BASE_URL", "http://example:8000")
-    service = get_cd_api_service()
-    assert isinstance(service, CdApiService)
-    assert isinstance(service._transport, HttpApiClient)
-    assert service._transport.base_url == "http://example:8000"
-
-
-def test_get_cd_api_service_returns_lambda_client_otherwise(monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
-    monkeypatch.setattr(settings, "CD_API_FUNCTION_NAME", "cd-platform-cd-api")
-    monkeypatch.setattr("boto3.client", lambda service: _FakeLambdaClient({}))
-    service = get_cd_api_service()
-    assert isinstance(service, CdApiService)
-    assert isinstance(service._transport, LambdaApiClient)
-    assert service._transport.function_name == "cd-platform-cd-api"
-
-
-def test_get_cd_api_service_fails_fast_when_function_name_missing(monkeypatch):
-    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
-    monkeypatch.setattr(settings, "CD_API_FUNCTION_NAME", "")
-    with pytest.raises(RuntimeError, match="CD_API_FUNCTION_NAME"):
-        get_cd_api_service()
-
-
-class _FakeTransport(ApiClient):
-    def __init__(self, result: dict):
-        self._result = result
-        self.calls: list[tuple[str, dict[str, str]]] = []
-        self.closed = False
-
-    async def get(self, path: str, query: dict[str, str]) -> dict:
-        self.calls.append((path, query))
-        return self._result
-
-    async def aclose(self) -> None:
-        self.closed = True
+    with pytest.raises(ApiClientError) as exc:
+        asyncio.run(call())
+    assert exc.value.status_code == 404
 
 
 _MEMBER = {
@@ -281,7 +144,7 @@ def _resource(member: dict) -> dict:
 
 def test_cd_api_service_get_representatives_sends_filter_params():
     transport = _FakeTransport({"data": [_resource(_MEMBER)]})
-    service = CdApiService(transport)
+    service = CdApiService(transport.client)
 
     members = asyncio.run(service.get_representatives("CA", 12))
 
@@ -295,7 +158,7 @@ def test_cd_api_service_get_representatives_sends_filter_params():
 
 def test_cd_api_service_get_senators_sends_filter_params():
     transport = _FakeTransport({"data": [_resource(_SENATOR)]})
-    service = CdApiService(transport)
+    service = CdApiService(transport.client)
 
     members = asyncio.run(service.get_senators("CA"))
 
@@ -312,8 +175,8 @@ def test_cd_api_service_parses_the_jsonapi_collection_shape():
     payload = {"data": [_resource(_SENATOR), _resource(_SENATOR | {"bioguide_id": "S000002"}),
                         _resource(_MEMBER)]}
 
-    reps = asyncio.run(CdApiService(_FakeTransport(payload)).get_representatives("CA", 12))
-    sens = asyncio.run(CdApiService(_FakeTransport(payload)).get_senators("CA"))
+    reps = asyncio.run(CdApiService(_FakeTransport(payload).client).get_representatives("CA", 12))
+    sens = asyncio.run(CdApiService(_FakeTransport(payload).client).get_senators("CA"))
 
     assert [m.bioguide_id for m in reps] == ["D000001"]
     assert reps[0].district == 12
@@ -331,7 +194,7 @@ def test_cd_api_service_narrows_representatives_to_the_requested_district():
         _resource(_SENATOR),
     ]}
 
-    reps = asyncio.run(CdApiService(_FakeTransport(payload)).get_representatives("CA", 12))
+    reps = asyncio.run(CdApiService(_FakeTransport(payload).client).get_representatives("CA", 12))
 
     assert [m.bioguide_id for m in reps] == ["R000012"]
 
@@ -345,7 +208,7 @@ def test_cd_api_service_malformed_jsonapi_document_raises_validation_error():
     payload = {"data": [{"type": "member", "id": "X000001"}]}
 
     with pytest.raises(ValidationError):
-        asyncio.run(CdApiService(_FakeTransport(payload)).get_senators("CA"))
+        asyncio.run(CdApiService(_FakeTransport(payload).client).get_senators("CA"))
 
 
 def test_cd_api_service_drops_jsonapi_only_attributes():
@@ -353,7 +216,7 @@ def test_cd_api_service_drops_jsonapi_only_attributes():
     # shape but aren't Member fields -- lenient Member drops them.
     payload = {"data": [_resource(_MEMBER)]}
 
-    members = asyncio.run(CdApiService(_FakeTransport(payload)).get_representatives("CA", 12))
+    members = asyncio.run(CdApiService(_FakeTransport(payload).client).get_representatives("CA", 12))
 
     assert members[0].bioguide_id == "D000001"
     assert not hasattr(members[0], "state")
@@ -367,7 +230,7 @@ def test_cd_api_service_ignores_unknown_fields_from_cd_api():
     # not rejected.
     resource = _resource(_MEMBER)
     resource["attributes"]["some_future_field"] = 1
-    service = CdApiService(_FakeTransport({"data": [resource]}))
+    service = CdApiService(_FakeTransport({"data": [resource]}).client)
 
     members = asyncio.run(service.get_representatives("CA", 12))
 
@@ -376,13 +239,13 @@ def test_cd_api_service_ignores_unknown_fields_from_cd_api():
     assert not hasattr(members[0], "some_future_field")
 
 
-def test_cd_api_service_aclose_delegates_to_transport():
+def test_cd_api_service_aclose_closes_its_client():
     transport = _FakeTransport({"data": []})
-    service = CdApiService(transport)
+    service = CdApiService(transport.client)
 
     asyncio.run(service.aclose())
 
-    assert transport.closed is True
+    assert transport.client.is_closed
 
 
 # --- member_detail (GET /members/{id}, for cd-webapp's detail page) ---
@@ -390,7 +253,7 @@ def test_cd_api_service_aclose_delegates_to_transport():
 
 def test_member_detail_fetches_by_id_and_returns_typed_document():
     transport = _FakeTransport({"data": _resource(_MEMBER)})
-    doc = asyncio.run(CdApiService(transport).member_detail("D000001"))
+    doc = asyncio.run(CdApiService(transport.client).member_detail("D000001"))
 
     assert transport.calls == [("/members/D000001", {})]
     assert doc.data.id == "D000001"
@@ -406,16 +269,14 @@ def test_member_detail_malformed_envelope_raises_validation_error():
     # single-resource `data` must be an object, not a list
     transport = _FakeTransport({"data": [_resource(_MEMBER)]})
     with pytest.raises(ValidationError):
-        asyncio.run(CdApiService(transport).member_detail("D000001"))
+        asyncio.run(CdApiService(transport.client).member_detail("D000001"))
 
 
-def test_member_detail_propagates_transport_404():
-    class _Failing(ApiClient):
-        async def get(self, path, query):
-            raise ApiClientError(404, "no current-Congress member")
+def test_member_detail_propagates_a_404():
+    transport = _FakeTransport({"errors": [{"status": "404"}]}, status=404)
 
     with pytest.raises(ApiClientError) as exc:
-        asyncio.run(CdApiService(_Failing()).member_detail("X000000"))
+        asyncio.run(CdApiService(transport.client).member_detail("X000000"))
     assert exc.value.status_code == 404
 
 
@@ -454,7 +315,7 @@ _VOTE_RESOURCE = {
 
 def test_search_bills_sends_filter_query_and_returns_typed_collection():
     transport = _FakeTransport({"data": [_BILL_RESOURCE], "meta": {"query": "schools"}})
-    service = CdApiService(transport)
+    service = CdApiService(transport.client)
 
     doc = asyncio.run(service.search_bills("schools"))
 
@@ -469,7 +330,7 @@ def test_search_bills_sends_filter_query_and_returns_typed_collection():
 
 def test_search_bills_passes_page_size_only_when_given():
     transport = _FakeTransport({"data": [], "meta": {"query": "q"}})
-    asyncio.run(CdApiService(transport).search_bills("q", page_size=5))
+    asyncio.run(CdApiService(transport.client).search_bills("q", page_size=5))
     assert transport.calls == [("/bills", {"filter[query]": "q", "page[size]": "5"})]
 
 
@@ -479,14 +340,14 @@ def test_search_bills_malformed_envelope_raises_validation_error():
     # a resource missing `attributes` -- the trust boundary, same as _members
     transport = _FakeTransport({"data": [{"type": "bill", "id": "119-hr-1"}]})
     with pytest.raises(ValidationError):
-        asyncio.run(CdApiService(transport).search_bills("q"))
+        asyncio.run(CdApiService(transport.client).search_bills("q"))
 
 
 def test_member_votes_sends_comma_joined_filter_bill_and_returns_typed_collection():
     transport = _FakeTransport(
         {"data": [_VOTE_RESOURCE], "meta": {"bills_without_votes": ["119-s-5"]}}
     )
-    service = CdApiService(transport)
+    service = CdApiService(transport.client)
 
     doc = asyncio.run(service.member_votes("K000401", ["119-hr-2616", "119-s-5"]))
 
@@ -504,14 +365,12 @@ def test_member_votes_malformed_envelope_raises_validation_error():
 
     transport = _FakeTransport({"data": [{"type": "roll_call_vote"}]})
     with pytest.raises(ValidationError):
-        asyncio.run(CdApiService(transport).member_votes("K000401", ["119-hr-1"]))
+        asyncio.run(CdApiService(transport.client).member_votes("K000401", ["119-hr-1"]))
 
 
-def test_search_bills_propagates_transport_error():
-    class _Failing(ApiClient):
-        async def get(self, path, query):
-            raise ApiClientError(503, "bedrock down")
+def test_search_bills_propagates_a_503():
+    transport = _FakeTransport({"errors": [{"status": "503"}]}, status=503)
 
     with pytest.raises(ApiClientError) as exc:
-        asyncio.run(CdApiService(_Failing()).search_bills("q"))
+        asyncio.run(CdApiService(transport.client).search_bills("q"))
     assert exc.value.status_code == 503

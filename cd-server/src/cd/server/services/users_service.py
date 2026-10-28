@@ -21,10 +21,10 @@ class InvalidTokenError(Exception):
 
 class UsersClient:
     """Thin wrapper around the cd_customers connection pool -- owns the
-    raw upsert SQL, no JWT/claims knowledge. Unlike HttpApiClient's
+    raw upsert SQL, no JWT/claims knowledge. Unlike an httpx.AsyncClient's
     connection pool (opened synchronously in __init__), asyncpg's
     create_pool() is a coroutine, so this can't fully connect at
-    construction time the way HttpApiClient does -- connect()/close() are
+    construction time the way GeocoderService's client does -- connect()/close() are
     called explicitly from app.py's lifespan startup/shutdown instead,
     via UsersService's own connect()/aclose() below."""
 
@@ -166,8 +166,7 @@ def get_users_service() -> UsersService:
         if settings.ENVIRONMENT != "local":
             # Called at import time (schema.py's module-level
             # users_service = get_users_service()), so a misconfigured
-            # non-local deploy fails immediately at startup -- same
-            # "fail fast" precedent as get_cd_api_service().
+            # non-local deploy fails immediately at startup.
             raise RuntimeError(
                 "COGNITO_USER_POOL_ID and COGNITO_REGION must both be set "
                 'when CD_SERVER_ENVIRONMENT is not "local".'

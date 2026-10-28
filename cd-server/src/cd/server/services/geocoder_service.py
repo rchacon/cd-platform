@@ -96,9 +96,11 @@ def _extract_congressional_district(geographies: dict) -> str | None:
 
 class GeocoderService:
     def __init__(self):
-        # One client, reused across calls -- same connection-pool-reuse
-        # rationale as HttpApiClient in cd_api_service.py. Closed via
-        # aclose(), called from app.py's lifespan on shutdown.
+        # One client, reused across calls rather than opening a fresh
+        # connection per request (httpx's own docs recommend against a
+        # new client per call, for the connection-pool/TCP-handshake
+        # overhead). Closed via aclose(), called from app.py's lifespan
+        # on shutdown.
         self._client = httpx.AsyncClient()
 
     async def get_district(self, address: str) -> tuple[str, int]:

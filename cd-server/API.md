@@ -85,7 +85,7 @@ Details for HTTP APIs", `application/problem+json`), handled by
 `src/cd/api/problem.py`'s `problem_response`.
 
 `src/cd/api/db.py` queries `current_members` and the bill tables through
-an asyncpg pool (`CD_API_PG_POOL_SIZE`, default 5), and the routes are
+an asyncpg pool (`CD_API_PG_POOL_SIZE`, default 10), and the routes are
 `async def`. The pool is opened at startup by cd-server's lifespan and
 closed at shutdown; Starlette never runs a mounted app's own lifespan, so
 cd.api's lifespan only runs when the app is served on its own (its tests).
