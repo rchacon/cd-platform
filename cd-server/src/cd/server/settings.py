@@ -36,6 +36,10 @@ PG_DSN = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{PGDATABASE}"
 # Max connections per task in cd/server/db.py's one cd_customers pool,
 # shared by UsersClient and AiSummaryClient. Opened on demand (min_size=0).
 CD_SERVER_PG_POOL_SIZE = _int_env("CD_SERVER_PG_POOL_SIZE", 10)
+if CD_SERVER_PG_POOL_SIZE < 1:
+    # asyncpg would only reject it inside the lifespan, with an error that
+    # never names this variable.
+    raise ValueError(f"CD_SERVER_PG_POOL_SIZE must be at least 1 (got {CD_SERVER_PG_POOL_SIZE})")
 
 # Both required to construct a real JWKS client; deliberately no
 # hardcoded default for either -- the real values are cd-infra
