@@ -15,6 +15,21 @@ import asyncpg
 
 from cd.server import settings
 
+# Same bounds as cd.api.db's pool. Connections now open on demand, so an
+# authenticated request may wait on a fresh connect: without a limit, an
+# unreachable cd_customers (a failover, a security-group drop) would hold
+# it for asyncpg's 60s default -- the ALB's idle timeout, so the browser
+# would get the ALB's CORS-less 504 instead of a fast error.
+CONNECT_TIMEOUT_SECONDS = 10
+# Bounds each query. It also bounds how long any one caller can hold a
+# connection, since every client call here is a single statement, so a
+# caller queued for a free connection under a burst waits at most about
+# this long per caller ahead of it.
+COMMAND_TIMEOUT_SECONDS = 15
+# Closes connections idle longer than this; with min_size=0 they're only
+# reopened on demand.
+MAX_INACTIVE_CONNECTION_LIFETIME_SECONDS = 300
+
 
 async def _register_codecs(conn: asyncpg.Connection) -> None:
     # Runs once for every new physical connection the pool opens, not once
@@ -45,7 +60,13 @@ class CustomersDb:
         # min_size=0: connections open on demand, so a task holds only what
         # it's actually using rather than max_size from startup.
         self._pool = await asyncpg.create_pool(
-            self._dsn, min_size=0, max_size=self._max_size, init=_register_codecs
+            self._dsn,
+            min_size=0,
+            max_size=self._max_size,
+            timeout=CONNECT_TIMEOUT_SECONDS,
+            command_timeout=COMMAND_TIMEOUT_SECONDS,
+            max_inactive_connection_lifetime=MAX_INACTIVE_CONNECTION_LIFETIME_SECONDS,
+            init=_register_codecs,
         )
 
     async def close(self) -> None:

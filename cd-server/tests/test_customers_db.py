@@ -40,7 +40,17 @@ def test_connect_opens_one_on_demand_pool_with_the_codec_hook(monkeypatch):
     asyncio.run(db.connect())  # already open: no second pool
 
     assert calls == [
-        ("postgresql://ignored", {"min_size": 0, "max_size": 7, "init": _register_codecs})
+        (
+            "postgresql://ignored",
+            {
+                "min_size": 0,
+                "max_size": 7,
+                "timeout": 10,
+                "command_timeout": 15,
+                "max_inactive_connection_lifetime": 300,
+                "init": _register_codecs,
+            },
+        )
     ]
     assert db.pool == "a-pool"
 
