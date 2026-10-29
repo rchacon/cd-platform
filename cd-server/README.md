@@ -279,9 +279,10 @@ same client/service split as `CdApiService` above: `UsersClient` is the
 thin client (owns the raw upsert SQL, no JWT knowledge; it uses
 `cd/server/db.py`'s `CustomersDb`, the one `cd_customers` pool cd-server
 shares across its clients -- opened on demand, at most
-`CD_SERVER_PG_POOL_SIZE` connections per task, default 10), `UsersService` is the actual service (owns JWT
-verification/claim extraction, calls the client). It's wired in via
-`app.py`'s `GraphQLRouter(..., context_getter=...)`, run on every GraphQL
+`CD_SERVER_PG_POOL_SIZE` connections per task, default 10),
+`UsersService` is the actual service (owns JWT verification/claim
+extraction, calls the client). It's wired in via `app.py`'s
+`GraphQLRouter(..., context_getter=...)`, run on every GraphQL
 request rather than from a resolver: an `Authorization: Bearer <token>`
 header, if present, is verified against Cognito's real JWKS (`PyJWKClient`
 against `https://cognito-idp.<region>.amazonaws.com/<user_pool_id>/.well-known/jwks.json`,

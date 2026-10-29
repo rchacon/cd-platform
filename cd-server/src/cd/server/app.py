@@ -45,7 +45,8 @@ require_cd_api_db_config(settings.ENVIRONMENT)
 async def lifespan(app: FastAPI):
     # customers_db (cd_customers, shared by users_service and
     # ai_summary_service) and cd.api each hold an asyncpg pool that must be
-    # opened before serving any request, not just closed after the last one -- unlike cd_api_service/geocoder_service, whose pools open
+    # opened before serving any request, not just closed after the last
+    # one -- unlike cd_api_service/geocoder_service, whose pools open
     # synchronously at import time (see schema.py), asyncpg.create_pool()
     # is a coroutine and has no synchronous equivalent.
     #
