@@ -11,6 +11,7 @@ from cd.server.schema import (
     ai_summary_service,
     bill_search_service,
     cd_api_service,
+    customers_db,
     entitlements_service,
     geocoder_service,
     schema,
@@ -22,14 +23,16 @@ from cd.server.services.users_service import InvalidTokenError
 @pytest.fixture(autouse=True)
 def _no_cd_api_pool(monkeypatch):
     # Every TestClient(app) here runs app.py's lifespan, which opens
-    # cd.api's congressional_app pool. Stubbed for the same "no real
-    # network/DB calls" reason as the users_service/ai_summary_service
-    # stubs below; tests/api/ covers the real pool.
+    # cd.api's congressional_app pool and customers_db's cd_customers one.
+    # Stubbed to keep this file's "no real network/DB calls" convention;
+    # tests/api/ and tests/test_customers_db.py cover the real pools.
     async def _noop():
         pass
 
     monkeypatch.setattr(api_db, "connect", _noop)
     monkeypatch.setattr(api_db, "close", _noop)
+    monkeypatch.setattr(customers_db, "connect", _noop)
+    monkeypatch.setattr(customers_db, "close", _noop)
 
 
 @pytest.fixture
@@ -77,74 +80,30 @@ def test_lifespan_closes_both_services_on_shutdown(monkeypatch):
     assert geocoder_service_closed is True
 
 
-def test_lifespan_connects_and_closes_ai_summary_service(monkeypatch):
-    # Same rationale as the users_service lifespan test below -- fully
-    # replace connect()/aclose() (both open/close a real asyncpg pool) and
-    # stub users_service's own pair too, since it runs first in lifespan.
-    async def _noop():
-        pass
-
-    monkeypatch.setattr(users_service, "connect", _noop)
-    monkeypatch.setattr(users_service, "aclose", _noop)
-
+def test_lifespan_connects_and_closes_customers_db(monkeypatch):
+    # The one cd_customers pool users_service and ai_summary_service share
+    # -- nothing else opens it, so dropping it from the lifespan would fail
+    # every upsert and summary at request time.
     calls = []
 
     async def fake_connect():
         calls.append("connect")
 
-    async def fake_aclose():
-        calls.append("aclose")
+    async def fake_close():
+        calls.append("close")
 
-    monkeypatch.setattr(ai_summary_service, "connect", fake_connect)
-    monkeypatch.setattr(ai_summary_service, "aclose", fake_aclose)
-
-    with TestClient(app):
-        assert calls == ["connect"]
-    assert calls == ["connect", "aclose"]
-
-
-def test_lifespan_connects_and_closes_users_service(monkeypatch):
-    # Fully replaces connect()/aclose() rather than calling through to the
-    # real implementation (unlike the spies above, which safely call
-    # through to httpx-backed aclose()) -- the real connect() opens an
-    # actual asyncpg pool against Postgres, which this test has no
-    # business doing, keeping this file's "no real network/DB calls"
-    # convention intact.
-    calls = []
-
-    async def fake_connect():
-        calls.append("connect")
-
-    async def fake_aclose():
-        calls.append("aclose")
-
-    async def _noop():
-        pass
-
-    monkeypatch.setattr(users_service, "connect", fake_connect)
-    monkeypatch.setattr(users_service, "aclose", fake_aclose)
-    # ai_summary_service's connect()/aclose() also run in lifespan and open
-    # their own real asyncpg pool -- stub them out here too.
-    monkeypatch.setattr(ai_summary_service, "connect", _noop)
-    monkeypatch.setattr(ai_summary_service, "aclose", _noop)
+    monkeypatch.setattr(customers_db, "connect", fake_connect)
+    monkeypatch.setattr(customers_db, "close", fake_close)
 
     with TestClient(app):
         assert calls == ["connect"]
-    assert calls == ["connect", "aclose"]
+    assert calls == ["connect", "close"]
 
 
 def test_lifespan_connects_and_closes_cd_api_pool(monkeypatch):
     # Under the /v1 mount, cd.api's own lifespan never runs, so this is
     # the only thing that opens its pool -- dropping it would 500 every
     # /v1 request while cd.api's own tests still pass.
-    async def _noop():
-        pass
-
-    monkeypatch.setattr(users_service, "connect", _noop)
-    monkeypatch.setattr(users_service, "aclose", _noop)
-    monkeypatch.setattr(ai_summary_service, "connect", _noop)
-    monkeypatch.setattr(ai_summary_service, "aclose", _noop)
-
     calls = []
 
     async def fake_connect():
@@ -173,10 +132,8 @@ def test_lifespan_closes_what_it_opened_when_startup_fails(monkeypatch):
     async def failing_connect():
         raise OSError("congressional_app unreachable")
 
-    monkeypatch.setattr(users_service, "connect", recorder("users.connect"))
-    monkeypatch.setattr(users_service, "aclose", recorder("users.aclose"))
-    monkeypatch.setattr(ai_summary_service, "connect", recorder("ai.connect"))
-    monkeypatch.setattr(ai_summary_service, "aclose", recorder("ai.aclose"))
+    monkeypatch.setattr(customers_db, "connect", recorder("customers_db.connect"))
+    monkeypatch.setattr(customers_db, "close", recorder("customers_db.close"))
     monkeypatch.setattr(api_db, "connect", failing_connect)
     monkeypatch.setattr(api_db, "close", recorder("api_db.close"))
 
@@ -185,7 +142,7 @@ def test_lifespan_closes_what_it_opened_when_startup_fails(monkeypatch):
 
     # Everything opened before the failure is closed, in reverse order;
     # api_db.close isn't called, since its connect never succeeded.
-    assert calls == ["users.connect", "ai.connect", "ai.aclose", "users.aclose"]
+    assert calls == ["customers_db.connect", "customers_db.close"]
 
 
 def test_graphql_request_without_authorization_header_still_succeeds(client):

@@ -13,8 +13,8 @@ from cd.server.origin_guard import OriginGuard
 from cd.server.schema import (
     GRAPHIQL_ENABLED,
     VERSION,
-    ai_summary_service,
     cd_api_service,
+    customers_db,
     geocoder_service,
     schema,
     users_service,
@@ -43,9 +43,10 @@ require_cd_api_db_config(settings.ENVIRONMENT)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # users_service, ai_summary_service and cd.api each hold an asyncpg pool that
-    # must be opened before serving any request, not just closed after the
-    # last one -- unlike cd_api_service/geocoder_service, whose pools open
+    # customers_db (cd_customers, shared by users_service and
+    # ai_summary_service) and cd.api each hold an asyncpg pool that must be
+    # opened before serving any request, not just closed after the last
+    # one -- unlike cd_api_service/geocoder_service, whose pools open
     # synchronously at import time (see schema.py), asyncpg.create_pool()
     # is a coroutine and has no synchronous equivalent.
     #
@@ -59,10 +60,8 @@ async def lifespan(app: FastAPI):
         # in-process, geocoder_service's the (unrelated) Census geocoder.
         stack.push_async_callback(cd_api_service.aclose)
         stack.push_async_callback(geocoder_service.aclose)
-        await users_service.connect()
-        stack.push_async_callback(users_service.aclose)
-        await ai_summary_service.connect()
-        stack.push_async_callback(ai_summary_service.aclose)
+        await customers_db.connect()
+        stack.push_async_callback(customers_db.close)
         # cd.api's congressional_app pool (mounted at /v1). Its own lifespan
         # never runs under a mount, so it's opened here.
         await api_db.connect()

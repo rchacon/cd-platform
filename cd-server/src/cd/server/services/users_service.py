@@ -6,6 +6,7 @@ from jwt import PyJWKClient, PyJWKClientConnectionError, PyJWTError
 from cd.lib.sql import named
 
 from cd.server import settings
+from cd.server.db import CustomersDb
 
 logger = logging.getLogger(__name__)
 
@@ -20,27 +21,18 @@ class InvalidTokenError(Exception):
 
 
 class UsersClient:
-    """Thin wrapper around the cd_customers connection pool -- owns the
-    raw upsert SQL, no JWT/claims knowledge. Unlike an httpx.AsyncClient's
-    connection pool (opened synchronously in __init__), asyncpg's
-    create_pool() is a coroutine, so this can't fully connect at
-    construction time the way GeocoderService's client does -- connect()/close() are
-    called explicitly from app.py's lifespan startup/shutdown instead,
-    via UsersService's own connect()/aclose() below."""
+    """Thin wrapper around cd_customers' users table -- owns the raw
+    upsert SQL, no JWT/claims knowledge. Uses cd-server's one shared
+    cd_customers pool (cd/server/db.py), which app.py's lifespan opens."""
 
-    def __init__(self, dsn: str):
-        self._dsn = dsn
-        self._pool: asyncpg.Pool | None = None
+    def __init__(self, db: CustomersDb):
+        self._db = db
 
-    async def connect(self) -> None:
-        self._pool = await asyncpg.create_pool(self._dsn)
-
-    async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
+    @property
+    def _pool(self) -> asyncpg.Pool:
+        return self._db.pool
 
     async def upsert_user(self, id: str, email: str) -> None:
-        assert self._pool is not None, "UsersClient.connect() was never called"
         await self._pool.execute(
             *named(
                 """
@@ -86,12 +78,6 @@ class UsersService:
         self._jwk_client = jwk_client
         self._issuer = issuer
         self._audiences = audiences
-
-    async def connect(self) -> None:
-        await self._client.connect()
-
-    async def aclose(self) -> None:
-        await self._client.close()
 
     async def upsert_user_from_authorization_header(self, header: str | None) -> str | None:
         if self._jwk_client is None or not header:
@@ -159,8 +145,8 @@ class UsersService:
         return claims["sub"]
 
 
-def get_users_service() -> UsersService:
-    client = UsersClient(settings.PG_DSN)
+def get_users_service(db: CustomersDb) -> UsersService:
+    client = UsersClient(db)
 
     if not settings.COGNITO_USER_POOL_ID or not settings.COGNITO_REGION:
         if settings.ENVIRONMENT != "local":

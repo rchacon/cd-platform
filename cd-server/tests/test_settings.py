@@ -29,3 +29,20 @@ def test_int_env_still_raises_on_a_non_numeric_typo(monkeypatch):
     monkeypatch.setenv("CD_TEST_LIMIT", "1O0")
     with pytest.raises(ValueError):
         _int_env("CD_TEST_LIMIT", 10)
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_pool_size_below_one_fails_at_import_naming_the_variable(monkeypatch, value):
+    import importlib
+
+    from cd.server import settings
+
+    monkeypatch.setenv("CD_SERVER_PG_POOL_SIZE", value)
+    try:
+        with pytest.raises(ValueError, match="CD_SERVER_PG_POOL_SIZE must be at least 1"):
+            importlib.reload(settings)
+    finally:
+        # Reloading re-executes the module in place; restore its normal
+        # values for the rest of the session.
+        monkeypatch.delenv("CD_SERVER_PG_POOL_SIZE")
+        importlib.reload(settings)
