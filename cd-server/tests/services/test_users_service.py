@@ -17,15 +17,7 @@ from cd.server.services.users_service import (
 class _FakeUsersClient:
     def __init__(self):
         self.calls: list[tuple[str, str]] = []
-        self.connected = False
-        self.closed = False
         self._raise: Exception | None = None
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.closed = True
 
     async def upsert_user(self, id: str, email: str) -> None:
         if self._raise is not None:

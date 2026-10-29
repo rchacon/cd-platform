@@ -203,18 +203,10 @@ def test_fetch_history_mixes_summary_kinds_for_one_user():
 
 class _FakeAiSummaryClient:
     def __init__(self, history_result=None, count_result=0):
-        self.connected = False
-        self.closed = False
         self.history_calls: list[tuple] = []
         self.count_calls: list[tuple] = []
         self._history_result = history_result if history_result is not None else []
         self._count_result = count_result
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.closed = True
 
     async def fetch_history(self, user_id, limit, kind=None):
         self.history_calls.append((user_id, limit, kind))
