@@ -26,12 +26,30 @@ def test_register_codecs_sets_the_jsonb_codec():
     assert decoder(encoder(_SUBJECT)) == _SUBJECT
 
 
+class _ProbePool:
+    def __init__(self, fails=False):
+        self.fails = fails
+        self.probes = 0
+        self.closed = False
+
+    async def fetchval(self, query):
+        assert query == "SELECT 1"
+        self.probes += 1
+        if self.fails:
+            raise OSError("password authentication failed")
+        return 1
+
+    async def close(self):
+        self.closed = True
+
+
 def test_connect_opens_one_on_demand_pool_with_the_codec_hook(monkeypatch):
     calls = []
+    pool = _ProbePool()
 
     async def fake_create_pool(dsn, **kwargs):
         calls.append((dsn, kwargs))
-        return "a-pool"
+        return pool
 
     monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
     db = CustomersDb("postgresql://ignored", max_size=7)
@@ -52,7 +70,27 @@ def test_connect_opens_one_on_demand_pool_with_the_codec_hook(monkeypatch):
             },
         )
     ]
-    assert db.pool == "a-pool"
+    assert db.pool is pool
+    assert pool.probes == 1
+
+
+def test_connect_fails_and_closes_the_pool_when_the_probe_fails(monkeypatch):
+    pool = _ProbePool(fails=True)
+
+    async def fake_create_pool(dsn, **kwargs):
+        return pool
+
+    monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+    db = CustomersDb("postgresql://ignored")
+
+    with pytest.raises(OSError, match="password authentication failed"):
+        asyncio.run(db.connect())
+
+    # Raising fails the lifespan, so a misconfigured task never starts
+    # serving; the half-open pool is closed, and connect() can retry.
+    assert pool.closed
+    with pytest.raises(RuntimeError):
+        db.pool
 
 
 def test_pool_before_connect_raises():
@@ -64,6 +102,9 @@ def test_close_closes_the_pool_and_allows_reconnecting(monkeypatch):
     closed = []
 
     class _FakePool:
+        async def fetchval(self, query):
+            return 1
+
         async def close(self):
             closed.append(True)
 

@@ -68,6 +68,19 @@ class CustomersDb:
             max_inactive_connection_lifetime=MAX_INACTIVE_CONNECTION_LIFETIME_SECONDS,
             init=_register_codecs,
         )
+        # min_size=0 opens nothing above, so check cd_customers is actually
+        # reachable with these credentials. Raises, failing the lifespan and
+        # so the task's startup -- unlike cd.api.db's probe, which only
+        # warns. A rolling deploy then keeps the old tasks rather than
+        # replacing them with ones whose user upserts fail silently and
+        # whose summaries 500. (Before the shared pool, create_pool()'s
+        # min_size=10 connections did this implicitly.)
+        try:
+            await self._pool.fetchval("SELECT 1")
+        except BaseException:
+            pool, self._pool = self._pool, None
+            await pool.close()
+            raise
 
     async def close(self) -> None:
         if self._pool is not None:
