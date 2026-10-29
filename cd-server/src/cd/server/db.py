@@ -49,7 +49,9 @@ class CustomersDb:
     app.py's lifespan -- asyncpg.create_pool() is a coroutine, so it can't
     run at import time like the services that use it."""
 
-    def __init__(self, dsn: str, max_size: int = settings.CD_SERVER_PG_POOL_SIZE):
+    def __init__(self, dsn: str, max_size: int | None = None):
+        # None means settings.CD_SERVER_PG_POOL_SIZE, read when the pool is
+        # created rather than bound as a default argument at import.
         self._dsn = dsn
         self._max_size = max_size
         self._pool: asyncpg.Pool | None = None
@@ -62,7 +64,7 @@ class CustomersDb:
         self._pool = await asyncpg.create_pool(
             self._dsn,
             min_size=0,
-            max_size=self._max_size,
+            max_size=self._max_size or settings.CD_SERVER_PG_POOL_SIZE,
             timeout=CONNECT_TIMEOUT_SECONDS,
             command_timeout=COMMAND_TIMEOUT_SECONDS,
             max_inactive_connection_lifetime=MAX_INACTIVE_CONNECTION_LIFETIME_SECONDS,

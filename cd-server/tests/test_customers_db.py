@@ -3,6 +3,7 @@ import asyncio
 import asyncpg
 import pytest
 
+from cd.server import settings
 from cd.server.db import CustomersDb, _register_codecs
 
 _SUBJECT = {"bioguideId": "K000401", "bills": [{"billKey": "119-hr-2616", "votes": []}]}
@@ -121,3 +122,19 @@ def test_close_closes_the_pool_and_allows_reconnecting(monkeypatch):
     assert closed == [True]
     with pytest.raises(RuntimeError):
         db.pool
+
+
+def test_pool_size_defaults_to_the_setting_when_the_pool_opens(monkeypatch):
+    sizes = []
+
+    async def fake_create_pool(dsn, **kwargs):
+        sizes.append(kwargs["max_size"])
+        return _ProbePool()
+
+    monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+    db = CustomersDb("postgresql://ignored")
+    monkeypatch.setattr(settings, "CD_SERVER_PG_POOL_SIZE", 3)
+
+    asyncio.run(db.connect())
+
+    assert sizes == [3]
