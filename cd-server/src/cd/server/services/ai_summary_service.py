@@ -22,7 +22,7 @@ from typing import Any
 import asyncpg
 from cd.lib.sql import named
 
-from cd.server import settings
+from cd.server.db import CustomersDb
 from cd.server.services.bedrock_chat_service import BedrockChatClient, get_bedrock_chat_client
 from cd.server.services.bill_search_service import BillResult, BillSearchService
 from cd.server.services.cd_api_service import CdApiService
@@ -38,7 +38,7 @@ class AiSummaryRecord:
 
     id: int
     kind: str
-    subject: Any  # kind-specific JSON (dict) -- see AiSummaryClient's jsonb codec
+    subject: Any  # kind-specific JSON (dict) -- see cd/server/db.py's jsonb codec
     prompt_template: str  # the system-prompt text this row was generated with
     summary: str
     model_id: str
@@ -50,7 +50,7 @@ def _record(row: asyncpg.Record) -> AiSummaryRecord:
         id=row["ai_summary_id"],
         kind=row["kind"],
         # Already a parsed Python object, not raw JSON text -- the pool's
-        # jsonb codec (registered in AiSummaryClient.connect()) decodes
+        # jsonb codec (registered by cd/server/db.py's pool) decodes
         # it automatically.
         subject=row["subject"],
         prompt_template=row["prompt_template"],
@@ -61,40 +61,18 @@ def _record(row: asyncpg.Record) -> AiSummaryRecord:
 
 
 class AiSummaryClient:
-    """Thin wrapper around the ai_summaries connection pool -- owns the
+    """Thin wrapper around cd_customers' ai_summaries table -- owns the
     raw insert/select SQL, no prompt/Bedrock/kind-specific knowledge.
-    Its own independent asyncpg.Pool against cd_customers, following the
-    "each service opens its own pool, no sharing" precedent UsersClient/
-    CdApiService/GeocoderService already set. connect()/close() are
-    designed to be called from app.py's lifespan (asyncpg.create_pool()
-    is a coroutine, can't run at construction time), same as UsersClient
-    -- but that wiring isn't added until this service is actually
-    instantiated at module scope in a follow-up PR; nothing calls
-    connect() yet in this one."""
+    Uses cd-server's one shared cd_customers pool (cd/server/db.py),
+    which app.py's lifespan opens and which registers the jsonb codec
+    `subject` relies on."""
 
-    def __init__(self, dsn: str):
-        self._dsn = dsn
-        self._pool: asyncpg.Pool | None = None
+    def __init__(self, db: CustomersDb):
+        self._db = db
 
-    async def connect(self) -> None:
-        # Registered per-connection (asyncpg's init= runs once for every
-        # new physical connection the pool opens, not once for the pool
-        # itself) so `subject` binds/reads as a plain Python object --
-        # json.dumps()/loads() + an explicit ::jsonb cast are otherwise
-        # needed on every call, since asyncpg has no jsonb codec by
-        # default. schema="pg_catalog" matches the built-in jsonb type,
-        # not some user-defined type of the same name.
-        self._pool = await asyncpg.create_pool(self._dsn, init=self._register_codecs)
-
-    async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-
-    @staticmethod
-    async def _register_codecs(conn: asyncpg.Connection) -> None:
-        await conn.set_type_codec(
-            "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
-        )
+    @property
+    def _pool(self) -> asyncpg.Pool:
+        return self._db.pool
 
     async def insert_summary(
         self,
@@ -105,14 +83,13 @@ class AiSummaryClient:
         summary: str,
         model_id: str,
     ) -> AiSummaryRecord:
-        assert self._pool is not None, "AiSummaryClient.connect() was never called"
         # RETURNING only the two DB-generated columns, not every value
         # the caller already passed in -- subject in particular can be a
         # full bills+votes JSON snapshot (see the migration's own
         # docstring), not worth a round-trip re-select/re-decode of data
         # this call just wrote verbatim.
         # subject is bound directly as a Python object -- the pool's jsonb
-        # codec (see _register_codecs) encodes it; Postgres infers the
+        # codec (cd/server/db.py's _register_codecs) encodes it; Postgres infers the
         # type of the parameter bound to :subject as jsonb from the target
         # column, no explicit cast needed.
         row = await self._pool.fetchrow(
@@ -147,7 +124,6 @@ class AiSummaryClient:
     async def fetch_history(
         self, user_id: str, limit: int, kind: str | None = None
     ) -> list[AiSummaryRecord]:
-        assert self._pool is not None, "AiSummaryClient.connect() was never called"
         # kind (when given) is filtered in SQL, not by the caller after the
         # fetch -- otherwise LIMIT counts rows of every kind, and a
         # kind-scoped caller (myAiSummaries) silently gets back fewer than
@@ -181,7 +157,6 @@ class AiSummaryClient:
         kind-scopes in SQL). Same `:name::text IS NULL OR ...` idiom
         throughout. The global path hits idx_ai_summaries_created_at
         (0003), the per-user path idx_ai_summaries_user_created (0002)."""
-        assert self._pool is not None, "AiSummaryClient.connect() was never called"
         return await self._pool.fetchval(
             *named(
                 """
@@ -310,12 +285,6 @@ class AiSummaryService:
         self._bill_search = bill_search
         self._chat = chat
 
-    async def connect(self) -> None:
-        await self._client.connect()
-
-    async def aclose(self) -> None:
-        await self._client.close()
-
     async def history(
         self, user_id: str, limit: int = 20, kind: str | None = None
     ) -> list[AiSummaryRecord]:
@@ -396,8 +365,8 @@ class AiSummaryService:
 
 
 def get_ai_summary_service(
-    cd_api: CdApiService, bill_search: BillSearchService
+    db: CustomersDb, cd_api: CdApiService, bill_search: BillSearchService
 ) -> AiSummaryService:
     return AiSummaryService(
-        AiSummaryClient(settings.PG_DSN), cd_api, bill_search, get_bedrock_chat_client()
+        AiSummaryClient(db), cd_api, bill_search, get_bedrock_chat_client()
     )

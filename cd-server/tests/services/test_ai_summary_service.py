@@ -2,7 +2,6 @@ import asyncio
 import types
 from datetime import date, datetime, timezone
 
-import asyncpg
 import pytest
 
 from cd.server.services.ai_summary_service import (
@@ -12,6 +11,13 @@ from cd.server.services.ai_summary_service import (
     get_ai_summary_service,
 )
 from cd.server.services.bill_search_service import BillResult, VoteResult
+
+
+class _FakeDb:
+    """Stands in for cd/server/db.py's CustomersDb: hands back a fake pool."""
+
+    def __init__(self, pool):
+        self.pool = pool
 
 _SUBJECT = {
     "bioguideId": "K000401",
@@ -23,7 +29,7 @@ _PROMPT_TEMPLATE = "You are a neutral, nonpartisan legislative-research assistan
 _ROW = {
     "ai_summary_id": 1,
     "kind": "voting_record",
-    # The pool's jsonb codec (AiSummaryClient._register_codecs) decodes a
+    # The pool's jsonb codec (cd/server/db.py's _register_codecs) decodes a
     # jsonb column into a parsed Python object -- the fake row mirrors
     # that, not raw JSON text.
     "subject": _SUBJECT,
@@ -60,9 +66,12 @@ def test_insert_summary_runs_expected_sql_and_returns_the_record():
     # the record is built from the caller's own arguments, not by
     # re-reading kind/subject/etc. off the row (which would KeyError
     # here if it tried).
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(
-        fetchrow_result={"ai_summary_id": 1, "created_at": _ROW["created_at"]}
+    client = AiSummaryClient(
+        _FakeDb(
+            _FakePool(
+                fetchrow_result={"ai_summary_id": 1, "created_at": _ROW["created_at"]}
+            )
+        )
     )
 
     record = asyncio.run(
@@ -81,7 +90,7 @@ def test_insert_summary_runs_expected_sql_and_returns_the_record():
     assert "RETURNING ai_summary_id, created_at" in query
     # subject is bound as the raw Python object, no manual json.dumps()
     # or explicit ::jsonb cast -- the pool's jsonb codec (registered in
-    # connect(), see _register_codecs) handles the encoding.
+    # cd/server/db.py's _register_codecs) handles the encoding.
     assert args == (
         "user-1",
         "voting_record",
@@ -99,8 +108,7 @@ def test_insert_summary_runs_expected_sql_and_returns_the_record():
 
 
 def test_fetch_history_runs_expected_sql_and_returns_records():
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(fetch_result=[_ROW])
+    client = AiSummaryClient(_FakeDb(_FakePool(fetch_result=[_ROW])))
 
     records = asyncio.run(client.fetch_history("user-1", 20))
 
@@ -123,8 +131,7 @@ def test_fetch_history_runs_expected_sql_and_returns_records():
 def test_fetch_history_filters_by_kind_in_sql_when_given():
     # The kind filter is in the WHERE clause (so LIMIT counts only
     # matching rows), not applied by the caller after the fetch.
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(fetch_result=[_ROW])
+    client = AiSummaryClient(_FakeDb(_FakePool(fetch_result=[_ROW])))
 
     asyncio.run(client.fetch_history("user-1", 20, kind="voting_record"))
 
@@ -135,8 +142,7 @@ def test_fetch_history_filters_by_kind_in_sql_when_given():
 
 
 def test_fetch_history_returns_empty_list_for_a_user_with_no_history():
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(fetch_result=[])
+    client = AiSummaryClient(_FakeDb(_FakePool(fetch_result=[])))
 
     assert asyncio.run(client.fetch_history("user-1", 20)) == []
 
@@ -145,8 +151,7 @@ _SINCE = datetime(2026, 9, 6, tzinfo=timezone.utc)
 
 
 def test_count_since_global_passes_null_user_id_and_kind():
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(fetchval_result=7)
+    client = AiSummaryClient(_FakeDb(_FakePool(fetchval_result=7)))
 
     result = asyncio.run(client.count_since(_SINCE))
 
@@ -162,8 +167,7 @@ def test_count_since_global_passes_null_user_id_and_kind():
 
 
 def test_count_since_per_user_passes_the_user_id():
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(fetchval_result=3)
+    client = AiSummaryClient(_FakeDb(_FakePool(fetchval_result=3)))
 
     result = asyncio.run(client.count_since(_SINCE, "user-1"))
 
@@ -173,8 +177,7 @@ def test_count_since_per_user_passes_the_user_id():
 
 
 def test_count_since_kind_scopes_the_count_in_sql():
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(fetchval_result=2)
+    client = AiSummaryClient(_FakeDb(_FakePool(fetchval_result=2)))
 
     asyncio.run(client.count_since(_SINCE, kind="voting_record"))
 
@@ -191,49 +194,11 @@ def test_fetch_history_mixes_summary_kinds_for_one_user():
         "kind": "bill_evolution",
         "subject": {"billKey": "119-hr-2616"},
     }
-    client = AiSummaryClient("postgresql://ignored")
-    client._pool = _FakePool(fetch_result=[bill_evolution_row, _ROW])
+    client = AiSummaryClient(_FakeDb(_FakePool(fetch_result=[bill_evolution_row, _ROW])))
 
     records = asyncio.run(client.fetch_history("user-1", 20))
 
     assert [r.kind for r in records] == ["bill_evolution", "voting_record"]
-
-
-def test_register_codecs_sets_the_jsonb_codec():
-    calls = []
-
-    class _FakeConn:
-        async def set_type_codec(self, type_name, *, encoder, decoder, schema):
-            calls.append((type_name, encoder, decoder, schema))
-
-    asyncio.run(AiSummaryClient._register_codecs(_FakeConn()))
-
-    assert len(calls) == 1
-    type_name, encoder, decoder, schema = calls[0]
-    assert type_name == "jsonb"
-    assert schema == "pg_catalog"
-    # encoder/decoder round-trip a Python object through JSON text --
-    # this is what lets insert_summary/_record() bind/read subject as a
-    # plain object instead of hand-rolling json.dumps()/loads().
-    assert decoder(encoder(_SUBJECT)) == _SUBJECT
-
-
-def test_connect_registers_the_codec_hook_on_the_pool(monkeypatch):
-    captured = {}
-
-    async def fake_create_pool(dsn, init=None):
-        captured["dsn"] = dsn
-        captured["init"] = init
-        return "a-pool"
-
-    monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-
-    client = AiSummaryClient("postgresql://ignored")
-    asyncio.run(client.connect())
-
-    assert captured["dsn"] == "postgresql://ignored"
-    assert captured["init"] is AiSummaryClient._register_codecs
-    assert client._pool == "a-pool"
 
 
 class _FakeAiSummaryClient:
@@ -258,20 +223,6 @@ class _FakeAiSummaryClient:
     async def count_since(self, since, user_id=None, kind=None):
         self.count_calls.append((since, user_id, kind))
         return self._count_result
-
-
-def test_ai_summary_service_connect_and_aclose_delegate_to_the_client():
-    # None for cd_api/bill_search/chat -- connect/aclose/history don't
-    # touch them, only generate_voting_record_summary does (see its own
-    # tests below).
-    client = _FakeAiSummaryClient()
-    service = AiSummaryService(client, None, None, None)
-
-    asyncio.run(service.connect())
-    asyncio.run(service.aclose())
-
-    assert client.connected is True
-    assert client.closed is True
 
 
 def test_ai_summary_service_history_delegates_to_the_client():
@@ -328,7 +279,7 @@ def test_get_ai_summary_service_returns_a_wired_service(monkeypatch):
 
     monkeypatch.setattr(settings, "BEDROCK_CHAT_MODEL_ID", "anthropic.claude-3-5-haiku")
 
-    service = get_ai_summary_service(cd_api=object(), bill_search=object())
+    service = get_ai_summary_service(_FakeDb(None), cd_api=object(), bill_search=object())
 
     assert isinstance(service, AiSummaryService)
     assert isinstance(service._client, AiSummaryClient)

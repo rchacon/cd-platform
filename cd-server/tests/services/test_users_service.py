@@ -171,8 +171,7 @@ def test_upsert_user_runs_expected_sql():
         async def execute(self, query, *args):
             self.calls.append((query, args))
 
-    client = UsersClient("postgresql://ignored")
-    client._pool = _FakePool()
+    client = UsersClient(types.SimpleNamespace(pool=_FakePool()))
 
     asyncio.run(client.upsert_user("abc-123", "person@example.com"))
 
@@ -187,7 +186,7 @@ def test_get_users_service_disables_verification_when_cognito_unset_and_local(mo
     monkeypatch.setattr(settings, "COGNITO_USER_POOL_ID", "")
     monkeypatch.setattr(settings, "COGNITO_REGION", "")
 
-    service = get_users_service()
+    service = get_users_service(types.SimpleNamespace(pool=None))
 
     assert service._jwk_client is None
 
@@ -198,7 +197,7 @@ def test_get_users_service_raises_when_cognito_unset_and_not_local(monkeypatch):
     monkeypatch.setattr(settings, "COGNITO_REGION", "")
 
     with pytest.raises(RuntimeError, match="COGNITO_USER_POOL_ID"):
-        get_users_service()
+        get_users_service(types.SimpleNamespace(pool=None))
 
 
 def test_get_users_service_raises_when_client_ids_missing(monkeypatch):
@@ -208,7 +207,7 @@ def test_get_users_service_raises_when_client_ids_missing(monkeypatch):
     monkeypatch.setattr(settings, "COGNITO_CLIENT_IDS", [])
 
     with pytest.raises(RuntimeError, match="COGNITO_CLIENT_IDS"):
-        get_users_service()
+        get_users_service(types.SimpleNamespace(pool=None))
 
 
 def test_get_users_service_builds_expected_issuer_url(monkeypatch):
@@ -217,7 +216,7 @@ def test_get_users_service_builds_expected_issuer_url(monkeypatch):
     monkeypatch.setattr(settings, "COGNITO_REGION", "us-west-2")
     monkeypatch.setattr(settings, "COGNITO_CLIENT_IDS", ["client-1"])
 
-    service = get_users_service()
+    service = get_users_service(types.SimpleNamespace(pool=None))
 
     assert service._issuer == "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_examplepool"
     assert service._audiences == ["client-1"]

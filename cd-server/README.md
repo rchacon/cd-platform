@@ -276,8 +276,10 @@ drop). Its only
 table today, `users` (`id`, `email`, `created_at`, `last_seen`), is
 upserted by `services/users_service.py`'s `UsersService` -- following the
 same client/service split as `CdApiService` above: `UsersClient` is the
-thin client (owns the `asyncpg` connection pool and the raw upsert SQL,
-no JWT knowledge), `UsersService` is the actual service (owns JWT
+thin client (owns the raw upsert SQL, no JWT knowledge; it uses
+`cd/server/db.py`'s `CustomersDb`, the one `cd_customers` pool cd-server
+shares across its clients -- opened on demand, at most
+`CD_SERVER_PG_POOL_SIZE` connections per task, default 10), `UsersService` is the actual service (owns JWT
 verification/claim extraction, calls the client). It's wired in via
 `app.py`'s `GraphQLRouter(..., context_getter=...)`, run on every GraphQL
 request rather than from a resolver: an `Authorization: Bearer <token>`
@@ -316,9 +318,9 @@ an actually-invalid token still 401s in `context_getter` before any
 resolver runs, unchanged.
 
 The work is `services/ai_summary_service.py`, same client/service split as
-the rest: `AiSummaryClient` is the thin storage half (its own `asyncpg`
-pool against `cd_customers`, the raw `ai_summaries` insert/select SQL, a
-`jsonb` type codec so the `subject` column binds/reads as a plain Python
+the rest: `AiSummaryClient` is the thin storage half (the raw
+`ai_summaries` insert/select SQL, on the shared `CustomersDb` pool, whose
+`jsonb` type codec lets the `subject` column bind/read as a plain Python
 object), `AiSummaryService` owns the orchestration.
 `generate_voting_record_summary()` resolves the member's display name
 (`CdApiService.member_detail()`) and the topic's matched bills+votes

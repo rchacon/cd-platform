@@ -11,6 +11,7 @@ from strawberry.extensions import DisableIntrospection
 from strawberry.scalars import JSON
 
 from cd.server import settings
+from cd.server.db import CustomersDb
 from cd.server.services.ai_summary_service import AiSummaryRecord, get_ai_summary_service
 from cd.server.services.bill_search_service import BillResult, BillSearchService
 from cd.server.services.cd_api_service import get_cd_api_service
@@ -36,26 +37,26 @@ GRAPHIQL_ENABLED = os.environ.get("GRAPHIQL_ENABLED", "false").lower() == "true"
 
 # One instance each, reused across requests -- same singleton-at-import-time
 # pattern cd-etl's DAGs already use for their shared HTTP session.
-# cd_api_service/geocoder_service/users_service all hold an open
-# connection pool, closed via app.py's lifespan on shutdown (see each
-# service's aclose()). users_service's pool can't actually be opened yet
-# at this point (asyncpg.create_pool() is a coroutine, unlike
-# httpx.AsyncClient()'s synchronous constructor) -- see its own
-# connect(), also called from app.py's lifespan, this time on startup.
+# cd_api_service/geocoder_service hold an httpx client, closed via app.py's
+# lifespan on shutdown (see each service's aclose()). customers_db is the
+# one cd_customers pool users_service and ai_summary_service share; it
+# can't be opened yet at this point (asyncpg.create_pool() is a coroutine,
+# unlike httpx.AsyncClient()'s synchronous constructor), so app.py's
+# lifespan connects it on startup and closes it on shutdown.
+customers_db = CustomersDb(settings.PG_DSN)
 cd_api_service = get_cd_api_service()
 bill_search_service = BillSearchService(cd_api_service)
 geocoder_service = GeocoderService()
 states_service = StatesService()
-users_service = get_users_service()
-# Holds its own asyncpg pool against cd_customers (opened/closed via
-# app.py's lifespan, same as users_service) and reuses the two services
+users_service = get_users_service(customers_db)
+# Uses customers_db too, and reuses the two services
 # above as the data source generate_voting_record_summary() feeds into
 # the prompt. get_ai_summary_service() constructs the Bedrock chat client
 # here at import time -- so a non-"local" CD_SERVER_ENVIRONMENT with no
 # BEDROCK_CHAT_MODEL_ID set fails fast at startup (see
 # get_bedrock_chat_client()), the same deploy-time guard
 # get_users_service() already applies to its own required config.
-ai_summary_service = get_ai_summary_service(cd_api_service, bill_search_service)
+ai_summary_service = get_ai_summary_service(customers_db, cd_api_service, bill_search_service)
 # Pure logic over ai_summary_service's row counts + the configured daily
 # limits -- no pool of its own, so nothing to open/close in app.py's
 # lifespan. Reported by the `features` query and enforced by

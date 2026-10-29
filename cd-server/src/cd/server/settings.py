@@ -33,6 +33,9 @@ PGDATABASE = os.environ.get("PGDATABASE", "cd_customers")
 PGUSER = os.environ.get("PGUSER", "postgres")
 PGPASSWORD = os.environ.get("PGPASSWORD", "postgres")
 PG_DSN = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{PGDATABASE}"
+# Max connections per task in cd/server/db.py's one cd_customers pool,
+# shared by UsersClient and AiSummaryClient. Opened on demand (min_size=0).
+CD_SERVER_PG_POOL_SIZE = _int_env("CD_SERVER_PG_POOL_SIZE", 10)
 
 # Both required to construct a real JWKS client; deliberately no
 # hardcoded default for either -- the real values are cd-infra
