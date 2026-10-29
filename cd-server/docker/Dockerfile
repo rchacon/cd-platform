@@ -42,7 +42,14 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 EXPOSE 8000
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["uv", "run", "uvicorn", "cd.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# --timeout-keep-alive above the ALB's 60s idle timeout (cd-infra's
+# cd-server/ leaves it at the default). The ALB reuses idle connections to
+# this server for up to 60s; with uvicorn's 5s default, uvicorn could close
+# one just as the ALB sent a request on it, and the ALB answered that
+# request with its own 502. That response has no CORS headers, so the
+# browser blocks it and cd-webapp shows "Could not reach the lookup
+# service". AWS's guidance is a target keep-alive longer than the ALB's.
+CMD ["uv", "run", "uvicorn", "cd.server.app:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "65"]
 
 # What actually ships to GHCR -- no test dependencies, no tests/, since
 # `base`'s own `uv sync --locked --no-dev` never installed pytest.
