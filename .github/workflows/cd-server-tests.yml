@@ -78,6 +78,26 @@ jobs:
           cache-from: type=gha,scope=cd-server-production
           cache-to: type=gha,mode=max,scope=cd-server-production
 
+      # uvicorn's keep-alive must outlast the ALB's 60s idle timeout
+      # (cd-infra's aws_lb.cd_server), or the ALB intermittently answers a
+      # reused connection uvicorn just closed with its own CORS-less 502
+      # (see the Dockerfile). A --timeout-keep-alive flag in CMD would
+      # override the env var, so the check rejects that too.
+      - name: Check uvicorn's keep-alive outlasts the ALB idle timeout
+        run: |
+          KA=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' cd-server:production \
+            | sed -n 's/^UVICORN_TIMEOUT_KEEP_ALIVE=//p')
+          CMD=$(docker inspect --format '{{json .Config.Cmd}}' cd-server:production)
+          echo "UVICORN_TIMEOUT_KEEP_ALIVE=${KA:-unset}  CMD=$CMD"
+          if ! [ "${KA:-0}" -gt 60 ] 2>/dev/null; then
+            echo "::error::UVICORN_TIMEOUT_KEEP_ALIVE must be set above the ALB's 60s idle timeout (got '${KA:-unset}')"
+            exit 1
+          fi
+          if echo "$CMD" | grep -q -- '--timeout-keep-alive'; then
+            echo "::error::CMD sets --timeout-keep-alive, which overrides UVICORN_TIMEOUT_KEEP_ALIVE; set the env var instead"
+            exit 1
+          fi
+
       - name: Smoke test production image
         run: |
           # --network container:$POSTGRES_CID (not standalone -p 8000:8000)

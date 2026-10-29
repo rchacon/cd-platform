@@ -41,6 +41,18 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 
 EXPOSE 8000
 
+# Keep-alive above the ALB's idle timeout (cd-infra's aws_lb.cd_server,
+# idle_timeout = 60). The ALB reuses idle connections to this server; with
+# uvicorn's 5s default, uvicorn could close one just as the ALB sent a
+# request on it, and the ALB answered that request with its own 502. That
+# response has no CORS headers, so the browser blocks it and cd-webapp
+# shows "Could not reach the lookup service". AWS's guidance is a target
+# keep-alive longer than the ALB's. An env var rather than a CMD flag, so
+# a task definition can raise it alongside the ALB's idle_timeout without
+# overriding the command (a CLI flag would win over it). CI checks it
+# stays above 60.
+ENV UVICORN_TIMEOUT_KEEP_ALIVE=65
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uv", "run", "uvicorn", "cd.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
 
