@@ -13,6 +13,7 @@ from cd.api.openapi import build_openapi
 from cd.api.problem import problem_response
 from cd.api.routes import bills, members, version
 from cd.api.routes.version import read_version
+from cd.api.trailing_slash import StripTrailingSlash
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -113,6 +114,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     logger.exception("Unhandled exception for %s %s", request.method, request.url.path)
     return problem_response(status=500, detail="An unexpected error occurred.")
 
+
+# /members/ answers like /members instead of 307-redirecting to cd-server's
+# own host (see trailing_slash.py).
+app.add_middleware(StripTrailingSlash)
 
 app.include_router(version.router)
 app.include_router(members.jsonapi_router)
